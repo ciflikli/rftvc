@@ -8,8 +8,8 @@ Rule: after each slice, run the full test suite, tick the box, and note any devi
 - [x] S2: Forest — id subsampling, rayon, hazard aggregation (branch `feat/s2-forest`)
 - [x] S3: Counting-process TVCs + left truncation (branch `feat/s3-tvc`)
 - [x] S4: Landmark workflow (branch `feat/s4-landmark`)
-- [ ] S5: Model selection + metrics (+ id-level OOB)  <-- NEXT
-- [ ] S6: Coarse grid mode + performance pass + benchmarks
+- [x] S5: Model selection + metrics (+ id-level OOB) (branch `feat/s5-model-selection`)
+- [ ] S6: Coarse grid mode + performance pass + benchmarks  <-- NEXT
 - [ ] S7: sklearn compatibility matrix, DataFrame input, wheels, docs/case studies
 - [ ] S8: Criterion + aggregation bake-off
 
@@ -182,6 +182,20 @@ Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pyte
 - The censoring model is fitted only on training-fold data (spy test).
 
 **Accept:** a nested rolling-origin CV example runs on the BTSCS case-study data.
+
+**S5 done (2026-09-25). Deviations / notes** (slice plan and review log: `s5-plan.md`):
+- **Metrics are per landmark on the reset clock**, so `s` is dropped from the metric signatures: `brier_landmark(y_test, risk, w, *, y_censor=None, censoring_estimator=None, g_min=0.05, return_info=False)`; likewise `integrated_brier(y, surv, times)`, `cindex_dynamic(y, risk, w, kind)`, `calibration_table(y, risk, w, n_bins)`. They are plain right-censored metrics (`start == 0`).
+- **IPCW source (user decision after plan review):** in `landmark_cross_validate`, `G_s` is a reverse KM fitted on **the test fold's risk set at each landmark** (pec/riskRegression convention). Time splits never have training data at a test landmark, so "training fold at `s`" was impossible; pooling earlier landmarks would assume stationary censoring. `G_s` sees outcomes only, never predictions. The spy test checks it sees exactly that landmark's test outcomes.
+- **Weighting conventions:** cases `event & stop <= w` weighted `1/G(stop−)`; controls `stop >= w` weighted `1/G(w−)`. Left limits make administrative censoring at `w` (every surviving landmark row) a control. sksurv parity (1e-10) holds when no test non-event has `stop == w` and no censoring time coincides with a test `stop` or `w`; the fixtures ensure that.
+- **Exact path:** when no test subject is censored before `w`, weights are 1 and no censoring model is used (checked with an exploding estimator).
+- **`cindex_dynamic`:** `"cumulative"` = cumulative/dynamic AUC at `w` (sksurv parity); `"incident"` = integrated incident/dynamic concordance over `(0, w]` (Heagerty & Zheng), estimated by Uno's truncated C (sksurv parity). Events at exactly `w` count as cases (sksurv uses `< tau`).
+- **`calibration_table`** is descriptive: `1 − KM(w)` per quantile bin assumes independent censoring within bins.
+- **New public helpers:** `metrics.concordance_index_cp` (counting-process C with time-varying risks; equals R `concordance(Surv(start, stop, event) ~ risk, reverse=TRUE)` on committed fixtures, and Harrell's C for `start == 0`), `metrics.KaplanMeierCensoring` (sklearn-cloneable; `predict(times, left=...)` is the `censoring_estimator` protocol). `check_survival_y(..., require_events=False)` for metric inputs.
+- **Splitters (time in model units):** `RollingOriginSplit(n_splits, *, test_size, gap, time_col=None)`: right-closed test windows stacked back from the last time; train = times `<= min(test) − gap`. `GroupTimeSplit` crosses `GroupKFold` folds with those windows (no group on both sides). Empty folds raise.
+- **`landmark_cross_validate(model, df, cv, scoring, *, horizon, n_times, censoring_estimator, g_min, param_grid, inner_cv, refit)`:** splits the stacked landmark rows by `s` (groups = ids). Time splitters: `gap >= model.horizon` is enforced and the training frame is administratively censored at the earliest test landmark (the fit never sees later data; checked by a spy). Other splitters must keep ids disjoint (new-subject CV, e.g. `GroupKFold`). Nested CV via `param_grid` + `inner_cv`, selecting by mean `refit` score. Returns a polars frame per (fold, landmark) with counts (`n`, `n_cases`, `n_censored`, `n_clipped`) and scores; a score that is undefined at a landmark (e.g. no cases) is NaN.
+- **OOB:** `oob_score=True` gives `oob_prediction_` (per-row ensemble mortality `Σ_k Λ(t_k | x_row)` over trees without the row's id; Rust `Forest::oob_mortality`, bags recomputed from seeds) and `oob_score_ = concordance_index_cp` (rows of the same id never compared). Checked against a manual per-tree oracle from leaf profiles. Rows of ids in every bag are NaN and left out with a warning; no OOB id at all raises. `gap_policy="split_id"` that actually splits an id raises (segments are resampled separately, so OOB would leak).
+- **Accept dataset:** there is no BTSCS dataset in the repo yet, so the example uses a simulated unit×period panel (`tests/sim_panel.py`: staggered entry, AR(1) external covariate, first onset only). `bench/s5_nested_cv.py` → `docs/bench/s5-nested-cv.md`: 3 outer × 2 inner rolling-origin folds, 2,000 units, ~2 s; C/D AUC ≈ 0.70. A real BTSCS case study remains S7.
+- `concordance_index_cp` is a Python Fenwick sweep, `O((n + E) log n)`; a Rust port can come with S6 if profiling asks for it.
 
 ## S6: Coarse grid + performance
 **Files:** `grid.rs` (`Grid::quantile(K)` + snapping per D8); `splitter.rs` (sibling subtraction, benchmarked); `benches/`; `bench/compare.py`.

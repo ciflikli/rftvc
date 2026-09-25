@@ -174,6 +174,30 @@ impl PyForest {
             .into_pyarray(py))
     }
 
+    /// Out-of-bag ensemble mortality per row (NaN if the row's id is in every bag).
+    fn oob_mortality<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        groups: PyReadonlyArray1<'py, u32>,
+        times: PyReadonlyArray1<'py, f64>,
+        aggregate_by: &str,
+        n_jobs: usize,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let (v, n, p) = self.check_x(&x)?;
+        check_lengths(n, &[("groups", groups.as_array().len())])?;
+        let groups: Vec<u32> = vec1(&groups, "groups")?;
+        if groups.iter().any(|&g| g as usize >= self.inner.n_groups) {
+            return Err(PyValueError::new_err("groups must be in [0, n_groups)"));
+        }
+        let agg = aggregate(aggregate_by)?;
+        let times: Vec<f64> = vec1(&times, "times")?;
+        let forest = &self.inner;
+        let pool = pool(n_jobs)?;
+        let out = py.detach(|| pool.install(|| forest.oob_mortality(&v, p, &groups, &times, agg)));
+        Ok(out.into_pyarray(py))
+    }
+
     /// Conditional cumulative hazard along covariate paths `(n_paths, n_times)`.
     ///
     /// Rows of path `p` are `offsets[p]..offsets[p+1]`, contiguous and sorted by start.

@@ -152,42 +152,59 @@ impl Forest {
         agg: Aggregate,
     ) -> Vec<f64> {
         let m = times.len();
-        let n_trees = self.trees.len() as f64;
         let mut out = vec![0.0; x.len() / n_features * m];
         out.par_chunks_mut(m.max(1))
             .zip(x.par_chunks(n_features))
-            .for_each(|(row_out, xr)| match agg {
-                Aggregate::Hazard => {
-                    for tree in &self.trees {
-                        let leaf = tree.apply(xr);
-                        for (o, &t) in row_out.iter_mut().zip(times) {
-                            *o += tree.cumhaz_at(leaf, t);
-                        }
-                    }
-                    row_out.iter_mut().for_each(|v| *v /= n_trees);
-                }
-                Aggregate::Survival => {
-                    // -log(mean_b exp(-Λ_b)) via an online log-sum-exp, so large
-                    // hazards stay finite instead of underflowing exp() to 0.
-                    let mut max = vec![f64::NEG_INFINITY; m];
-                    let mut sum = vec![0.0; m];
-                    for tree in &self.trees {
-                        let leaf = tree.apply(xr);
-                        for (j, &t) in times.iter().enumerate() {
-                            let a = -tree.cumhaz_at(leaf, t);
-                            if a > max[j] {
-                                sum[j] = sum[j] * (max[j] - a).exp() + 1.0;
-                                max[j] = a;
-                            } else {
-                                sum[j] += (a - max[j]).exp();
-                            }
-                        }
-                    }
-                    for (j, o) in row_out.iter_mut().enumerate() {
-                        *o = -(max[j] + (sum[j] / n_trees).ln());
-                    }
-                }
+            .for_each(|(row_out, xr)| {
+                ensemble_cumhaz(self.trees.iter(), xr, times, agg, row_out);
             });
+        out
+    }
+
+    /// Out-of-bag ensemble mortality per row: `sum_k Λ_oob(t_k | x_row)`.
+    ///
+    /// Row `r` belongs to id `groups[r]`; only trees whose bag does not contain
+    /// that id enter its ensemble. NaN when the id is in every bag.
+    pub fn oob_mortality(
+        &self,
+        x: &[f64],
+        n_features: usize,
+        groups: &[u32],
+        times: &[f64],
+        agg: Aggregate,
+    ) -> Vec<f64> {
+        let words = self.n_groups.div_ceil(64);
+        let in_bag: Vec<Vec<u64>> = (0..self.trees.len())
+            .into_par_iter()
+            .map(|b| {
+                let mut bits = vec![0u64; words];
+                for g in self.in_bag_ids(b) {
+                    bits[g as usize / 64] |= 1 << (g % 64);
+                }
+                bits
+            })
+            .collect();
+        let mut out = vec![0.0; groups.len()];
+        out.par_iter_mut()
+            .zip(x.par_chunks(n_features))
+            .zip(groups.par_iter())
+            .for_each_init(
+                || vec![0.0; times.len()],
+                |buf, ((o, xr), &g)| {
+                    let (w, bit) = (g as usize / 64, 1u64 << (g % 64));
+                    let oob = self
+                        .trees
+                        .iter()
+                        .zip(&in_bag)
+                        .filter(|(_, bits)| bits[w] & bit == 0)
+                        .map(|(t, _)| t);
+                    *o = if ensemble_cumhaz(oob, xr, times, agg, buf) == 0 {
+                        f64::NAN
+                    } else {
+                        buf.iter().sum()
+                    };
+                },
+            );
         out
     }
 
@@ -292,4 +309,57 @@ impl Forest {
             });
         out
     }
+}
+
+/// Aggregate the cumulative hazard of `x` over `trees` into `out` (one value
+/// per time); returns the number of trees. Leaves `out` zeroed for no trees.
+fn ensemble_cumhaz<'a>(
+    trees: impl Iterator<Item = &'a Tree>,
+    x: &[f64],
+    times: &[f64],
+    agg: Aggregate,
+    out: &mut [f64],
+) -> usize {
+    let m = times.len();
+    out.iter_mut().for_each(|v| *v = 0.0);
+    let mut n = 0usize;
+    match agg {
+        Aggregate::Hazard => {
+            for tree in trees {
+                let leaf = tree.apply(x);
+                for (o, &t) in out.iter_mut().zip(times) {
+                    *o += tree.cumhaz_at(leaf, t);
+                }
+                n += 1;
+            }
+            if n > 0 {
+                out.iter_mut().for_each(|v| *v /= n as f64);
+            }
+        }
+        Aggregate::Survival => {
+            // -log(mean_b exp(-Λ_b)) via an online log-sum-exp, so large
+            // hazards stay finite instead of underflowing exp() to 0.
+            let mut max = vec![f64::NEG_INFINITY; m];
+            let mut sum = vec![0.0; m];
+            for tree in trees {
+                let leaf = tree.apply(x);
+                for (j, &t) in times.iter().enumerate() {
+                    let a = -tree.cumhaz_at(leaf, t);
+                    if a > max[j] {
+                        sum[j] = sum[j] * (max[j] - a).exp() + 1.0;
+                        max[j] = a;
+                    } else {
+                        sum[j] += (a - max[j]).exp();
+                    }
+                }
+                n += 1;
+            }
+            if n > 0 {
+                for (j, o) in out.iter_mut().enumerate() {
+                    *o = -(max[j] + (sum[j] / n as f64).ln());
+                }
+            }
+        }
+    }
+    n
 }
