@@ -83,3 +83,91 @@ fn corrupt_flat_state_errors() {
     bad.tree_seeds.pop();
     assert!(bad.to_forest().is_err());
 }
+
+fn valid_flat() -> FlatForest {
+    let n = 60;
+    let (x, surv) = toy(n);
+    let binned = Binned::fit(&x, n, 1, 255);
+    let groups = Groups::new(&(0..n as u32).collect::<Vec<_>>(), n);
+    FlatForest::from_forest(&fit_forest(&binned, &surv, &groups, &params(false)))
+}
+
+#[test]
+fn structurally_consistent_but_invalid_states_error() {
+    // An empty tree: offsets agree with each other but there is no root.
+    let empty = FlatForest {
+        grid: vec![1.0],
+        tree_seeds: vec![0],
+        n_features: 1,
+        n_groups: 1,
+        n_draw: 1,
+        node_offsets: vec![0, 0],
+        leaf_offsets: vec![0, 0],
+        event_offsets: vec![0],
+        ..Default::default()
+    };
+    assert!(empty.to_forest().is_err());
+    // No trees at all.
+    let none = FlatForest {
+        node_offsets: vec![0],
+        leaf_offsets: vec![0],
+        event_offsets: vec![0],
+        ..Default::default()
+    };
+    assert!(none.to_forest().is_err());
+
+    let flat = valid_flat();
+    let split = flat.node_feature.iter().position(|&f| f >= 0).unwrap();
+    let mut bad = flat.clone();
+    bad.node_threshold[split] = f64::NAN;
+    assert!(bad.to_forest().is_err(), "NaN threshold");
+
+    let leaf = (0..flat.event_offsets.len() - 1)
+        .find(|&l| flat.event_offsets[l + 1] - flat.event_offsets[l] >= 2)
+        .unwrap();
+    let e0 = flat.event_offsets[leaf] as usize;
+    let mut bad = flat.clone();
+    bad.event_idx.swap(e0, e0 + 1);
+    assert!(bad.to_forest().is_err(), "unsorted event times");
+    let mut bad = flat.clone();
+    bad.d[e0] = bad.y[e0] + 1.0;
+    assert!(bad.to_forest().is_err(), "d > y");
+    let mut bad = flat;
+    bad.y[e0] = 0.0;
+    assert!(bad.to_forest().is_err(), "y = 0");
+}
+
+#[test]
+fn survival_aggregation_is_finite_for_large_hazards() {
+    // Two single-leaf trees whose cumulative hazard reaches 1000 (1000 events, d = y = 1).
+    let k = 1000u32;
+    let flat = FlatForest {
+        grid: (0..k).map(|t| t as f64 + 1.0).collect(),
+        tree_seeds: vec![1, 2],
+        n_features: 1,
+        n_groups: 1,
+        n_draw: 1,
+        node_offsets: vec![0, 1, 2],
+        node_feature: vec![-1, -1],
+        node_threshold: vec![0.0, 0.0],
+        node_left: vec![0, 0],
+        node_right: vec![0, 0],
+        leaf_offsets: vec![0, 1, 2],
+        event_offsets: vec![0, k as u64, 2 * k as u64],
+        event_idx: (0..k).chain(0..k).collect(),
+        d: vec![1.0; 2 * k as usize],
+        y: vec![1.0; 2 * k as usize],
+        ..Default::default()
+    };
+    let forest = flat.to_forest().unwrap();
+    let t = [k as f64, 5.0];
+    let hz = forest.predict_cumhaz(&[0.0], 1, &t, Aggregate::Hazard);
+    let sv = forest.predict_cumhaz(&[0.0], 1, &t, Aggregate::Survival);
+    assert_eq!(hz, vec![1000.0, 5.0]);
+    for (s, h) in sv.iter().zip(&hz) {
+        assert!(
+            s.is_finite() && (s - h).abs() < 1e-9,
+            "survival agg {s} vs {h}"
+        );
+    }
+}

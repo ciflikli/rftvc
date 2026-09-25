@@ -135,22 +135,36 @@ impl Forest {
         let mut out = vec![0.0; x.len() / n_features * m];
         out.par_chunks_mut(m.max(1))
             .zip(x.par_chunks(n_features))
-            .for_each(|(row_out, xr)| {
-                for tree in &self.trees {
-                    let leaf = tree.apply(xr);
-                    for (j, &t) in times.iter().enumerate() {
-                        let h = tree.cumhaz_at(leaf, t);
-                        row_out[j] += match agg {
-                            Aggregate::Hazard => h,
-                            Aggregate::Survival => (-h).exp(),
-                        };
+            .for_each(|(row_out, xr)| match agg {
+                Aggregate::Hazard => {
+                    for tree in &self.trees {
+                        let leaf = tree.apply(xr);
+                        for (o, &t) in row_out.iter_mut().zip(times) {
+                            *o += tree.cumhaz_at(leaf, t);
+                        }
                     }
+                    row_out.iter_mut().for_each(|v| *v /= n_trees);
                 }
-                for v in row_out.iter_mut() {
-                    *v = match agg {
-                        Aggregate::Hazard => *v / n_trees,
-                        Aggregate::Survival => -(*v / n_trees).ln(),
-                    };
+                Aggregate::Survival => {
+                    // -log(mean_b exp(-Λ_b)) via an online log-sum-exp, so large
+                    // hazards stay finite instead of underflowing exp() to 0.
+                    let mut max = vec![f64::NEG_INFINITY; m];
+                    let mut sum = vec![0.0; m];
+                    for tree in &self.trees {
+                        let leaf = tree.apply(xr);
+                        for (j, &t) in times.iter().enumerate() {
+                            let a = -tree.cumhaz_at(leaf, t);
+                            if a > max[j] {
+                                sum[j] = sum[j] * (max[j] - a).exp() + 1.0;
+                                max[j] = a;
+                            } else {
+                                sum[j] += (a - max[j]).exp();
+                            }
+                        }
+                    }
+                    for (j, o) in row_out.iter_mut().enumerate() {
+                        *o = -(max[j] + (sum[j] / n_trees).ln());
+                    }
                 }
             });
         out

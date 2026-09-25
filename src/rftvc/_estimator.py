@@ -180,7 +180,9 @@ class SurvivalForestTV(BaseEstimator):
         ms = self.max_samples
         if ms is None:
             ms = 1.0 if self.bootstrap else 0.632
-        if isinstance(ms, numbers.Integral) and not isinstance(ms, bool):
+        if isinstance(ms, (bool, np.bool_)):
+            raise ValueError(f"invalid max_samples={ms!r}: use an int count or a float fraction")
+        if isinstance(ms, numbers.Integral):
             if ms < 1 or (ms > n_ids and not self.bootstrap):
                 raise ValueError(f"max_samples={ms} must be in [1, n_ids={n_ids}] without bootstrap")
             return int(ms)

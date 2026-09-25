@@ -89,7 +89,8 @@ impl FlatForest {
         let n_nodes = self.node_feature.len();
         let n_leaves = self.event_offsets.len().saturating_sub(1);
         let n_events = self.event_idx.len();
-        let consistent = self.leaf_offsets.len() == n_trees + 1
+        let consistent = n_trees >= 1
+            && self.leaf_offsets.len() == n_trees + 1
             && self.tree_seeds.len() == n_trees
             && [
                 self.node_threshold.len(),
@@ -122,6 +123,9 @@ impl FlatForest {
                 self.leaf_offsets[t + 1] as usize,
             );
             let (tree_nodes, tree_leaves) = (n1 - n0, l1 - l0);
+            if tree_nodes == 0 || tree_leaves == 0 {
+                return Err(format!("tree {t} has no nodes or no leaves"));
+            }
             let mut nodes = Vec::with_capacity(tree_nodes);
             // Children are always created after their parent, so requiring
             // `parent < child < tree_nodes` also rules out cycles in `apply`.
@@ -134,6 +138,7 @@ impl FlatForest {
                     },
                     feat if feat >= 0
                         && (feat as u64) < self.n_features
+                        && self.node_threshold[i].is_finite()
                         && child_ok(self.node_left[i], i - n0)
                         && child_ok(self.node_right[i], i - n0) =>
                     {
@@ -148,30 +153,38 @@ impl FlatForest {
                 };
                 nodes.push(node);
             }
-            let leaves = (l0..l1)
-                .map(|l| {
-                    let (e0, e1) = (
-                        self.event_offsets[l] as usize,
-                        self.event_offsets[l + 1] as usize,
-                    );
-                    let (d, y) = (self.d[e0..e1].to_vec(), self.y[e0..e1].to_vec());
-                    let mut cum = 0.0;
-                    let cumhaz = d
-                        .iter()
-                        .zip(&y)
-                        .map(|(d, y)| {
-                            cum += d / y;
-                            cum
-                        })
-                        .collect();
-                    Leaf {
-                        event_idx: self.event_idx[e0..e1].to_vec(),
-                        d,
-                        y,
-                        cumhaz,
-                    }
-                })
-                .collect();
+            let mut leaves = Vec::with_capacity(tree_leaves);
+            for l in l0..l1 {
+                let (e0, e1) = (
+                    self.event_offsets[l] as usize,
+                    self.event_offsets[l + 1] as usize,
+                );
+                // `cumhaz_at` binary-searches event times, so they must be strictly
+                // increasing; counts must give finite, non-negative increments.
+                let event_idx = self.event_idx[e0..e1].to_vec();
+                let (d, y) = (self.d[e0..e1].to_vec(), self.y[e0..e1].to_vec());
+                let counts_ok = d.iter().zip(&y).all(|(&d, &y)| {
+                    d.is_finite() && y.is_finite() && 0.0 <= d && d <= y && y > 0.0
+                });
+                if !(event_idx.windows(2).all(|w| w[0] < w[1]) && counts_ok) {
+                    return Err(format!("invalid leaf {l}"));
+                }
+                let mut cum = 0.0;
+                let cumhaz = d
+                    .iter()
+                    .zip(&y)
+                    .map(|(d, y)| {
+                        cum += d / y;
+                        cum
+                    })
+                    .collect();
+                leaves.push(Leaf {
+                    event_idx,
+                    d,
+                    y,
+                    cumhaz,
+                });
+            }
             trees.push(Tree {
                 nodes,
                 leaves,

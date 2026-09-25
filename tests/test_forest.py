@@ -82,7 +82,7 @@ def test_resample_unit_other_than_id_raises():
         SurvivalForestTV(n_estimators=1, resample_unit="row").fit(X, y)
 
 
-@pytest.mark.parametrize("max_samples", [0, 1.5, 301, -0.1, "x"])
+@pytest.mark.parametrize("max_samples", [0, 1.5, 301, -0.1, "x", True, False, np.True_])
 def test_invalid_max_samples(max_samples):
     X, y = _data()
     with pytest.raises(ValueError, match="max_samples"):
