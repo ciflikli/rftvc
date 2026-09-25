@@ -1,0 +1,8 @@
+/rust/target/
+.venv/
+__pycache__/
+*.so
+*.pyd
+.hypothesis/
+.pytest_cache/
+docs/scratch/
