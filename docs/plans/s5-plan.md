@@ -33,3 +33,14 @@ Branch `feat/s5-model-selection`. Parent: `plan.md` S5, `design.md` "Model selec
 1. A bad `n_times` became NaN scores via a blanket `except ValueError` (high/medium) → `n_times` validated up front; only `metrics.UndefinedMetricError` becomes NaN.
 2. Nested-CV test too weak (high/low) → already fixed by the test-quality pass (independent inner-loop replay, min and max scorers).
 3. Censoring-model spy covered only `RollingOriginSplit` (high/low) → also runs on `GroupTimeSplit`, against the fold's own test rows.
+
+## Focused review (Codex, 2026-09-25): metrics.py, forest.rs OOB, _estimator.py OOB
+No findings. Checked numerically:
+- KM left/right limits and ties;
+- tied-event exclusion in the incident C-index;
+- the Fenwick at-risk and same-id exclusions;
+- bootstrap duplicates in the in-bag bitsets;
+- `ensemble_cumhaz` aggregation;
+- `y[ok]` / `cp.group[ok]` filtering.
+
+It ran `tests/test_metrics.py` and `tests/test_oob.py` (21 passed, `--capture=no` in its read-only sandbox).
