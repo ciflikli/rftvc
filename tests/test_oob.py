@@ -8,8 +8,11 @@ from rftvc.metrics import concordance_index_cp
 from tests.test_tvc import _cp_data
 
 
-def _manual_oob_mortality(forest, X, ids):
-    """Mean over trees whose bag lacks the row's id of sum_k Λ_b(t_k), from leaf profiles."""
+def _manual_oob_mortality(forest, X, ids, aggregate="hazard"):
+    """sum_k of the OOB ensemble Λ(t_k), from leaf profiles of trees whose bag lacks the row's id.
+
+    Ensemble: mean_b Λ_b (hazard) or -log mean_b exp(-Λ_b) (survival).
+    """
     core, times = forest.forest_, forest.event_times_
     leaves = forest.apply(X)
     _, group = np.unique(ids, return_inverse=True)
@@ -21,9 +24,11 @@ def _manual_oob_mortality(forest, X, ids):
                 continue
             lt, _, _, cumhaz = core.leaf_profile(b, int(leaves[r, b]))
             pos = np.searchsorted(lt, times, side="right")
-            vals.append(np.where(pos > 0, np.r_[0.0, cumhaz][pos], 0.0).sum())
+            vals.append(np.where(pos > 0, np.r_[0.0, cumhaz][pos], 0.0))
         if vals:
-            out[r] = np.mean(vals)
+            H = np.array(vals)  # (oob trees, times)
+            ens = H.mean(axis=0) if aggregate == "hazard" else -np.log(np.exp(-H).mean(axis=0))
+            out[r] = ens.sum()
     return out
 
 
@@ -50,7 +55,10 @@ def test_oob_score_tracks_signal():
 def test_oob_survival_aggregation_and_no_oob_error():
     X, y, ids = _cp_data(30, seed=5)
     f = SurvivalForestTV(n_estimators=10, min_ids_leaf=3, aggregate="survival", oob_score=True, random_state=1)
-    assert np.isfinite(f.fit(X, y, ids).oob_score_)
+    f.fit(X, y, ids)
+    np.testing.assert_allclose(f.oob_prediction_, _manual_oob_mortality(f, X, ids, "survival"), rtol=1e-10)
+    hazard = SurvivalForestTV(n_estimators=10, min_ids_leaf=3, oob_score=True, random_state=1).fit(X, y, ids)
+    assert np.all(f.oob_prediction_ <= hazard.oob_prediction_ + 1e-12)  # Jensen
     with pytest.raises(ValueError, match="out of bag"):
         SurvivalForestTV(n_estimators=5, max_samples=1.0, oob_score=True, min_ids_leaf=3).fit(X, y, ids)
 

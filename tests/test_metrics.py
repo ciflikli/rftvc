@@ -137,10 +137,6 @@ def test_integrated_brier_matches_sksurv():
 
 
 def test_exact_path_under_complete_follow_up_uses_no_censoring_model():
-    class Exploding:
-        def predict(self, times, left=False):
-            raise AssertionError("censoring model consulted on the exact path")
-
     # Every subject has an event by w or is followed through w (stop == w: administrative).
     y = make_survival_y([0.5, 1.0, 2.0, 2.0, 1.5], [True, True, False, False, True])
     risk = np.array([0.9, 0.6, 0.2, 0.1, 0.3])
@@ -149,6 +145,23 @@ def test_exact_path_under_complete_follow_up_uses_no_censoring_model():
     score, info = brier_landmark(y, risk, 2.0, censoring_estimator=Exploding(), return_info=True)
     assert info["exact"] and score == pytest.approx(expected, abs=1e-15)
     assert brier_landmark(y, risk, 2.0) == pytest.approx(expected, abs=1e-15)
+
+
+class Exploding:
+    def predict(self, times, left=False):
+        raise AssertionError("censoring model consulted on the exact path")
+
+
+def test_discrimination_and_integrated_brier_exact_paths():
+    # Complete follow-up to w = 3: cases at 1 and 2, controls administratively censored at 3.
+    y = make_survival_y([1.0, 2.0, 3.0, 3.0], [True, True, False, False])
+    risk = [0.9, 0.4, 0.5, 0.1]
+    assert cindex_dynamic(y, risk, 3.0, censoring_estimator=Exploding()) == pytest.approx(3 / 4)
+    assert cindex_dynamic(y, risk, 3.0, kind="incident", censoring_estimator=Exploding()) == pytest.approx(4 / 5)
+    y = make_survival_y([0.5, 3.0, 3.0], [True, False, False])
+    surv = np.array([[0.2, 0.1], [0.9, 0.8], [0.7, 0.6]])
+    score, info = integrated_brier(y, surv, [1.0, 2.0], censoring_estimator=Exploding(), return_info=True)
+    assert info["exact"] and score == pytest.approx((0.14 / 3 + 0.21 / 3) / 2, abs=1e-15)
 
 
 def test_administrative_censoring_at_w_is_a_control_weighted_by_left_limit():
@@ -163,18 +176,20 @@ def test_administrative_censoring_at_w_is_a_control_weighted_by_left_limit():
     assert brier_landmark(y, risk, 2.0, y_censor=y) == pytest.approx(expected, abs=1e-15)
 
 
+# Hand-computed reverse KM of Y_CENSOR: G = 0.8 on [1,2), 0.6 on [2,4), 0.3 from 4 on.
+Y_CENSOR = make_survival_y([1.0, 2.0, 3.0, 4.0, 5.0], [False, False, True, False, True])
+# w = 4.5: case at 3 (G(3-) = 0.6), case at 4.2 (G = 0.3), control at 5 (G(4.5-) = 0.3), censored at 1.5.
+Y_CLIP = make_survival_y([3.0, 4.2, 5.0, 1.5], [True, True, False, False])
+
+
 def test_truncation_diagnostic_counts_clipped_weights():
-    x, y_train, y_test = _parity_data(seed=4)
-    w, g_min = 2.0, 0.8
-    km = KaplanMeierCensoring().fit(y_train)
-    stop, event = y_test["stop"], y_test["event"]
-    case = event & (stop <= w)
-    control = (stop >= w) & ~case
-    g = np.where(case, km.predict(stop, left=True), km.predict([w], left=True)[0])
-    expected = int(((case | control) & (g < g_min)).sum())
-    assert expected > 0
-    _, info = brier_landmark(y_test, np.full(stop.size, 0.3), w, y_censor=y_train, g_min=g_min, return_info=True)
-    assert info["n_clipped"] == expected
+    score, info = brier_landmark(Y_CLIP, np.full(4, 0.5), 4.5, y_censor=Y_CENSOR, g_min=0.5, return_info=True)
+    assert info["n_clipped"] == 2 and info["n_censored"] == 1 and not info["exact"]
+    assert score == pytest.approx((0.25 / 0.6 + 0.25 / 0.5 + 0.25 / 0.5) / 4, abs=1e-15)
+    _, info = cindex_dynamic(Y_CLIP, [0.9, 0.2, 0.5, 0.3], 4.5, y_censor=Y_CENSOR, g_min=0.5, return_info=True)
+    assert info["n_clipped"] == 2
+    auc = cindex_dynamic(Y_CLIP, [0.9, 0.2, 0.5, 0.3], 4.5, y_censor=Y_CENSOR, g_min=0.5)
+    assert auc == pytest.approx((1 / 0.6) / (1 / 0.6 + 1 / 0.5), abs=1e-15)
 
 
 def test_censoring_arguments_are_exclusive():

@@ -5,11 +5,12 @@ import polars as pl
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from sklearn.base import clone
 from sklearn.model_selection import GroupKFold, KFold
 
 from rftvc import LandmarkSurvivalForest, SurvivalForestTV, make_landmark_data
 from rftvc.metrics import KaplanMeierCensoring
-from rftvc.model_selection import GroupTimeSplit, RollingOriginSplit, landmark_cross_validate
+from rftvc.model_selection import GroupTimeSplit, RollingOriginSplit, _censor_at, landmark_cross_validate
 from tests.sim_panel import simulate_panel
 
 FEATURES = ["x", ("x", "mean"), "z"]
@@ -38,11 +39,14 @@ def panel():
 def test_rolling_origin_keeps_test_times_beyond_train_window_plus_gap(times, n_splits, test_size, gap):
     t = np.array(times, dtype=float)
     cv = RollingOriginSplit(n_splits, test_size=test_size, gap=gap)
-    try:
-        folds = list(cv.split(t))
-    except ValueError:
-        return  # an empty fold is reported, not silently skipped
     end = t.max()
+    windows = [end - (n_splits - 1 - k) * test_size for k in range(n_splits)]
+    empty = any(not np.any((t > hi - test_size) & (t <= hi)) for hi in windows)
+    if empty or t.min() > t[(t > windows[0] - test_size) & (t <= windows[0])].min() - gap:
+        with pytest.raises(ValueError, match="no t"):  # "no times in test window" / "no training"
+            list(cv.split(t))
+        return
+    folds = list(cv.split(t))
     assert len(folds) == n_splits
     for k, (train, test) in enumerate(folds):
         hi = end - (n_splits - 1 - k) * test_size
@@ -50,6 +54,14 @@ def test_rolling_origin_keeps_test_times_beyond_train_window_plus_gap(times, n_s
         assert t[test].min() - t[train].max() >= gap
         # No test time falls inside [train start, train end + gap).
         assert not np.any((t[test] >= t[train].min()) & (t[test] < t[train].max() + gap))
+
+
+def test_rolling_origin_folds_on_a_fixed_grid():
+    folds = list(RollingOriginSplit(3, test_size=5, gap=2).split(np.arange(30.0)))
+    expected = [(13, range(15, 20)), (18, range(20, 25)), (23, range(25, 30))]
+    for (train, test), (train_end, test_range) in zip(folds, expected):
+        np.testing.assert_array_equal(train, np.arange(train_end + 1))
+        np.testing.assert_array_equal(test, np.array(test_range))
 
 
 def test_rolling_origin_errors_on_empty_training_window():
@@ -140,15 +152,64 @@ def test_censoring_model_is_fitted_on_each_test_landmark_only(panel):
 
 
 def test_group_kfold_is_new_subject_cv(panel):
+    SpyForest.seen = []
     data = make_landmark_data(panel, horizon=6.0, step=6.0, history_features=FEATURES)
-    res = landmark_cross_validate(_model(), panel, GroupKFold(3), scoring=["brier", "integrated_brier"])
+    spy = SpyForest(**_model().get_params(deep=False))
+    cv = GroupKFold(3)
+    res = landmark_cross_validate(spy, panel, cv, scoring=["brier", "integrated_brier"])
     assert set(res["landmark"]) == set(np.unique(data.s))  # every landmark row is tested once
     assert res["integrated_brier"].is_finite().all()
+    for (df_train, train_s), (train, test) in zip(SpyForest.seen, cv.split(data.s, groups=data.groups)):
+        train_ids = np.unique(data.ids[train])
+        full = panel.filter(pl.col("id").is_in(train_ids))
+        # New-subject CV: whole training histories (no censoring), all their landmarks, no test id.
+        assert df_train.sort(["id", "start"]).equals(full.sort(["id", "start"]))
+        np.testing.assert_array_equal(train_s, np.unique(data.s[train]))
+        assert not np.isin(data.ids[test], train_ids).any()
 
 
-def test_nested_cv_selects_parameters_on_the_training_frame(panel):
-    outer = RollingOriginSplit(2, test_size=6, gap=6)
+def test_scorer_callables_and_shorter_horizon(panel):
+    cv = RollingOriginSplit(2, test_size=6, gap=6)
+    seen = {}
+
+    def capture(tag):
+        def scorer(y, risk, w, *, censoring_estimator, g_min):
+            seen.setdefault(tag, []).append((w, np.asarray(risk).copy()))
+            return 42.0
+        return scorer
+
+    short = landmark_cross_validate(_model(), panel, cv, scoring={"s": capture(3.0)}, horizon=3.0)
+    full = landmark_cross_validate(_model(), panel, cv, scoring={"s": capture(6.0)})
+    assert (short["s"] == 42.0).all() and short["n"].equals(full["n"])
+    assert {w for w, _ in seen[3.0]} == {3.0} and {w for w, _ in seen[6.0]} == {6.0}
+    r3 = np.concatenate([r for _, r in seen[3.0]])
+    r6 = np.concatenate([r for _, r in seen[6.0]])
+    assert np.all(r3 <= r6 + 1e-12) and np.any(r3 < r6)  # risk by w=3 is risk at 3, not at 6
+    with pytest.raises(ValueError, match="horizon"):
+        landmark_cross_validate(_model(), panel, cv, horizon=7.0)
+
+
+@pytest.mark.parametrize("refit, best", [("brier", np.argmin), ("cindex_cumulative", np.argmax)])
+def test_nested_cv_selects_the_best_inner_candidate(panel, refit, best):
+    outer = RollingOriginSplit(1, test_size=6, gap=6)
     inner = RollingOriginSplit(2, test_size=6, gap=6)
-    grid = {"forest__min_ids_leaf": [5, 40]}
-    res = landmark_cross_validate(_model(), panel, outer, scoring=["brier"], param_grid=grid, inner_cv=inner)
-    assert "params" in res.columns and res["brier"].is_finite().all()
+    candidates = [{"forest__max_depth": 0}, {"forest__max_depth": 3}]
+    grid = {"forest__max_depth": [0, 3]}
+    scoring = ["brier", "cindex_cumulative"]
+    model = _model()
+    res = landmark_cross_validate(model, panel, outer, scoring=scoring, param_grid=grid, inner_cv=inner, refit=refit)
+
+    # Independent replay of the inner loop on the outer training frame.
+    data = make_landmark_data(panel, horizon=6.0, step=6.0, history_features=FEATURES)
+    ((train, test),) = outer.split(data.s)
+    df_train = _censor_at(
+        panel.filter(pl.col("id").is_in(np.unique(data.ids[train]))), data.s[test].min(),
+        start="start", stop="stop", event="event",
+    )
+    means = []
+    for params in candidates:
+        m = clone(model).set_params(landmarks=np.unique(data.s[train]), step=None, **params)
+        inner_res = landmark_cross_validate(m, df_train, inner, scoring=scoring)
+        means.append(float(np.nanmean(inner_res[refit].to_numpy())))
+    assert means[0] != means[1]
+    assert set(res["params"]) == {repr(candidates[int(best(means))])}
