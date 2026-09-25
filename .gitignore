@@ -6,3 +6,5 @@ __pycache__/
 .hypothesis/
 .pytest_cache/
 docs/scratch/
+docs/_build/
+docs/source/generated/

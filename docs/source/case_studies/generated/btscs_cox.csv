@@ -1,0 +1,8 @@
+covariate,coef,exp(coef),p
+civil,-1.793,0.166,0.0
+territory,-0.173,0.842,0.286
+recurringwar,0.011,1.011,0.939
+logtroopratio,0.15,1.162,0.001
+democ,-0.332,0.718,0.055
+logtotaltroops,-0.057,0.945,0.455
+logtotalpop,-0.166,0.847,0.022

@@ -10,7 +10,7 @@ from sklearn.utils import check_random_state
 from sklearn.utils.validation import check_array, check_is_fitted
 
 from . import _core
-from ._validation import check_counting_process, check_intervals, check_survival_y, make_survival_y
+from ._validation import check_counting_process, check_intervals, check_survival_y, make_survival_y, split_frame
 
 
 class SurvivalForestTV(BaseEstimator):
@@ -116,16 +116,25 @@ class SurvivalForestTV(BaseEstimator):
         self.n_jobs = n_jobs
         self.random_state = random_state
 
+    def __sklearn_tags__(self):
+        tags = super().__sklearn_tags__()
+        tags.target_tags.required = True
+        tags.input_tags.allow_nan = False
+        return tags
+
     def fit(self, X, y, ids=None, *, measured_at=None, gap_policy="error", layout="counting_process"):
         """Fit on counting-process rows.
 
         Parameters
         ----------
-        X : array-like of shape (n_rows, n_features)
-            Covariates in force on each row's ``(start, stop]``.
-        y : structured array with fields ``start``, ``stop``, ``event``
-        ids : array-like of shape (n_rows,), default=None
-            Subject of each row; ``None`` makes every row its own subject.
+        X : array-like or DataFrame of shape (n_rows, n_features)
+            Covariates in force on each row's ``(start, stop]``. A DataFrame
+            (pandas, polars, pyarrow, ...) sets ``feature_names_in_``.
+        y : structured array or DataFrame with ``start``, ``stop``, ``event``
+            (``start`` defaults to 0 when the DataFrame has no such column).
+        ids : array-like of shape (n_rows,) or str, default=None
+            Subject of each row; ``None`` makes every row its own subject. A
+            string names a column of a DataFrame ``X``, which is then not a feature.
         measured_at : array-like of shape (n_rows,), default=None
             When each row's covariates were measured; must be ``<= start``.
         gap_policy : {"error", "split_id"}, default="error"
@@ -134,7 +143,14 @@ class SurvivalForestTV(BaseEstimator):
             ``"stacked"``: an id's rows are separate observations that may overlap
             (landmark stacks); ids then only define resampling units.
         """
+        X, names, ids_values = split_frame(X, ids)
+        self.ids_column_ = ids if isinstance(ids, str) else None
+        ids = ids_values
         X = check_array(X, dtype=np.float64, order="C")
+        if names is not None:
+            self.feature_names_in_ = names
+        elif hasattr(self, "feature_names_in_"):
+            del self.feature_names_in_
         start, stop, event = check_survival_y(y)
         n = X.shape[0]
         if n != start.shape[0]:
@@ -142,7 +158,8 @@ class SurvivalForestTV(BaseEstimator):
         cp = check_counting_process(
             start, stop, event, ids, measured_at=measured_at, gap_policy=gap_policy, layout=layout
         )
-        groups, n_ids = cp.group, cp.n_groups
+        # Resampling units are whole ids, even when split_id cuts an id into chains.
+        groups, n_ids = cp.unit, cp.n_units
         self._validate_params()
         kept = None
         if self.ntime is not None:
@@ -157,7 +174,7 @@ class SurvivalForestTV(BaseEstimator):
             if not event.any():
                 raise ValueError("coarsening left no events; use a larger ntime")
             X = np.ascontiguousarray(X[kept])
-            _, groups = np.unique(cp.group[kept], return_inverse=True)
+            _, groups = np.unique(cp.unit[kept], return_inverse=True)
             groups, n_ids = groups.astype(np.uint32), int(groups.max()) + 1
             self.coarse_grid_ = grid
             self.n_coarsen_dropped_rows_ = n - kept.size
@@ -189,11 +206,6 @@ class SurvivalForestTV(BaseEstimator):
         # Coarse mode: the chosen grid, even points whose events were all lost.
         self.event_times_ = np.unique(stop[event]) if kept is None else grid
         if self.oob_score:
-            if gap_policy == "split_id" and ids is not None and cp.n_groups != np.unique(np.asarray(ids)).size:
-                raise ValueError(
-                    "oob_score needs whole ids as resampling units, but gap_policy='split_id' "
-                    "split some ids into segments"
-                )
             y_fit = y if kept is None else make_survival_y(stop, event, start=start)
             pred = self._compute_oob(X, y_fit, groups)
             if kept is not None:  # back to the original rows; dropped rows are NaN
@@ -246,7 +258,7 @@ class SurvivalForestTV(BaseEstimator):
         ``times`` defaults to ``event_times_``. Under ``aggregate="survival"`` the
         result is ``-log`` of the averaged (per-tree conditional) survival.
         """
-        X, times = self._check_predict(X, times)
+        X, times, ids = self._check_predict(X, times, ids)
         n_jobs = effective_n_jobs(self.n_jobs)
         if intervals is None:
             if ids is not None or origin is not None or extrapolate != "none":
@@ -279,6 +291,31 @@ class SurvivalForestTV(BaseEstimator):
             n_jobs,
         )
 
+    def predict(self, X):
+        """Risk score per row: ensemble mortality ``sum_k Λ(t_k | x)`` over ``event_times_``.
+
+        The scikit-survival convention (higher = higher risk), computed as if the
+        row's covariates held from time 0. It is the quantity behind
+        ``oob_prediction_`` and ``score``.
+        """
+        X, _, _ = self._check_predict(X, None)
+        return self._mortality(X)
+
+    def _mortality(self, X):
+        H = self.forest_.predict_cumhaz(X, self.event_times_, self.aggregate, effective_n_jobs(self.n_jobs))
+        return H.sum(axis=1)
+
+    def score(self, X, y, ids=None):
+        """Concordance of ``predict(X)`` with ``y`` (``metrics.concordance_index_cp``).
+
+        Rows are counting-process rows; at each event time the event row is
+        compared with the rows of other ids at risk then.
+        """
+        from .metrics import concordance_index_cp
+
+        X, _, ids = self._check_predict(X, None, ids)  # same id-column and feature-name rules as predict
+        return concordance_index_cp(y, self._mortality(X), ids=ids)
+
     def predict_survival_function(self, X, times=None, **path_kwargs):
         """Survival probabilities ``exp(-H)``; see ``predict_cumulative_hazard``."""
         return np.exp(-self.predict_cumulative_hazard(X, times, **path_kwargs))
@@ -292,18 +329,35 @@ class SurvivalForestTV(BaseEstimator):
 
     def apply(self, X):
         """Leaf index per (row, tree), shape ``(n_samples, n_estimators)``."""
-        X, _ = self._check_predict(X, None)
+        X, _, _ = self._check_predict(X, None)
         return self.forest_.apply(X, effective_n_jobs(self.n_jobs))
 
-    def _check_predict(self, X, times):
+    def _check_predict(self, X, times, ids=None):
+        """Numeric ``X``, the time grid and ``ids`` (resolved if it names a column).
+
+        With a DataFrame ``X``, the column named at fit by ``ids`` is dropped
+        if present, and the remaining names must equal ``feature_names_in_``.
+        """
         check_is_fitted(self, "forest_")
+        fit_ids = getattr(self, "ids_column_", None)
+        if isinstance(ids, str):
+            X, names, ids = split_frame(X, ids)  # ids named by column; that column is not a feature
+        elif fit_ids is not None and hasattr(X, "columns") and fit_ids in list(X.columns):
+            X, names, _ = split_frame(X, fit_ids)  # the fit-time id column is never a feature
+        else:
+            X, names, _ = split_frame(X)
+        fitted = getattr(self, "feature_names_in_", None)
+        if names is not None and fitted is not None and list(names) != list(fitted):
+            raise ValueError(
+                f"X has feature names {list(names)}, but the forest was fitted with {list(fitted)}"
+            )
         X = check_array(X, dtype=np.float64, order="C")
         if X.shape[1] != self.n_features_in_:
             raise ValueError(f"X has {X.shape[1]} features, expected {self.n_features_in_}")
         times = self.event_times_ if times is None else np.asarray(times, dtype=float).ravel()
         if np.isnan(times).any():
             raise ValueError("times must not contain NaN")
-        return X, np.ascontiguousarray(times)
+        return X, np.ascontiguousarray(times), ids
 
     def _validate_params(self):
         if self.resample_unit != "id":

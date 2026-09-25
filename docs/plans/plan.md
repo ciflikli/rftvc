@@ -10,8 +10,8 @@ Rule: after each slice, run the full test suite, tick the box, and note any devi
 - [x] S4: Landmark workflow (branch `feat/s4-landmark`)
 - [x] S5: Model selection + metrics (+ id-level OOB) (branch `feat/s5-model-selection`)
 - [x] S6: Coarse grid mode + performance pass + benchmarks (branch `feat/s6-coarse-grid`)
-- [ ] S7: sklearn compatibility matrix, DataFrame input, wheels, docs/case studies  <-- NEXT
-- [ ] S8: Criterion + aggregation bake-off
+- [x] S7: sklearn compatibility matrix, DataFrame input, wheels, docs/case studies (branch `feat/s7-compat`)
+- [ ] S8: Criterion + aggregation bake-off  <-- NEXT
 
 Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pytest`, `hypothesis`; `cargo test`. Test oracles are lifelines and scikit-survival (dev dependencies), plus `tests/ref/logrank_ref.py`: an independent, deliberately naive O(n·K) LTRC log-rank reference (risk sets, events, numerator, hypergeometric variance, ties). Fixtures are generated once and committed as `.npz`. **Oracle conventions:** Nelson–Aalen uses `NelsonAalenFitter(nelson_aalen_smoothing=False)` with an explicit `timeline=` equal to the event grid; cumulative hazard is right-continuous (the value immediately after each event time). Statistical/benchmark tests are marked `@pytest.mark.slow` and are **not** merge gates. Setup: `git init` on branch `main`; slice work happens on `feat/sN-*` branches (commit only when the user asks).
 
@@ -248,6 +248,31 @@ Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pyte
 - `docs/`: user guide covering the three data views and the choice of error estimator (new subjects vs future periods); case studies for PBC2 and BTSCS.
 
 **Accept:** wheels install on Linux, macOS and Windows; the compatibility matrix is documented; docs build.
+
+**S7 done (2026-09-25). Deviations / notes** (slice plan and review logs: `s7-plan.md`):
+- **Inputs (narwhals, D7):**
+  - `X` may be a pandas, polars or pyarrow DataFrame, which sets `feature_names_in_`; names are checked at predict.
+  - `ids` may name a column of `X`; that column is never a feature and is dropped at predict.
+  - `y` and `intervals` may be DataFrames.
+  - Dependencies: `scikit-learn>=1.6` (tags API, `expected_failed_checks`) and `narwhals>=1.30`.
+- **New estimator methods:** `predict` (ensemble mortality risk score, the sksurv convention) and `score` (counting-process concordance). With these, `Pipeline`, `cross_validate` and `GridSearchCV` work. `ids` routes via `set_fit_request` / `set_score_request`.
+- **Compatibility matrix:**
+  - `check_estimator` passes every check that does not build a numeric `y`.
+  - The 23 that do are declared expected failures. Each maps to a survival-adapted test in `tests/test_sklearn_compat.py`.
+  - The docs table is generated from that mapping.
+  - `LandmarkSurvivalForest`: `clone`, nested params and pickling are tested directly.
+- **Library fix (plan review): `gap_policy="split_id"` no longer changes the resampling unit.** `CountingProcess` now separates chains (`group`: contiguity, coarsening, paths) from resampling units (`unit`: the original id). Fitting, leaf-size counts and OOB use `unit`, so the S5 OOB guard is removed.
+- **Wheels:** `wheels.yml` uses `PyO3/maturin-action`, not cibuildwheel (deviation), to build abi3 wheels for Linux x86_64/aarch64, macOS arm64/x86_64 and Windows x64, plus an sdist. They are installed from the built files only and smoke-tested on 5 runners × Python 3.10/3.13. Nothing is published.
+- **Docs:** Sphinx + numpydoc + pydata theme (user decision), in `docs/source`. They cover a user guide (three data views, time grid, path prediction, error-estimate choice), the API reference, the compatibility matrix and the case studies. A new `docs` CI job runs `sphinx-build -W`, with a `docs` dependency group.
+- **Case studies** (scripts in `examples/`, results committed as CSV):
+  - **PBC2 (`pbcseq`):** new-patient CV at landmarks 1–4 y, horizon 2 y. Landmark super-model Brier 0.079 / AUC 0.88; counting-process forest (LOCF after s) 0.085 / 0.87; Kaplan–Meier 0.112.
+  - **BTSCS (user decision): Cunningham & Lemke (2013) war-duration data,** the basis of the author's thesis (Ciflikli 2018).
+    - Downloaded on demand with a pinned SHA-256, not redistributed (no licence stated).
+    - Preprocessing follows `stset`/`stcox`, with two stated departures: the onset is the war's earliest `clstartdate`, and 7 overlapping rows are re-started.
+    - 280 of 382 wars kept after listwise deletion.
+    - New-war CV C: forest 0.636 vs Cox 0.654 (reported as found); OOB 0.626.
+    - The landmark model was dropped for BTSCS because `make_landmark_data` does not support gaps; PBC2 shows the landmark workflow.
+- `person_period.py` (design.md) is deferred.
 
 ## S8: Bake-off (research slice)
 **Files:** `bench/criteria/` (numba prototypes: RHF-style hazard likelihood, Poisson, horizon-Brier); `docs/scratch/bakeoff.md`.

@@ -3,6 +3,7 @@
 import numbers
 from typing import NamedTuple
 
+import narwhals as nw
 import numpy as np
 
 SURV_DTYPE = np.dtype([("start", "f8"), ("stop", "f8"), ("event", "?")])
@@ -19,6 +20,50 @@ def make_survival_y(stop, event, start=None):
     y["stop"] = stop
     y["event"] = _as_bool(np.asarray(event))
     return y
+
+
+def _frame(obj):
+    """``obj`` as an eager narwhals DataFrame, or ``None`` if it is not a DataFrame."""
+    df = nw.from_native(obj, eager_only=True, pass_through=True)
+    return df if isinstance(df, nw.DataFrame) else None
+
+
+def split_frame(X, ids=None):
+    """Numeric ``X``, its column names and ``ids``, for array or DataFrame input.
+
+    A DataFrame ``X`` (pandas, polars, pyarrow, ... via narwhals) gives its
+    column names; nullable missing values become NaN. ``ids`` may name a column
+    of ``X``: that column is returned as ``ids`` and removed from the features.
+    Arrays pass through with ``names=None``.
+    """
+    df = _frame(X)
+    if df is None:
+        if isinstance(ids, str):
+            raise ValueError(f"ids={ids!r} names a column, but X is not a DataFrame")
+        return X, None, ids
+    if isinstance(ids, str):
+        if ids not in df.columns:
+            raise ValueError(f"ids column {ids!r} not in X")
+        ids, df = df[ids].to_numpy(), df.drop(ids)
+    names = [str(c) for c in df.columns]
+    return df.select(nw.all().cast(nw.Float64)).to_numpy(), np.asarray(names, dtype=object), ids
+
+
+def _structured(y, required):
+    """A DataFrame ``y`` with the ``required`` columns (``start`` optional) as a structured array."""
+    df = _frame(y)
+    if df is None:
+        return y
+    missing = set(required) - set(df.columns) - {"start"}
+    if missing:
+        raise TypeError(f"y DataFrame is missing columns {sorted(missing)}")
+    start = df["start"].to_numpy().astype(float) if "start" in df.columns else None
+    stop = df["stop"].to_numpy().astype(float)
+    if "event" not in required:
+        out = np.empty(stop.shape[0], dtype=[("start", "f8"), ("stop", "f8")])
+        out["start"], out["stop"] = 0.0 if start is None else start, stop
+        return out
+    return make_survival_y(stop, df["event"].to_numpy(), start=start)
 
 
 def _as_bool(event):
@@ -56,6 +101,7 @@ def check_survival_y(y, *, require_events=True):
     Raises ``TypeError`` for a wrong dtype and ``ValueError`` for invalid values
     (including no events, unless ``require_events=False``).
     """
+    y = _structured(y, ("start", "stop", "event"))
     y, start, stop = _start_stop(y, ("start", "stop", "event"))
     event = np.ascontiguousarray(_as_bool(np.asarray(y["event"])))
     if require_events and not event.any():
@@ -64,23 +110,27 @@ def check_survival_y(y, *, require_events=True):
 
 
 def check_intervals(intervals):
-    """Validate prediction intervals (fields ``start``, ``stop``; ``event`` ignored)."""
-    _, start, stop = _start_stop(intervals, ("start", "stop"))
+    """Validate prediction intervals (fields or columns ``start``, ``stop``; ``event`` ignored)."""
+    _, start, stop = _start_stop(_structured(intervals, ("start", "stop")), ("start", "stop"))
     return start, stop
 
 
 class CountingProcess(NamedTuple):
     """Row grouping of validated counting-process data.
 
-    ``group[r]`` is the id index (``0..n_groups``) of row ``r``; ``order`` sorts
-    rows by (id index, start); ``offsets`` delimits each id in that order.
-    Ids are numbered by first appearance.
+    ``group[r]`` is the chain index (``0..n_groups``) of row ``r``: its id, or
+    under ``gap_policy="split_id"`` its contiguous segment. ``order`` sorts rows
+    by (chain, start); ``offsets`` delimits each chain in that order.
+    ``unit[r]`` is the original id index (``0..n_units``), the resampling unit:
+    segments of one id stay one unit. Both are numbered by first appearance.
     """
 
     group: np.ndarray
     n_groups: int
     order: np.ndarray
     offsets: np.ndarray
+    unit: np.ndarray
+    n_units: int
 
 
 def _check_ids(ids):
@@ -110,8 +160,9 @@ def check_counting_process(
 
     Per id, rows must be non-overlapping and contiguous (``stop_j == start_{j+1}``),
     and only the last row may carry an event. A gap raises ``ValueError`` unless
-    ``gap_policy="split_id"``, which treats each contiguous segment as its own id
-    (delayed re-entry; an explicit modelling assumption). If ``measured_at`` is
+    ``gap_policy="split_id"``: each contiguous segment is then its own chain
+    (delayed re-entry after the gap, which is not at risk; an explicit modelling
+    assumption), while the id stays one resampling unit (``unit``). If ``measured_at`` is
     given, covariates must be known at the row's ``start`` (``measured_at <= start``).
     """
     if layout not in ("counting_process", "stacked"):
@@ -148,7 +199,8 @@ def check_counting_process(
         group = np.empty(n, dtype=np.int64)
         group[order] = s_group
         offsets = np.r_[np.flatnonzero(new_group), n].astype(np.uint64)
-        return CountingProcess(group.astype(np.uint32), int(s_group[-1]) + 1, order, offsets)
+        group = group.astype(np.uint32)
+        return CountingProcess(group, int(s_group[-1]) + 1, order, offsets, group, int(s_group[-1]) + 1)
     overlap = same & (s_start[1:] < s_stop[:-1])
     if overlap.any():
         raise ValueError(f"{overlap.sum()} overlapping rows within an id")
@@ -169,4 +221,7 @@ def check_counting_process(
     group = np.empty(n, dtype=np.int64)
     group[order] = s_group
     offsets = np.r_[np.flatnonzero(new_group), n].astype(np.uint64)
-    return CountingProcess(group.astype(np.uint32), int(s_group[-1]) + 1 if n else 0, order, offsets)
+    n_units = int(codes.max()) + 1
+    return CountingProcess(
+        group.astype(np.uint32), int(s_group[-1]) + 1, order, offsets, codes.astype(np.uint32), n_units
+    )

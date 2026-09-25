@@ -1,0 +1,13 @@
+landmark_years,model,n,deaths,brier,auc
+1.0,counting-process forest,290,37,0.08,0.921
+1.0,landmark super-model,290,37,0.073,0.931
+1.0,Kaplan–Meier,290,37,0.114,
+2.0,counting-process forest,278,42,0.083,0.921
+2.0,landmark super-model,278,42,0.076,0.937
+2.0,Kaplan–Meier,278,42,0.131,
+3.0,counting-process forest,245,29,0.089,0.83
+3.0,landmark super-model,245,29,0.085,0.843
+3.0,Kaplan–Meier,245,29,0.106,
+4.0,counting-process forest,225,23,0.086,0.814
+4.0,landmark super-model,225,23,0.081,0.816
+4.0,Kaplan–Meier,225,23,0.099,

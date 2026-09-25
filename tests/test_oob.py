@@ -71,10 +71,16 @@ def test_oob_warns_for_ids_in_every_bag():
     assert np.isnan(f.oob_prediction_).any() and np.isfinite(f.oob_score_)
 
 
-def test_oob_rejects_split_segments():
-    X = np.zeros((3, 1))
-    y = make_survival_y([1.0, 3.0, 2.0], [False, True, True], start=[0.0, 2.0, 0.0])  # id a has a gap
-    with pytest.raises(ValueError, match="split_id"):
-        SurvivalForestTV(n_estimators=2, min_ids_leaf=1, min_events_leaf=1, oob_score=True).fit(
-            X, y, ["a", "a", "b"], gap_policy="split_id"
-        )
+def test_split_id_segments_share_bags_so_oob_is_by_id():
+    X, y, ids = _cp_data(60, seed=9, max_rows=4, delayed=False)
+    y = y.copy()
+    multi = np.flatnonzero(np.bincount(ids) > 2)
+    for i in multi:  # open a gap inside each id with 3+ rows
+        y["stop"][np.flatnonzero(ids == i)[0]] -= 0.05
+    f = SurvivalForestTV(n_estimators=12, min_ids_leaf=3, oob_score=True, random_state=0)
+    f.fit(X, y, ids, gap_policy="split_id")
+    assert f.n_ids_ == 60
+    np.testing.assert_allclose(f.oob_prediction_, _manual_oob_mortality(f, X, ids), rtol=1e-12)
+    for i in multi:  # both segments of an id: out of bag in exactly the same trees
+        rows = np.flatnonzero(ids == i)
+        assert np.isnan(f.oob_prediction_[rows]).all() or np.isfinite(f.oob_prediction_[rows]).all()
