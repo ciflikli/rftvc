@@ -9,15 +9,17 @@ from sklearn.utils import check_random_state
 from sklearn.utils.validation import check_array, check_is_fitted
 
 from . import _core
-from ._validation import check_survival_y
+from ._validation import check_counting_process, check_intervals, check_survival_y
 
 
 class SurvivalForestTV(BaseEstimator):
     """Random survival forest for counting-process data.
 
-    Status (plan.md S2): a forest on right-censored data with fixed covariates
-    (``start == 0``, one row per id). Time-varying covariates and delayed entry
-    arrive in S3.
+    Data are counting-process rows ``(start, stop, event, X)`` grouped by ``ids``:
+    each row's covariates apply on ``(start, stop]``, rows of an id are
+    contiguous, and only an id's last row may carry the event. Delayed entry
+    (``start > 0`` on an id's first row) is handled as left truncation.
+    Resampling, leaf sizes and OOB count ids, not rows.
 
     Parameters
     ----------
@@ -75,17 +77,28 @@ class SurvivalForestTV(BaseEstimator):
         self.n_jobs = n_jobs
         self.random_state = random_state
 
-    def fit(self, X, y, ids=None):
+    def fit(self, X, y, ids=None, *, measured_at=None, gap_policy="error"):
+        """Fit on counting-process rows.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_rows, n_features)
+            Covariates in force on each row's ``(start, stop]``.
+        y : structured array with fields ``start``, ``stop``, ``event``
+        ids : array-like of shape (n_rows,), default=None
+            Subject of each row; ``None`` makes every row its own subject.
+        measured_at : array-like of shape (n_rows,), default=None
+            When each row's covariates were measured; must be ``<= start``.
+        gap_policy : {"error", "split_id"}, default="error"
+            How to treat gaps between an id's rows (see ``check_counting_process``).
+        """
         X = check_array(X, dtype=np.float64, order="C")
         start, stop, event = check_survival_y(y)
         n = X.shape[0]
         if n != start.shape[0]:
             raise ValueError(f"X has {n} rows but y has {start.shape[0]}")
-        if (start != 0).any():
-            raise NotImplementedError("delayed entry / time-varying covariates arrive in S3")
-        groups, n_ids = self._groups(ids, n)
-        if n_ids != n:
-            raise NotImplementedError("multiple rows per id arrive in S3")
+        cp = check_counting_process(start, stop, event, ids, measured_at=measured_at, gap_policy=gap_policy)
+        groups, n_ids = cp.group, cp.n_groups
         self._validate_params()
 
         self.n_features_in_ = X.shape[1]
@@ -114,22 +127,72 @@ class SurvivalForestTV(BaseEstimator):
         self.event_times_ = np.unique(stop[event])
         return self
 
-    def predict_cumulative_hazard(self, X, times=None):
-        """Ensemble cumulative hazard, shape ``(n_samples, n_times)``.
+    def predict_cumulative_hazard(self, X, times=None, *, intervals=None, ids=None, origin=None, extrapolate="none"):
+        """Ensemble cumulative hazard.
 
-        ``times`` defaults to ``event_times_``. Under ``aggregate="survival"``
-        this is ``-log`` of the averaged survival.
+        Without ``intervals``, each row of ``X`` is a subject whose covariates are
+        fixed from time 0 on; the result has shape ``(n_rows, n_times)``.
+
+        With ``intervals`` (a structured array with ``start``, ``stop``), rows are
+        a covariate *path*: row ``r``'s covariates apply on ``(start_r, stop_r]``,
+        grouped into subjects by ``ids`` (rows contiguous per id, as in ``fit``).
+        The result has one row per subject, in order of first appearance, and is
+        the conditional cumulative hazard ``Λ(t) - Λ(origin)``:
+
+        - ``origin`` defaults to each subject's first ``start``; a scalar or one
+          value per subject may be given, within ``[first start, last stop]``.
+        - ``t < origin`` gives NaN.
+        - ``t`` beyond the last ``stop`` gives NaN, unless ``extrapolate="locf"``:
+          a named scenario in which the last row's covariates stay in force.
+          Supplying the future path as extra rows is the alternative, valid for
+          external covariates.
+
+        ``times`` defaults to ``event_times_``. Under ``aggregate="survival"`` the
+        result is ``-log`` of the averaged (per-tree conditional) survival.
         """
         X, times = self._check_predict(X, times)
-        return self.forest_.predict_cumhaz(X, times, self.aggregate, effective_n_jobs(self.n_jobs))
+        n_jobs = effective_n_jobs(self.n_jobs)
+        if intervals is None:
+            if ids is not None or origin is not None or extrapolate != "none":
+                raise ValueError("ids, origin and extrapolate require intervals")
+            return self.forest_.predict_cumhaz(X, times, self.aggregate, n_jobs)
+        if extrapolate not in ("none", "locf"):
+            raise ValueError(f"extrapolate must be 'none' or 'locf', got {extrapolate!r}")
+        start, stop = check_intervals(intervals)
+        if start.shape[0] != X.shape[0]:
+            raise ValueError(f"X has {X.shape[0]} rows but intervals has {start.shape[0]}")
+        cp = check_counting_process(start, stop, None, ids)
+        o = cp.order
+        first_start = start[o][cp.offsets[:-1].astype(np.int64)]
+        last_stop = stop[o][cp.offsets[1:].astype(np.int64) - 1]
+        if origin is None:
+            origin = first_start
+        origin = np.broadcast_to(np.asarray(origin, dtype=float), first_start.shape).copy()
+        bad = ~np.isfinite(origin) | (origin < first_start) | (origin > last_stop)
+        if bad.any():
+            raise ValueError("origin must lie within each subject's [first start, last stop]")
+        return self.forest_.predict_paths(
+            np.ascontiguousarray(X[o]),
+            np.ascontiguousarray(start[o]),
+            np.ascontiguousarray(stop[o]),
+            cp.offsets,
+            origin,
+            times,
+            self.aggregate,
+            extrapolate,
+            n_jobs,
+        )
 
-    def predict_survival_function(self, X, times=None):
-        """Survival probabilities, shape ``(n_samples, n_times)``."""
-        return np.exp(-self.predict_cumulative_hazard(X, times))
+    def predict_survival_function(self, X, times=None, **path_kwargs):
+        """Survival probabilities ``exp(-H)``; see ``predict_cumulative_hazard``."""
+        return np.exp(-self.predict_cumulative_hazard(X, times, **path_kwargs))
 
-    def predict_risk(self, X, horizon):
-        """Event probability by ``horizon``: ``1 - S(horizon)``, shape ``(n_samples,)``."""
-        return 1.0 - self.predict_survival_function(X, [horizon])[:, 0]
+    def predict_risk(self, X, horizon, **path_kwargs):
+        """Event probability by ``horizon``: ``1 - S(horizon)``, one value per subject.
+
+        With ``intervals``, this is ``P(T <= horizon | T > origin, path)``.
+        """
+        return 1.0 - self.predict_survival_function(X, [horizon], **path_kwargs)[:, 0]
 
     def apply(self, X):
         """Leaf index per (row, tree), shape ``(n_samples, n_estimators)``."""
@@ -145,17 +208,6 @@ class SurvivalForestTV(BaseEstimator):
         if np.isnan(times).any():
             raise ValueError("times must not contain NaN")
         return X, np.ascontiguousarray(times)
-
-    @staticmethod
-    def _groups(ids, n):
-        """Map ids to contiguous indices ``0..n_ids``; each row is its own id by default."""
-        if ids is None:
-            return np.arange(n, dtype=np.uint32), n
-        ids = np.asarray(ids)
-        if ids.ndim != 1 or ids.shape[0] != n:
-            raise ValueError(f"ids must be 1-d with {n} entries, got shape {ids.shape}")
-        uniq, inverse = np.unique(ids, return_inverse=True)
-        return inverse.astype(np.uint32), uniq.shape[0]
 
     def _validate_params(self):
         if self.resample_unit != "id":

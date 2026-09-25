@@ -89,7 +89,7 @@ def test_histogram_split_matches_brute_force(n, p, seed, min_leaf, min_events):
     if expected == 0.0:
         assert got is None
         return
-    feature, threshold, score, mask = got
+    feature, threshold, score, mask, *_ = got
     mask = np.asarray(mask)
     assert score == pytest.approx(expected, rel=1e-9)
     assert score == pytest.approx(logrank_ref(start, t, e, mask), rel=1e-9)
@@ -185,7 +185,7 @@ def test_quantile_binned_split_matches_reference(n, seed, max_bins, min_leaf):
     if best == 0.0:
         assert got is None
         return
-    feature, threshold, score, mask = got
+    feature, threshold, score, mask, *_ = got
     mask = np.asarray(mask)
     assert score == pytest.approx(best, rel=1e-9)
     np.testing.assert_array_equal(mask, X[:, feature] <= threshold)

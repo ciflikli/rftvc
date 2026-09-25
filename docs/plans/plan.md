@@ -6,8 +6,8 @@ Rule: after each slice, run the full test suite, tick the box, and note any devi
 ## Status
 - [x] S1: Walking skeleton — a single survival tree, right-censored, fixed covariates (branch `feat/s1-skeleton`)
 - [x] S2: Forest — id subsampling, rayon, hazard aggregation (branch `feat/s2-forest`)
-- [ ] S3: Counting-process TVCs + left truncation  <-- NEXT
-- [ ] S4: Landmark workflow
+- [x] S3: Counting-process TVCs + left truncation (branch `feat/s3-tvc`)
+- [ ] S4: Landmark workflow  <-- NEXT
 - [ ] S5: Model selection + metrics (+ id-level OOB)
 - [ ] S6: Coarse grid mode + performance pass + benchmarks
 - [ ] S7: sklearn compatibility matrix, DataFrame input, wheels, docs/case studies
@@ -112,6 +112,23 @@ Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pyte
   - Pass rule, declared in advance: the upper 95% bound of the mean paired difference (forest − baseline) is < 0.
 
 **Accept:** all oracle and unit tests pass; the simulation report is committed.
+
+**S3 done (2026-09-25). Deviations / notes:**
+- **Distinct-id counting is exact at every threshold, with no candidate ranking.** Each resampling unit's rows stay contiguous through stable partitioning, so a unit's lowest and highest bin come from one pass: `ids_left(b) = #{min_bin <= b}`, `ids_right(b) = #{max_bin > b}`. This is simpler and exact, replacing the design's "rank the top candidates, then check".
+- **Unit = position in the bag**, so bootstrap copies of an id are distinct units.
+- **Prediction API:** `predict_cumulative_hazard(X, times, *, intervals=None, ids=None, origin=None, extrapolate="none")` (also `predict_survival_function` / `predict_risk`).
+  - With `intervals`, the output has one row per subject, in first-appearance order.
+  - The result is the conditional `Λ(t) − Λ(origin)`.
+  - It is NaN for `t < origin`, and beyond the last `stop` unless `extrapolate="locf"`.
+- `aggregate="survival"` on paths averages each tree's *conditional* survival (in log space).
+- `check_counting_process` is public. It numbers ids by first appearance and, under `gap_policy="split_id"`, splits at gaps.
+- **Bug found and fixed: bindings silently misread strided and Fortran-ordered arrays.**
+  - Fields of a numpy structured array have a 17-byte stride, and the numpy crate returned wrong values for them.
+  - The bindings now require contiguous 1-d arrays and C-ordered `X`, and raise `ValueError` otherwise.
+  - The estimator always passed contiguous copies, so fitted models were unaffected. Only direct `_core` calls were.
+- **Simulation (`docs/bench/s3-tvc-sim.md`):**
+  - ISE 0.055 (TVC) vs 0.176 (fixed-covariate baseline); upper 95% bound of the paired difference −0.116. PASS.
+  - Simulator truth validated against 200k-subject empirical survival (max diff 0.003).
 
 ## S4: Landmark workflow
 **Files:** `src/rftvc/landmark.py` (polars); `tests/test_landmark.py`.

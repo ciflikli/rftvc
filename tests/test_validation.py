@@ -43,15 +43,6 @@ def test_rejects_no_events():
         check_survival_y(make_survival_y([1.0, 2.0], [0, 0]))
 
 
-def test_scope_guards():
-    X = np.zeros((3, 1))
-    y = make_survival_y([1.0, 2.0, 3.0], [1, 1, 0])
-    with pytest.raises(NotImplementedError):
-        SurvivalForestTV().fit(X, make_survival_y([1.0, 2.0, 3.0], [1, 1, 0], start=[0.5, 0, 0]))
-    with pytest.raises(NotImplementedError):
-        SurvivalForestTV().fit(X, y, ids=[1, 1, 2])
-
-
 @pytest.mark.parametrize("param", [{"min_ids_leaf": 0}, {"max_bins": 300}, {"max_features": "bogus"}, {"max_depth": -1}])
 def test_invalid_params(param):
     X = np.zeros((3, 1))

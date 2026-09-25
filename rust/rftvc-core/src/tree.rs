@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::criterion::SplitCriterion;
 use crate::data::{Binned, SurvData};
 use crate::rng::Rng;
-use crate::splitter::{SplitParams, best_split, node_profile};
+use crate::splitter::{SplitParams, best_split, count_units, node_profile};
 
 #[derive(Clone, Debug)]
 pub enum Node {
@@ -45,10 +45,14 @@ pub struct Tree {
     pub grid_times: Arc<Vec<f64>>,
 }
 
+/// Grow one tree on `rows`, where `units[i]` is the resampling unit (an id, or
+/// one bootstrap copy of an id) of `rows[i]`. Each unit's rows must be
+/// contiguous; partitioning keeps relative order, so this holds in every node.
 pub fn build_tree(
     binned: &Binned,
     surv: &SurvData,
     rows: Vec<u32>,
+    units: Vec<u32>,
     params: &TreeParams,
     criterion: &dyn SplitCriterion,
     rng: &mut Rng,
@@ -59,24 +63,42 @@ pub fn build_tree(
     };
     let mut nodes = vec![Node::Leaf { leaf: 0 }];
     let mut leaves = Vec::new();
-    let mut stack = vec![(0usize, rows, 0usize)];
+    let mut stack = vec![(0usize, rows, units, 0usize)];
 
-    while let Some((node_id, rows, depth)) = stack.pop() {
+    while let Some((node_id, rows, units, depth)) = stack.pop() {
         let profile = node_profile(surv, &rows);
         let can_split = params.max_depth.is_none_or(|m| depth < m)
-            && rows.len() >= 2 * params.min_ids_leaf
+            && count_units(&units) >= 2 * params.min_ids_leaf
             && profile.n_events >= 2 * params.min_events_leaf;
         let split = if can_split {
             let features = rng.sample_without_replacement(binned.n_features, params.max_features);
-            best_split(binned, surv, &rows, &features, &split_params, criterion)
+            best_split(
+                binned,
+                surv,
+                &rows,
+                &units,
+                &features,
+                &split_params,
+                criterion,
+            )
         } else {
             None
         };
         match split {
             Some(s) => {
                 let col = binned.column(s.feature);
-                let (l, r): (Vec<u32>, Vec<u32>) =
-                    rows.iter().partition(|&&row| col[row as usize] <= s.bin);
+                // Stable partition of (row, unit) pairs keeps each unit contiguous.
+                let (mut l_rows, mut l_units, mut r_rows, mut r_units) =
+                    (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                for (&row, &unit) in rows.iter().zip(&units) {
+                    if col[row as usize] <= s.bin {
+                        l_rows.push(row);
+                        l_units.push(unit);
+                    } else {
+                        r_rows.push(row);
+                        r_units.push(unit);
+                    }
+                }
                 let (li, ri) = (nodes.len(), nodes.len() + 1);
                 nodes.push(Node::Leaf { leaf: 0 });
                 nodes.push(Node::Leaf { leaf: 0 });
@@ -86,8 +108,8 @@ pub fn build_tree(
                     left: li as u32,
                     right: ri as u32,
                 };
-                stack.push((ri, r, depth + 1));
-                stack.push((li, l, depth + 1));
+                stack.push((ri, r_rows, r_units, depth + 1));
+                stack.push((li, l_rows, l_units, depth + 1));
             }
             None => {
                 let mut cum = 0.0;

@@ -15,9 +15,9 @@ pub mod tree;
 pub use criterion::{LtrcLogRank, Profile, SplitCriterion};
 pub use data::{Binned, SurvData};
 pub use flat::FlatForest;
-pub use forest::{Aggregate, Forest, ForestParams, Groups, draw_ids, fit_forest};
+pub use forest::{Aggregate, Extrapolate, Forest, ForestParams, Groups, draw_ids, fit_forest};
 pub use grid::Grid;
 pub use splitter::{
-    NodeProfile, SplitCandidate, SplitParams, best_split, node_profile, profile_on,
+    NodeProfile, SplitCandidate, SplitParams, best_split, count_units, node_profile, profile_on,
 };
 pub use tree::{Tree, TreeParams, build_tree};
