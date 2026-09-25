@@ -168,7 +168,7 @@ class SurvivalForestTV(BaseEstimator):
         if origin is None:
             origin = first_start
         origin = np.broadcast_to(np.asarray(origin, dtype=float), first_start.shape).copy()
-        bad = (origin < first_start) | ((origin > last_stop) & (extrapolate == "none")) | np.isnan(origin)
+        bad = ~np.isfinite(origin) | (origin < first_start) | (origin > last_stop)
         if bad.any():
             raise ValueError("origin must lie within each subject's [first start, last stop]")
         return self.forest_.predict_paths(

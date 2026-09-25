@@ -248,9 +248,10 @@ def test_origin_outside_path_raises():
     model, *_ = _paths()
     Xp = np.zeros((1, 2))
     iv = make_survival_y([2.0], [0], start=[1.0])
-    for bad in (0.5, 2.5):
-        with pytest.raises(ValueError, match="origin"):
-            model.predict_cumulative_hazard(Xp, [1.5], intervals=iv, origin=bad)
+    for bad in (0.5, 2.5, np.inf, np.nan):
+        for extrapolate in ("none", "locf"):
+            with pytest.raises(ValueError, match="origin"):
+                model.predict_cumulative_hazard(Xp, [1.5], intervals=iv, origin=bad, extrapolate=extrapolate)
 
 
 # ---------------------------------------------------------------- counting-process checks
@@ -295,3 +296,34 @@ def test_core_rejects_strided_inputs():
         _core.logrank_score(y["start"], y["stop"], y["event"], X[:, 0] <= 0)
     with pytest.raises(ValueError, match="contiguous"):
         _core.best_split(np.asfortranarray(X), *_cols(y), min_ids_leaf=1, min_events_leaf=1)
+
+
+def test_non_finite_measured_at_rejected():
+    with pytest.raises(ValueError, match="finite"):
+        check_counting_process(np.array([0.0]), np.array([1.0]), np.array([False]), [7], measured_at=[np.nan])
+
+
+@pytest.mark.parametrize("ids", [[1, "1"], [1, "a"], np.array([1, "1"], dtype=object)])
+def test_mixed_type_ids_rejected(ids):
+    with pytest.raises(ValueError, match="label types"):
+        check_counting_process(np.array([0.0, 1.0]), np.array([1.0, 2.0]), None, ids)
+
+
+def test_homogeneous_string_and_object_ids_accepted():
+    s, t = np.array([0.0, 0.0]), np.array([1.0, 1.0])
+    assert check_counting_process(s, t, None, ["1", "2"]).n_groups == 2
+    assert check_counting_process(s, t, None, np.array(["a", "b"], dtype=object)).n_groups == 2
+    assert check_counting_process(s, t, None, [1, 2.0]).n_groups == 2
+
+
+def test_empty_input_rejected():
+    with pytest.raises(ValueError, match="no rows"):
+        check_counting_process(np.array([]), np.array([]), None, None)
+
+
+def test_best_split_rejects_non_contiguous_units():
+    X, y, _ = _cp_data(10, seed=10, max_rows=1, delayed=False)
+    units = np.zeros(len(X), np.uint32)
+    units[1] = 1  # unit 0 appears in two runs
+    with pytest.raises(ValueError, match="contiguous"):
+        _core.best_split(X, *_cols(y), min_ids_leaf=1, min_events_leaf=1, units=units)

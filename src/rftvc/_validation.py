@@ -1,5 +1,6 @@
 """Validation of the counting-process survival target."""
 
+import numbers
 from typing import NamedTuple
 
 import numpy as np
@@ -81,6 +82,22 @@ class CountingProcess(NamedTuple):
     offsets: np.ndarray
 
 
+def _check_ids(ids):
+    """Id labels as an array, rejecting mixes of numbers and strings.
+
+    ``np.asarray([1, "1"])`` coerces both to ``"1"`` and would merge two subjects.
+    """
+    if not isinstance(ids, np.ndarray) or ids.dtype == object:
+        values = list(ids) if not isinstance(ids, np.ndarray) else ids.tolist()
+        kinds = {"number" if isinstance(v, numbers.Number) else type(v).__name__ for v in values}
+        if len(kinds) > 1:
+            raise ValueError(f"ids mix label types ({sorted(kinds)}); use a single type")
+        if kinds == {"number"}:
+            return np.asarray(values)
+        return np.asarray(values, dtype=object) if kinds - {"str"} else np.asarray(values, dtype=str)
+    return ids
+
+
 def check_counting_process(start, stop, event=None, ids=None, *, measured_at=None, gap_policy="error"):
     """Validate the per-id structure of counting-process rows.
 
@@ -93,15 +110,17 @@ def check_counting_process(start, stop, event=None, ids=None, *, measured_at=Non
     if gap_policy not in ("error", "split_id"):
         raise ValueError(f"gap_policy must be 'error' or 'split_id', got {gap_policy!r}")
     n = start.shape[0]
-    if ids is None:
-        ids = np.arange(n)
-    ids = np.asarray(ids)
+    if n == 0:
+        raise ValueError("no rows")
+    ids = np.arange(n) if ids is None else _check_ids(ids)
     if ids.ndim != 1 or ids.shape[0] != n:
         raise ValueError(f"ids must be 1-d with {n} entries, got shape {ids.shape}")
     if measured_at is not None:
         measured_at = np.asarray(measured_at, dtype=float)
         if measured_at.shape != (n,):
             raise ValueError(f"measured_at must have {n} entries")
+        if not np.isfinite(measured_at).all():
+            raise ValueError("measured_at must be finite: an unknown measurement time cannot be checked")
         late = measured_at > start
         if late.any():
             raise ValueError(

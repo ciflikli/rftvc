@@ -452,6 +452,15 @@ fn best_split(
         None => rows.clone(),
     };
     check_lengths(n, &[("units", units.len())])?;
+    // The splitter counts runs of equal units, so each unit must form one run.
+    let mut seen = std::collections::HashSet::new();
+    for (i, &u) in units.iter().enumerate() {
+        if (i == 0 || units[i - 1] != u) && !seen.insert(u) {
+            return Err(PyValueError::new_err(
+                "units must be contiguous: each unit's rows in one run",
+            ));
+        }
+    }
     let features: Vec<usize> = (0..p).collect();
     let params = SplitParams {
         min_leaf: min_ids_leaf,
