@@ -1,0 +1,7 @@
+[package]
+name = "rftvc-core"
+version = "0.1.0"
+edition = "2024"
+description = "Survival forest engine for counting-process data (time-varying covariates, left truncation)"
+
+[dependencies]

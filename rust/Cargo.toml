@@ -1,0 +1,7 @@
+[workspace]
+resolver = "3"
+members = ["rftvc-core", "rftvc-py"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
