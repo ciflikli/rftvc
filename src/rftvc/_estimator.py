@@ -186,7 +186,8 @@ class SurvivalForestTV(BaseEstimator):
             seed=int(rng.randint(np.iinfo(np.int64).max, dtype=np.int64)),
             n_jobs=effective_n_jobs(self.n_jobs),
         )
-        self.event_times_ = np.unique(stop[event])
+        # Coarse mode: the chosen grid, even points whose events were all lost.
+        self.event_times_ = np.unique(stop[event]) if kept is None else grid
         if self.oob_score:
             if gap_policy == "split_id" and ids is not None and cp.n_groups != np.unique(np.asarray(ids)).size:
                 raise ValueError(

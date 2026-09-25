@@ -119,7 +119,8 @@ def test_coarse_forest_equals_exact_forest_on_reference_coarsened_rows(seed):
     np.testing.assert_allclose(
         coarse.predict_cumulative_hazard(Xq, times), exact.predict_cumulative_hazard(Xq, times), atol=1e-12
     )
-    np.testing.assert_array_equal(coarse.event_times_, exact.event_times_)
+    np.testing.assert_array_equal(coarse.event_times_, grid)  # the chosen grid, incl. points whose events were lost
+    assert set(exact.event_times_) <= set(grid)
 
 
 def test_oob_in_coarse_mode_keeps_original_rows():
@@ -135,6 +136,31 @@ def test_oob_in_coarse_mode_keeps_original_rows():
     exact.fit(X[kept], make_survival_y(t, e, start=s), ids[kept])
     np.testing.assert_allclose(f.oob_prediction_[kept], exact.oob_prediction_, rtol=1e-12)
     assert f.oob_score_ == pytest.approx(exact.oob_score_, abs=1e-15)
+
+
+def test_event_times_are_the_coarse_grid_even_when_a_point_loses_its_events():
+    # Row 0 enters and fails inside (0, 1]: its event is lost, but 1 stays a grid point.
+    y = make_survival_y([1.0, 4.0], [True, True], start=[0.5, 0.0])
+    f = SurvivalForestTV(n_estimators=1, max_depth=0, max_samples=1.0, min_ids_leaf=1, min_events_leaf=1, ntime=2)
+    f.fit(np.zeros((2, 1)), y, ["a", "b"])
+    assert f.n_coarsen_lost_events_ == 1
+    np.testing.assert_array_equal(f.event_times_, [1.0, 4.0])
+    np.testing.assert_array_equal(f.coarse_grid_, f.event_times_)
+    assert f.predict_cumulative_hazard(np.zeros((1, 1))).shape == (1, 2)
+
+
+def test_huge_ntime_is_the_exact_event_set():
+    ids, start, stop, event = _arrays(TABLE)
+    grid = _core_coarsen(start, stop, event, ids, 10**12)[4]
+    np.testing.assert_array_equal(grid, np.unique(stop[event]))
+
+
+def test_core_coarsen_rejects_chains_out_of_time_order():
+    start, stop, event = np.array([0.0, 2.0]), np.array([2.0, 2.5]), np.array([False, True])
+    offsets = np.array([0, 2], dtype=np.uint64)
+    assert _core.coarsen(start, stop, event, np.array([0, 1], np.uint32), offsets, 1)[5] == 0
+    with pytest.raises(ValueError, match="time order"):
+        _core.coarsen(start, stop, event, np.array([1, 0], np.uint32), offsets, 1)
 
 
 def test_invalid_ntime():

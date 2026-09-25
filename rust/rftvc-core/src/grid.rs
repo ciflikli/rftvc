@@ -51,8 +51,9 @@ impl Grid {
             .collect();
         t.sort_by(|a, b| a.partial_cmp(b).expect("NaN time"));
         let n = t.len();
-        let mut times: Vec<f64> = if n == 0 {
-            Vec::new()
+        // With k >= n every event time is a quantile point: O(n), whatever k is.
+        let mut times: Vec<f64> = if k >= n {
+            t
         } else {
             (1..=k).map(|j| t[(j * n).div_ceil(k) - 1]).collect()
         };

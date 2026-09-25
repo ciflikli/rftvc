@@ -458,6 +458,17 @@ fn coarsen_py<'py>(
             "need a row permutation `order`, chain offsets from 0 to n_rows, ntime >= 1 and an event",
         ));
     }
+    // Event relocation needs each chain in time order with contiguous rows.
+    let chained = offsets.windows(2).all(|w| {
+        order[w[0]..w[1]]
+            .windows(2)
+            .all(|p| t[p[0] as usize] == s[p[1] as usize])
+    });
+    if !chained {
+        return Err(PyValueError::new_err(
+            "each chain's rows must be in time order and contiguous (stop == next start)",
+        ));
+    }
     let grid = Grid::quantile(&t, &e, ntime);
     let origin = s.iter().copied().fold(f64::INFINITY, f64::min);
     let mut points = vec![origin];

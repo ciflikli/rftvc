@@ -53,3 +53,10 @@ Branch `feat/s6-coarse-grid`. Parent: `plan.md` S6, `design.md` D8 "Time grid an
 3. Stacked chains vs resampling groups (high) → chains separated (item 4); two diagnostics.
 4. Unmatched benchmark (sampling, `n_jobs`, events per leaf, memory) (medium) → item 8.
 5. Sibling subtraction unspecified with node-local grids (medium) → not implemented; profile evidence (item 7).
+
+## Diff review (Codex, 2026-09-25)
+1. `Grid::quantile` did O(ntime) work: `ntime=10**12` with two events tried a trillion-element allocation (high/medium). Fix: with `k >= n` it returns the event times directly. Test: a huge `ntime` gives the exact event set.
+2. `_core.coarsen` accepted chains out of time order and silently lost events (high/medium). Fix: each chain must be time-ordered and contiguous (`stop == next start`), else `ValueError`. Test: it accepts the right order and rejects the wrong one; the rejection test fails on the old build.
+3. Coarse `event_times_` left out grid points whose events were all lost (high/medium). Fix: in coarse mode `event_times_ = coarse_grid_`, as planned. Test: a lost-event grid point stays in `event_times_` and in the default prediction columns; the test fails on the old build.
+
+No problems found in the lookup tables, the counting-sort/difference-array split search, `node_scorer` equivalence, group re-indexing, OOB re-expansion, or stacked chains.
