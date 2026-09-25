@@ -7,8 +7,8 @@ Rule: after each slice, run the full test suite, tick the box, and note any devi
 - [x] S1: Walking skeleton — a single survival tree, right-censored, fixed covariates (branch `feat/s1-skeleton`)
 - [x] S2: Forest — id subsampling, rayon, hazard aggregation (branch `feat/s2-forest`)
 - [x] S3: Counting-process TVCs + left truncation (branch `feat/s3-tvc`)
-- [ ] S4: Landmark workflow  <-- NEXT
-- [ ] S5: Model selection + metrics (+ id-level OOB)
+- [x] S4: Landmark workflow (branch `feat/s4-landmark`)
+- [ ] S5: Model selection + metrics (+ id-level OOB)  <-- NEXT
 - [ ] S6: Coarse grid mode + performance pass + benchmarks
 - [ ] S7: sklearn compatibility matrix, DataFrame input, wheels, docs/case studies
 - [ ] S8: Criterion + aggregation bake-off
@@ -144,6 +144,20 @@ Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pyte
 - The outputs match a pandas reference implementation on random data (hypothesis).
 
 **Accept:** a `pbcseq` end-to-end example runs and gives risks in [0,1] for each landmark.
+
+**S4 done (2026-09-25). Deviations / notes:**
+- **Risk set is `U > s`, not `U >= s`.** A subject whose event or censoring happens exactly at `s` is not event-free past `s`, and would give a zero-length row. Entry requires first `start <= s`.
+- **Covariates "known at `s`"** are those on rows with `start <= s`, or `measured_at <= s` when that column is given. A subject with no known row at `s` is skipped.
+- **`history_features`:** a column name means its last value at `s`; `(column, agg)` takes `agg` from last, first, mean, min, max, sum, count. Feature names are `col` or `col_agg`; `landmark` is always the last feature.
+- **Look-ahead guard:** features on the `stop`, `event` or `id` columns raise. The builder only aggregates rows known at `s`, so an aggregation cannot reach past `s` by construction.
+- **`fit(..., layout="stacked")`** is new on `SurvivalForestTV` and `check_counting_process`. An id's landmark rows overlap on the reset clock, so ids only define resampling units; all rows of a subject enter a tree together.
+- **`LandmarkSurvivalForest(horizon, history_features, landmarks | step, forest=SurvivalForestTV(...), column names)`.** This is the meta-estimator form, with the unfitted forest passed as a parameter (sklearn-style), replacing `**forest_params`.
+  - `predict_risk(df, s)` returns a polars frame `[id, landmark, risk]`.
+  - `predict_survival_function(df, s, times)` returns `(ids, S)`.
+  - At prediction, subjects must have entered and be observed through `s`. If an event column is present, subjects with an event at or before `s` are dropped.
+- **Dependencies:** `polars` is a runtime dependency; pandas input is accepted through `pl.from_pandas` (no pyarrow needed).
+- **Fixture:** `tests/fixtures/pbcseq.csv`, exported from R survival 3.8-3. Rows with NA in the used columns are dropped (1,885 visits, 312 patients); visits are converted to a counting process (covariates apply until the next visit; death = event, transplant = censored).
+- **Checks:** row formulas on hand-built cases; a pandas reference (hypothesis); pbcseq end-to-end with in-sample C > 0.75 at s = 1 year. That is a sanity check, not a performance claim; out-of-sample evaluation is S5.
 
 ## S5: Model selection + metrics
 **Files:** `model_selection.py`, `metrics.py`; `tests/test_model_selection.py`, `tests/test_metrics.py`.

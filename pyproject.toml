@@ -8,7 +8,7 @@ version = "0.1.0.dev0"
 description = "Scikit-learn compatible random survival forests with time-varying covariates"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["numpy>=1.24", "scikit-learn>=1.5"]
+dependencies = ["numpy>=1.24", "scikit-learn>=1.5", "polars>=1.0"]
 
 [dependency-groups]
 dev = [
@@ -17,6 +17,7 @@ dev = [
     "hypothesis>=6",
     "lifelines>=0.29",
     "scikit-survival>=0.23",
+    "pandas>=2.0",
 ]
 
 [tool.maturin]
