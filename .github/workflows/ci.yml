@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: astral-sh/setup-uv@v6
+      - name: Rust checks
+        working-directory: rust
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets -p rftvc-core -- -D warnings
+          cargo test -p rftvc-core
+      - name: Build and install
+        run: |
+          uv venv --python 3.11
+          uv pip install -e . --group dev
+      - name: Python tests
+        run: .venv/bin/python -m pytest
