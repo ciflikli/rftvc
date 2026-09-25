@@ -16,6 +16,18 @@ fn matrix(x: &PyReadonlyArray2<f64>) -> (Vec<f64>, usize, usize) {
     (a.iter().copied().collect(), n, p)
 }
 
+/// Response arrays must all have `n` entries (`n = X.shape[0]` where X is given).
+fn check_lengths(n: usize, arrays: &[(&str, usize)]) -> PyResult<()> {
+    for (name, len) in arrays {
+        if *len != n {
+            return Err(PyValueError::new_err(format!(
+                "{name} has {len} entries, expected {n}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn surv_data(
     start: &PyReadonlyArray1<f64>,
     stop: &PyReadonlyArray1<f64>,
@@ -119,6 +131,14 @@ fn fit_tree(
     seed: u64,
 ) -> PyResult<PyTree> {
     let (v, n, p) = matrix(&x);
+    check_lengths(
+        n,
+        &[
+            ("start", start.as_array().len()),
+            ("stop", stop.as_array().len()),
+            ("event", event.as_array().len()),
+        ],
+    )?;
     if !(2..=256).contains(&max_bins) {
         return Err(PyValueError::new_err("max_bins must be in [2, 256]"));
     }
@@ -151,7 +171,15 @@ fn logrank_score(
     stop: PyReadonlyArray1<'_, f64>,
     event: PyReadonlyArray1<'_, bool>,
     left: PyReadonlyArray1<'_, bool>,
-) -> f64 {
+) -> PyResult<f64> {
+    check_lengths(
+        start.as_array().len(),
+        &[
+            ("stop", stop.as_array().len()),
+            ("event", event.as_array().len()),
+            ("left", left.as_array().len()),
+        ],
+    )?;
     let surv = surv_data(&start, &stop, &event);
     let all: Vec<u32> = (0..surv.n_rows() as u32).collect();
     let parent = node_profile(&surv, &all);
@@ -163,7 +191,7 @@ fn logrank_score(
         .map(|(i, _)| i as u32)
         .collect();
     let (l_at, l_ev) = profile_on(&surv, &left_rows, &parent.event_idx);
-    LtrcLogRank.score(
+    Ok(LtrcLogRank.score(
         &Profile {
             at_risk: &l_at,
             events: &l_ev,
@@ -172,7 +200,7 @@ fn logrank_score(
             at_risk: &parent.at_risk,
             events: &parent.events,
         },
-    )
+    ))
 }
 
 /// Best root split over all features: `(feature, threshold, score, left_mask)` or `None`.
@@ -187,8 +215,19 @@ fn best_split(
     min_ids_leaf: usize,
     min_events_leaf: usize,
     max_bins: usize,
-) -> Option<(usize, f64, f64, Vec<bool>)> {
+) -> PyResult<Option<(usize, f64, f64, Vec<bool>)>> {
     let (v, n, p) = matrix(&x);
+    check_lengths(
+        n,
+        &[
+            ("start", start.as_array().len()),
+            ("stop", stop.as_array().len()),
+            ("event", event.as_array().len()),
+        ],
+    )?;
+    if !(2..=256).contains(&max_bins) {
+        return Err(PyValueError::new_err("max_bins must be in [2, 256]"));
+    }
     let surv = surv_data(&start, &stop, &event);
     let binned = Binned::fit(&v, n, p, max_bins);
     let rows: Vec<u32> = (0..n as u32).collect();
@@ -197,11 +236,13 @@ fn best_split(
         min_leaf: min_ids_leaf,
         min_events_leaf,
     };
-    core_best_split(&binned, &surv, &rows, &features, &params, &LtrcLogRank).map(|s| {
-        let col = binned.column(s.feature);
-        let mask = (0..n).map(|i| col[i] <= s.bin).collect();
-        (s.feature, s.threshold, s.score, mask)
-    })
+    Ok(
+        core_best_split(&binned, &surv, &rows, &features, &params, &LtrcLogRank).map(|s| {
+            let col = binned.column(s.feature);
+            let mask = (0..n).map(|i| col[i] <= s.bin).collect();
+            (s.feature, s.threshold, s.score, mask)
+        }),
+    )
 }
 
 #[pymodule]

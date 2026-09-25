@@ -8,7 +8,7 @@ from hypothesis import strategies as st
 from lifelines import NelsonAalenFitter
 
 from rftvc import SurvivalForestTV, _core, make_survival_y
-from tests.ref.logrank_ref import logrank_ref
+from tests.ref.logrank_ref import logrank_ref, nelson_aalen_ref
 
 FIXTURES = json.loads((Path(__file__).parent / "fixtures" / "survdiff.json").read_text())
 
@@ -127,3 +127,73 @@ def test_split_on_extreme_feature_values():
     got = _core.best_split(X, np.zeros(20), t, np.ones(20, bool), min_ids_leaf=2, min_events_leaf=1)
     assert got is not None
     np.testing.assert_array_equal(got[3], X[:, 0] < 0)
+
+
+def test_multi_leaf_predictions_match_per_leaf_nelson_aalen():
+    X, t, e = _data(500, 3, seed=6)
+    model = SurvivalForestTV(min_ids_leaf=20, random_state=0).fit(X, make_survival_y(t, e))
+    leaves = model.apply(X)
+    assert len(np.unique(leaves)) >= 3
+    times = np.unique(t)
+    H = model.predict_cumulative_hazard(X, times)
+    for leaf in np.unique(leaves):
+        rows = leaves == leaf
+        ref_times, ref_cum = nelson_aalen_ref(np.zeros(rows.sum()), t[rows], e[rows])
+        expected = np.r_[0.0, ref_cum][np.searchsorted(ref_times, times, side="right")]
+        np.testing.assert_allclose(H[rows], np.tile(expected, (rows.sum(), 1)), atol=1e-12)
+
+
+def _reference_thresholds(col, max_bins):
+    """Documented binning rule, reimplemented: raw thresholds (x <= thr goes left)."""
+    uniq = np.unique(col)
+    if uniq.size <= max_bins:
+        return uniq[:-1]
+    s = np.sort(col)
+    edges = np.unique([s[q * len(s) // max_bins] for q in range(1, max_bins)])
+    return edges[edges < s[-1]]
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    n=st.integers(30, 400),
+    seed=st.integers(0, 10_000),
+    max_bins=st.sampled_from([2, 3, 16, 64, 256]),
+    min_leaf=st.integers(1, 10),
+)
+def test_quantile_binned_split_matches_reference(n, seed, max_bins, min_leaf):
+    rng = np.random.default_rng(seed)
+    X = rng.normal(size=(n, 2))
+    X[:, 1] = np.round(X[:, 1], 1)  # a tied column alongside a continuous one
+    t = rng.exponential(1 + (X[:, 0] > 0))
+    e = rng.random(n) < 0.7
+    e[0] = True
+    start = np.zeros(n)
+    best = 0.0
+    for f in range(2):
+        for thr in _reference_thresholds(X[:, f], max_bins):
+            left = X[:, f] <= thr
+            nl, el = left.sum(), (e & left).sum()
+            if min(nl, n - nl) < min_leaf or min(el, e.sum() - el) < 1:
+                continue
+            best = max(best, logrank_ref(start, t, e, left))
+    got = _core.best_split(X, start, t, e, min_ids_leaf=min_leaf, min_events_leaf=1, max_bins=max_bins)
+    if best == 0.0:
+        assert got is None
+        return
+    feature, threshold, score, mask = got
+    mask = np.asarray(mask)
+    assert score == pytest.approx(best, rel=1e-9)
+    np.testing.assert_array_equal(mask, X[:, feature] <= threshold)
+    assert score == pytest.approx(logrank_ref(start, t, e, mask), rel=1e-9)
+
+
+def test_core_rejects_mismatched_lengths():
+    X = np.zeros((2, 1))
+    zero, one, ev = np.zeros(1), np.ones(1), np.ones(1, bool)
+    with pytest.raises(ValueError, match="start"):
+        _core.best_split(X, zero, one, ev, min_ids_leaf=1, min_events_leaf=1)
+    with pytest.raises(ValueError, match="start"):
+        _core.fit_tree(X, zero, one, ev, max_depth=None, min_ids_leaf=1,
+                       min_events_leaf=1, max_features=1, max_bins=255, seed=0)
+    with pytest.raises(ValueError, match="left"):
+        _core.logrank_score(zero, one, ev, np.ones(2, bool))
