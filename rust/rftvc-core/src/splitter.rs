@@ -1,4 +1,5 @@
 use crate::criterion::{Profile, SplitCriterion};
+
 use crate::data::{Binned, SurvData};
 
 /// A node's risk-set profile on its own event times.
@@ -105,14 +106,15 @@ pub fn count_units(units: &[u32]) -> usize {
     1 + units.windows(2).filter(|w| w[0] != w[1]).count()
 }
 
-/// Best admissible split over `features`, using per-feature histograms over
-/// (bin x node event time) built with difference arrays.
+/// Best admissible split over `features`. For each feature the left child
+/// grows bin by bin; its at-risk profile is the prefix sum of one running
+/// difference array over the node's event times.
 ///
 /// `units[i]` is the resampling unit of `rows[i]`; each unit's rows must be
 /// contiguous. Distinct-unit counts per child are exact: a unit is in the left
 /// child iff its lowest bin is `<= b`, in the right iff its highest bin is `> b`.
 ///
-/// Cost per feature: `O(n_node + bins_used * K_node)`.
+/// Cost per feature: `O(n_node + bins_used * K_node)`; memory `O(n_node + K_node)`.
 pub fn best_split(
     binned: &Binned,
     surv: &SurvData,
@@ -129,17 +131,18 @@ pub fn best_split(
     }
     let local = local_rows(surv, rows, &event_idx);
     let (p_at, p_ev) = profile_from_local(&local, k);
-    let parent = Profile {
+    let scorer = criterion.node_scorer(Profile {
         at_risk: &p_at,
         events: &p_ev,
-    };
+    });
     debug_assert_eq!(rows.len(), units.len());
     let n_events = local.iter().filter(|r| r.event).count();
 
     let mut best: Option<SplitCandidate> = None;
     let mut left_at = vec![0.0; k];
     let mut left_ev = vec![0.0; k];
-    let mut diff_run = vec![0.0; k + 1];
+    let mut diff = vec![0.0; k + 1];
+    let mut by_bin = vec![0u32; rows.len()];
 
     for &f in features {
         let col = binned.column(f);
@@ -173,32 +176,30 @@ pub fn best_split(
             n_units += 1;
         }
 
-        let mut compact = [0u16; 256];
-        for (c, &b) in used.iter().enumerate() {
-            compact[b] = c as u16;
+        // Rows grouped by bin (counting sort), so the left child grows one bin
+        // at a time with a single running difference array: O(K) memory.
+        let mut offset = [0usize; 257];
+        for b in 0..256 {
+            offset[b + 1] = offset[b] + counts[b];
+        }
+        let mut fill = offset;
+        for (i, &r) in rows.iter().enumerate() {
+            let bin = col[r as usize] as usize;
+            by_bin[fill[bin]] = i as u32;
+            fill[bin] += 1;
         }
 
-        let mut diff = vec![0.0; nb * (k + 1)];
-        let mut ev = vec![0.0; nb * k];
-        for (row, &r) in local.iter().zip(rows) {
-            let c = compact[col[r as usize] as usize] as usize;
-            diff[c * (k + 1) + row.la as usize] += 1.0;
-            diff[c * (k + 1) + row.lb as usize] -= 1.0;
-            if row.event {
-                ev[c * k + row.lb as usize - 1] += 1.0;
-            }
-        }
-
-        left_at.iter_mut().for_each(|v| *v = 0.0);
+        diff.iter_mut().for_each(|v| *v = 0.0);
         left_ev.iter_mut().for_each(|v| *v = 0.0);
         let (mut ids_left, mut max_le, mut e_left) = (0usize, 0usize, 0usize);
         for c in 0..nb - 1 {
-            diff_run.copy_from_slice(&diff[c * (k + 1)..(c + 1) * (k + 1)]);
-            let mut run = 0.0;
-            for j in 0..k {
-                run += diff_run[j];
-                left_at[j] += run;
-                left_ev[j] += ev[c * k + j];
+            for &i in &by_bin[offset[used[c]]..offset[used[c] + 1]] {
+                let row = &local[i as usize];
+                diff[row.la as usize] += 1.0;
+                diff[row.lb as usize] -= 1.0;
+                if row.event {
+                    left_ev[row.lb as usize - 1] += 1.0;
+                }
             }
             ids_left += min_hist[used[c]];
             max_le += max_hist[used[c]];
@@ -211,11 +212,17 @@ pub fn best_split(
             {
                 continue;
             }
+            // Prefix sum only for admissible thresholds.
+            let mut run = 0.0;
+            for j in 0..k {
+                run += diff[j];
+                left_at[j] = run;
+            }
             let left = Profile {
                 at_risk: &left_at,
                 events: &left_ev,
             };
-            let score = criterion.score(&left, &parent);
+            let score = scorer.score(&left);
             if score > 0.0 && best.as_ref().is_none_or(|b| score > b.score) {
                 let bin = used[c] as u8;
                 best = Some(SplitCandidate {

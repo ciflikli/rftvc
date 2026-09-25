@@ -12,11 +12,12 @@ pub mod rng;
 pub mod splitter;
 pub mod tree;
 
-pub use criterion::{LtrcLogRank, Profile, SplitCriterion};
+pub use criterion::{LtrcLogRank, NodeScorer, Profile, SplitCriterion};
 pub use data::{Binned, SurvData};
 pub use flat::FlatForest;
 pub use forest::{Aggregate, Extrapolate, Forest, ForestParams, Groups, draw_ids, fit_forest};
-pub use grid::Grid;
+pub use grid::{Coarsened, Grid, coarsen};
+pub use rng::Rng;
 pub use splitter::{
     NodeProfile, SplitCandidate, SplitParams, best_split, count_units, node_profile, profile_on,
 };

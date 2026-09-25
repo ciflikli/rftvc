@@ -10,7 +10,7 @@ from sklearn.utils import check_random_state
 from sklearn.utils.validation import check_array, check_is_fitted
 
 from . import _core
-from ._validation import check_counting_process, check_intervals, check_survival_y
+from ._validation import check_counting_process, check_intervals, check_survival_y, make_survival_y
 
 
 class SurvivalForestTV(BaseEstimator):
@@ -35,6 +35,15 @@ class SurvivalForestTV(BaseEstimator):
         Minimum events per child.
     max_bins : int, default=255
         Feature histogram bins, in [2, 256].
+    ntime : int or None, default=None
+        Time grid. ``None`` is exact: every distinct event time. An int ``K``
+        is coarse mode (design.md D8): the grid is ``K`` quantiles of the event
+        times, and every time is rounded up to the next grid point (the earliest
+        entry is kept as the origin) *before* counting, so the split score is
+        the exact log-rank on the coarsened rows. A row that starts and ends in
+        the same bin is dropped and its event moves to the subject's previous
+        row; an entry inside a bin counts from the following grid point.
+        Opt-in until benchmarks justify a default.
     resample_unit : {"id"}, default="id"
         Unit drawn when growing each tree. Only whole ids in v1.
     max_samples : int, float or None, default=None
@@ -58,8 +67,17 @@ class SurvivalForestTV(BaseEstimator):
     ----------
     oob_prediction_ : ndarray of shape (n_rows,)
         Out-of-bag ensemble mortality of each training row, ``sum_k Λ(t_k | x_row)``
-        over ``event_times_`` (NaN for ids that are in every bag). Only with
+        over ``event_times_`` (NaN for ids that are in every bag, and for rows
+        dropped by coarsening). Only with
         ``oob_score=True``.
+    coarse_grid_ : ndarray
+        Event grid of coarse mode (``ntime`` set); equals ``event_times_``.
+    n_coarsen_dropped_rows_ : int
+        Rows dropped by coarsening (no at-risk time left on the grid).
+    n_coarsen_lost_events_ : int
+        Events dropped by coarsening: the subject (or, for stacked rows, the
+        row) entered and failed inside one grid bin, so no row was left to
+        carry the event.
     oob_score_ : float
         Concordance of ``oob_prediction_`` with the training outcomes
         (``rftvc.metrics.concordance_index_cp``: each event against the rows of
@@ -74,6 +92,7 @@ class SurvivalForestTV(BaseEstimator):
         min_ids_leaf=15,
         min_events_leaf=3,
         max_bins=255,
+        ntime=None,
         resample_unit="id",
         max_samples=None,
         bootstrap=False,
@@ -88,6 +107,7 @@ class SurvivalForestTV(BaseEstimator):
         self.min_ids_leaf = min_ids_leaf
         self.min_events_leaf = min_events_leaf
         self.max_bins = max_bins
+        self.ntime = ntime
         self.resample_unit = resample_unit
         self.max_samples = max_samples
         self.bootstrap = bootstrap
@@ -124,6 +144,24 @@ class SurvivalForestTV(BaseEstimator):
         )
         groups, n_ids = cp.group, cp.n_groups
         self._validate_params()
+        kept = None
+        if self.ntime is not None:
+            # Chains: an id's contiguous rows, or (stacked) each row on its own.
+            if layout == "stacked":
+                order, offsets = np.arange(n, dtype=np.uint32), np.arange(n + 1, dtype=np.uint64)
+            else:
+                order, offsets = cp.order.astype(np.uint32), cp.offsets
+            kept, start, stop, event, grid, lost = _core.coarsen(
+                start, stop, event, order, offsets, int(self.ntime)
+            )
+            if not event.any():
+                raise ValueError("coarsening left no events; use a larger ntime")
+            X = np.ascontiguousarray(X[kept])
+            _, groups = np.unique(cp.group[kept], return_inverse=True)
+            groups, n_ids = groups.astype(np.uint32), int(groups.max()) + 1
+            self.coarse_grid_ = grid
+            self.n_coarsen_dropped_rows_ = n - kept.size
+            self.n_coarsen_lost_events_ = lost
 
         self.n_features_in_ = X.shape[1]
         self.n_ids_ = n_ids
@@ -155,14 +193,19 @@ class SurvivalForestTV(BaseEstimator):
                     "oob_score needs whole ids as resampling units, but gap_policy='split_id' "
                     "split some ids into segments"
                 )
-            self._compute_oob(X, y, cp)
+            y_fit = y if kept is None else make_survival_y(stop, event, start=start)
+            pred = self._compute_oob(X, y_fit, groups)
+            if kept is not None:  # back to the original rows; dropped rows are NaN
+                self.oob_prediction_ = np.full(n, np.nan)
+                self.oob_prediction_[kept] = pred
         return self
 
-    def _compute_oob(self, X, y, cp):
+    def _compute_oob(self, X, y, groups):
+        """OOB mortality of the fitted rows; sets ``oob_prediction_`` and ``oob_score_``."""
         if self.resample_unit != "id":
             raise ValueError("oob_score requires resample_unit='id'")
         pred = self.forest_.oob_mortality(
-            X, cp.group, self.event_times_, self.aggregate, effective_n_jobs(self.n_jobs)
+            X, groups, self.event_times_, self.aggregate, effective_n_jobs(self.n_jobs)
         )
         self.oob_prediction_ = pred
         ok = np.isfinite(pred)
@@ -176,7 +219,8 @@ class SurvivalForestTV(BaseEstimator):
             )
         from .metrics import concordance_index_cp
 
-        self.oob_score_ = concordance_index_cp(y[ok], pred[ok], ids=cp.group[ok])
+        self.oob_score_ = concordance_index_cp(y[ok], pred[ok], ids=groups[ok])
+        return pred
 
     def predict_cumulative_hazard(self, X, times=None, *, intervals=None, ids=None, origin=None, extrapolate="none"):
         """Ensemble cumulative hazard.
@@ -273,6 +317,8 @@ class SurvivalForestTV(BaseEstimator):
             raise ValueError("max_bins must be an integer in [2, 256]")
         if self.max_depth is not None:
             self._check_int("max_depth", minimum=0)
+        if self.ntime is not None:
+            self._check_int("ntime", minimum=1)
 
     def _resolve_min_ids_leaf(self, n_ids):
         if self.min_ids_leaf == "auto":
