@@ -50,14 +50,15 @@ def _start_stop(y, required):
     return y, start, stop
 
 
-def check_survival_y(y):
+def check_survival_y(y, *, require_events=True):
     """Validate a structured survival target and return ``(start, stop, event)``.
 
-    Raises ``TypeError`` for a wrong dtype and ``ValueError`` for invalid values.
+    Raises ``TypeError`` for a wrong dtype and ``ValueError`` for invalid values
+    (including no events, unless ``require_events=False``).
     """
     y, start, stop = _start_stop(y, ("start", "stop", "event"))
     event = np.ascontiguousarray(_as_bool(np.asarray(y["event"])))
-    if not event.any():
+    if require_events and not event.any():
         raise ValueError("y contains no events")
     return start, stop, event
 

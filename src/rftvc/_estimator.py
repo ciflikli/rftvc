@@ -1,6 +1,7 @@
 """Scikit-learn compatible survival forest estimator."""
 
 import numbers
+import warnings
 
 import numpy as np
 from joblib import effective_n_jobs
@@ -44,9 +45,25 @@ class SurvivalForestTV(BaseEstimator):
         without replacement (design.md D10).
     aggregate : {"hazard", "survival"}, default="hazard"
         Ensemble rule: ``exp(-mean Λ_b)`` or ``mean exp(-Λ_b)`` (design.md D11).
+    oob_score : bool, default=False
+        Compute ``oob_prediction_`` and ``oob_score_`` from the trees each id
+        was left out of. Requires whole-id resampling (``resample_unit="id"``).
+        This estimates performance on *new subjects*; for future periods use a
+        time-based splitter (``rftvc.model_selection``).
     n_jobs : int or None, default=None
         Threads for fitting and prediction; ``-1`` uses all cores.
     random_state : int, RandomState or None, default=None
+
+    Attributes
+    ----------
+    oob_prediction_ : ndarray of shape (n_rows,)
+        Out-of-bag ensemble mortality of each training row, ``sum_k Λ(t_k | x_row)``
+        over ``event_times_`` (NaN for ids that are in every bag). Only with
+        ``oob_score=True``.
+    oob_score_ : float
+        Concordance of ``oob_prediction_`` with the training outcomes
+        (``rftvc.metrics.concordance_index_cp``: each event against the rows of
+        other ids at risk at its time). Only with ``oob_score=True``.
     """
 
     def __init__(
@@ -61,6 +78,7 @@ class SurvivalForestTV(BaseEstimator):
         max_samples=None,
         bootstrap=False,
         aggregate="hazard",
+        oob_score=False,
         n_jobs=None,
         random_state=None,
     ):
@@ -74,6 +92,7 @@ class SurvivalForestTV(BaseEstimator):
         self.max_samples = max_samples
         self.bootstrap = bootstrap
         self.aggregate = aggregate
+        self.oob_score = oob_score
         self.n_jobs = n_jobs
         self.random_state = random_state
 
@@ -130,7 +149,34 @@ class SurvivalForestTV(BaseEstimator):
             n_jobs=effective_n_jobs(self.n_jobs),
         )
         self.event_times_ = np.unique(stop[event])
+        if self.oob_score:
+            if gap_policy == "split_id" and ids is not None and cp.n_groups != np.unique(np.asarray(ids)).size:
+                raise ValueError(
+                    "oob_score needs whole ids as resampling units, but gap_policy='split_id' "
+                    "split some ids into segments"
+                )
+            self._compute_oob(X, y, cp)
         return self
+
+    def _compute_oob(self, X, y, cp):
+        if self.resample_unit != "id":
+            raise ValueError("oob_score requires resample_unit='id'")
+        pred = self.forest_.oob_mortality(
+            X, cp.group, self.event_times_, self.aggregate, effective_n_jobs(self.n_jobs)
+        )
+        self.oob_prediction_ = pred
+        ok = np.isfinite(pred)
+        if not ok.any():
+            raise ValueError("no id is out of bag in any tree; lower max_samples or add trees")
+        if not ok.all():
+            warnings.warn(
+                f"{int((~ok).sum())} rows belong to ids that are in every bag; they are left out "
+                "of oob_score_",
+                UserWarning,
+            )
+        from .metrics import concordance_index_cp
+
+        self.oob_score_ = concordance_index_cp(y[ok], pred[ok], ids=cp.group[ok])
 
     def predict_cumulative_hazard(self, X, times=None, *, intervals=None, ids=None, origin=None, extrapolate="none"):
         """Ensemble cumulative hazard.
