@@ -7,6 +7,31 @@ pub struct Profile<'a> {
 pub trait SplitCriterion: Sync {
     /// Score a candidate split from the left child's and the parent's profiles.
     fn score(&self, left: &Profile, parent: &Profile) -> f64;
+
+    /// A scorer for many candidates of one parent. Criteria may precompute
+    /// parent-only terms; the default defers to `score`.
+    fn node_scorer<'a>(&'a self, parent: Profile<'a>) -> Box<dyn NodeScorer + 'a> {
+        Box::new(Deferred {
+            criterion: self,
+            parent,
+        })
+    }
+}
+
+/// Scores left-child profiles against a fixed parent.
+pub trait NodeScorer {
+    fn score(&self, left: &Profile) -> f64;
+}
+
+struct Deferred<'a, C: SplitCriterion + ?Sized> {
+    criterion: &'a C,
+    parent: Profile<'a>,
+}
+
+impl<C: SplitCriterion + ?Sized> NodeScorer for Deferred<'_, C> {
+    fn score(&self, left: &Profile) -> f64 {
+        self.criterion.score(left, &self.parent)
+    }
 }
 
 /// Left-truncated right-censored log-rank chi-square statistic.
@@ -26,6 +51,49 @@ impl SplitCriterion for LtrcLogRank {
             let frac = yl / y;
             num += l.events[k] - d * frac;
             var += d * frac * (1.0 - frac) * (y - d) / (y - 1.0);
+        }
+        if var > 0.0 { num * num / var } else { 0.0 }
+    }
+
+    /// Precomputes, per event time with `y >= 2`: `mask`, `e = d / y` and
+    /// `c = d (y - d) / (y^2 (y - 1))`, so that
+    /// `num = sum mask·d_l - y_l·e` and `var = sum y_l (y - y_l) c`,
+    /// the same statistic as `score` with only multiply-adds per candidate.
+    fn node_scorer<'a>(&'a self, p: Profile<'a>) -> Box<dyn NodeScorer + 'a> {
+        let k = p.at_risk.len();
+        let (mut mask, mut e, mut c) = (vec![0.0; k], vec![0.0; k], vec![0.0; k]);
+        for j in 0..k {
+            let (y, d) = (p.at_risk[j], p.events[j]);
+            if y < 2.0 || d == 0.0 {
+                continue;
+            }
+            mask[j] = 1.0;
+            e[j] = d / y;
+            c[j] = d * (y - d) / (y * y * (y - 1.0));
+        }
+        Box::new(LogRankNode {
+            y: p.at_risk,
+            mask,
+            e,
+            c,
+        })
+    }
+}
+
+struct LogRankNode<'a> {
+    y: &'a [f64],
+    mask: Vec<f64>,
+    e: Vec<f64>,
+    c: Vec<f64>,
+}
+
+impl NodeScorer for LogRankNode<'_> {
+    fn score(&self, l: &Profile) -> f64 {
+        let (mut num, mut var) = (0.0, 0.0);
+        for j in 0..self.y.len() {
+            let yl = l.at_risk[j];
+            num += self.mask[j] * l.events[j] - yl * self.e[j];
+            var += yl * (self.y[j] - yl) * self.c[j];
         }
         if var > 0.0 { num * num / var } else { 0.0 }
     }

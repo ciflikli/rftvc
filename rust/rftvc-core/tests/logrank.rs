@@ -66,3 +66,41 @@ fn binning_extreme_values_keep_distinct_bins() {
         assert_eq!(binned.column(0), &[0, 1]);
     }
 }
+
+/// The precomputed node scorer equals the reference `score` on random
+/// delayed-entry data with ties, for every left subset tried.
+#[test]
+fn node_scorer_matches_reference_score() {
+    let mut rng = rftvc_core::Rng::new(7);
+    for _ in 0..200 {
+        let n = 2 + rng.below(40);
+        let start: Vec<f64> = (0..n).map(|_| rng.below(4) as f64).collect();
+        let stop: Vec<f64> = start
+            .iter()
+            .map(|s| s + 1.0 + rng.below(5) as f64)
+            .collect();
+        let event: Vec<bool> = (0..n).map(|_| rng.below(3) > 0).collect();
+        if !event.iter().any(|&e| e) {
+            continue;
+        }
+        let surv = SurvData::new(&start, &stop, &event);
+        let rows: Vec<u32> = (0..n as u32).collect();
+        let parent = node_profile(&surv, &rows);
+        let p = Profile {
+            at_risk: &parent.at_risk,
+            events: &parent.events,
+        };
+        let scorer = LtrcLogRank.node_scorer(Profile {
+            at_risk: &parent.at_risk,
+            events: &parent.events,
+        });
+        let left: Vec<u32> = rows.iter().copied().filter(|_| rng.below(2) == 0).collect();
+        let (l_at, l_ev) = profile_on(&surv, &left, &parent.event_idx);
+        let l = Profile {
+            at_risk: &l_at,
+            events: &l_ev,
+        };
+        let (a, b) = (LtrcLogRank.score(&l, &p), scorer.score(&l));
+        assert!((a - b).abs() <= 1e-9 * a.abs().max(1.0), "{a} vs {b}");
+    }
+}

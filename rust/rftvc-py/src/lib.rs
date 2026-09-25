@@ -8,9 +8,9 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rftvc_core::{
-    Aggregate, Binned, Extrapolate, FlatForest, Forest, ForestParams, Groups, LtrcLogRank, Profile,
-    SplitCriterion, SplitParams, SurvData, TreeParams, best_split as core_best_split, fit_forest,
-    node_profile, profile_on,
+    Aggregate, Binned, Extrapolate, FlatForest, Forest, ForestParams, Grid, Groups, LtrcLogRank,
+    Profile, SplitCriterion, SplitParams, SurvData, TreeParams, best_split as core_best_split,
+    coarsen, fit_forest, node_profile, profile_on,
 };
 
 /// Contiguous 1-d input as a Vec. Strided views (e.g. a field of a structured
@@ -402,6 +402,88 @@ fn fit_forest_py(
     Ok(PyForest { inner })
 }
 
+type CoarsenOut<'py> = (
+    Bound<'py, PyArray1<u32>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<bool>>,
+    Bound<'py, PyArray1<f64>>,
+    usize,
+);
+
+/// Coarse mode (D8): quantile event grid of `ntime` points, snapping grid =
+/// earliest start + event grid, then the row transform of `coarsen`.
+///
+/// Returns `(kept, start, stop, event, event_grid, lost_events)`.
+#[pyfunction]
+#[pyo3(name = "coarsen")]
+fn coarsen_py<'py>(
+    py: Python<'py>,
+    start: PyReadonlyArray1<'py, f64>,
+    stop: PyReadonlyArray1<'py, f64>,
+    event: PyReadonlyArray1<'py, bool>,
+    order: PyReadonlyArray1<'py, u32>,
+    offsets: PyReadonlyArray1<'py, u64>,
+    ntime: usize,
+) -> PyResult<CoarsenOut<'py>> {
+    let (s, t, e) = (
+        vec1(&start, "start")?,
+        vec1(&stop, "stop")?,
+        vec1(&event, "event")?,
+    );
+    let n = s.len();
+    check_lengths(
+        n,
+        &[
+            ("stop", t.len()),
+            ("event", e.len()),
+            ("order", order.as_array().len()),
+        ],
+    )?;
+    let order = vec1(&order, "order")?;
+    let offsets: Vec<usize> = vec1(&offsets, "offsets")?
+        .into_iter()
+        .map(|o| o as usize)
+        .collect();
+    let mut seen = vec![false; n];
+    let perm = order
+        .iter()
+        .all(|&r| (r as usize) < n && !std::mem::replace(&mut seen[r as usize], true));
+    let valid = perm
+        && offsets.first() == Some(&0)
+        && offsets.last() == Some(&n)
+        && offsets.windows(2).all(|w| w[0] < w[1]);
+    if !valid || ntime == 0 || !e.iter().any(|&x| x) {
+        return Err(PyValueError::new_err(
+            "need a row permutation `order`, chain offsets from 0 to n_rows, ntime >= 1 and an event",
+        ));
+    }
+    // Event relocation needs each chain in time order with contiguous rows.
+    let chained = offsets.windows(2).all(|w| {
+        order[w[0]..w[1]]
+            .windows(2)
+            .all(|p| t[p[0] as usize] == s[p[1] as usize])
+    });
+    if !chained {
+        return Err(PyValueError::new_err(
+            "each chain's rows must be in time order and contiguous (stop == next start)",
+        ));
+    }
+    let grid = Grid::quantile(&t, &e, ntime);
+    let origin = s.iter().copied().fold(f64::INFINITY, f64::min);
+    let mut points = vec![origin];
+    points.extend(grid.times.iter().copied().filter(|&p| p > origin));
+    let c = coarsen(&s, &t, &e, &order, &offsets, &points);
+    Ok((
+        c.kept.into_pyarray(py),
+        c.start.into_pyarray(py),
+        c.stop.into_pyarray(py),
+        c.event.into_pyarray(py),
+        grid.times.to_vec().into_pyarray(py),
+        c.lost_events,
+    ))
+}
+
 /// LTRC log-rank chi-square comparing `left` rows against the rest.
 #[pyfunction]
 fn logrank_score(
@@ -518,6 +600,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyForest>()?;
     m.add_function(wrap_pyfunction!(fit_forest_py, m)?)?;
     m.add_function(wrap_pyfunction!(logrank_score, m)?)?;
+    m.add_function(wrap_pyfunction!(coarsen_py, m)?)?;
     m.add_function(wrap_pyfunction!(best_split, m)?)?;
     Ok(())
 }

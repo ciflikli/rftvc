@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::criterion::SplitCriterion;
 use crate::data::{Binned, SurvData};
 use crate::rng::Rng;
-use crate::splitter::{SplitParams, best_split, count_units, node_profile};
+use crate::splitter::{SplitParams, best_split_in, count_units, node_profile};
 
 #[derive(Clone, Debug)]
 pub enum Node {
@@ -72,9 +72,9 @@ pub fn build_tree(
             && profile.n_events >= 2 * params.min_events_leaf;
         let split = if can_split {
             let features = rng.sample_without_replacement(binned.n_features, params.max_features);
-            best_split(
+            best_split_in(
                 binned,
-                surv,
+                &profile,
                 &rows,
                 &units,
                 &features,

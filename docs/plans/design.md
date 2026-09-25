@@ -180,13 +180,17 @@ It is not a sklearn `Pipeline`, and the docs say so.
    - Datasets: PBC2 / `pbcseq`, Stanford heart transplant, a BTSCS case study, a ≥1M-row synthetic set.
    - Comparators: lifelines Cox with TVCs, `LTRCforests`, `randomForestRHF` (optional), BoXHED 2.0, Approach B.
 4. **sklearn compatibility matrix tests.**
-5. **Performance targets:** set after profiling slice 1.
+5. **Performance targets** (set in S6 from `docs/bench/s6-perf.md`; M-series, 10 cores, 100 trees, p = 10). These are regression bounds, about 1.5× the measured values:
+   - `ntime=100`: 100k rows < 3 s; 1M rows < 35 s; peak RSS < 3.5 GB at 1M rows.
+   - Exact grid: 100k rows (K ≈ 64k) < 12 s; 1M rows < 180 s.
+   - Coarse mode keeps exact-mode test C within 0.005 on the benchmark data.
+   - Peak memory is dominated by stored leaves (`docs/scratch/perf.md`); trimming leaf storage is the next memory lever.
 
 ## Risks & mitigations
 | Risk | Mitigation |
 |---|---|
 | Log-rank optimises separation, not calibration | pluggable criterion; bake-off judged on landmark Brier score |
-| Exact grid slow on large K | coarse mode (D8) + O(1) updates [Sverdrup et al. 2025] as later optimisation |
+| Exact grid slow on large K | coarse mode (D8, S6: 6× faster at 1M rows, same C) + O(1) updates [Sverdrup et al. 2025] as later optimisation |
 | Top-candidate id checks reject many splits | bounded retries; diagnostics; tune `min_ids_leaf` |
 | Leakage via user features | `measured_at` check; landmark look-ahead check; gap ≥ horizon check |
 | sklearn routing / check_estimator friction | explicit compatibility matrix; `ids` also accepted as a DataFrame column name |
