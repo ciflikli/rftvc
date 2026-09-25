@@ -30,3 +30,16 @@ jobs:
           uv pip install -e . --group dev
       - name: Python tests
         run: .venv/bin/python -m pytest
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
+      - name: Build and install with docs dependencies
+        run: |
+          uv venv --python 3.11
+          uv pip install -e . --group dev --group docs
+      - name: Build docs (warnings are errors)
+        run: .venv/bin/sphinx-build -E -W --keep-going -b html docs/source docs/_build/html

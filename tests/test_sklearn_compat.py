@@ -207,6 +207,13 @@ def test_dataframe_ids_column_and_dataframe_y(data):
         est.predict_cumulative_hazard(df, [1.0, 2.0], intervals=iv, ids="subject"),
         ref.predict_cumulative_hazard(X, [1.0, 2.0], intervals=y, ids=ids),
     )
+    # ids as an array with the id column still present: the column is dropped, the array groups paths.
+    np.testing.assert_allclose(
+        est.predict_cumulative_hazard(df, [1.0, 2.0], intervals=iv, ids=ids),
+        ref.predict_cumulative_hazard(X, [1.0, 2.0], intervals=y, ids=ids),
+    )
+    with pytest.raises(ValueError, match="not in X"):
+        est.predict_cumulative_hazard(df, [1.0], intervals=iv, ids="missing")
     nullable = pd.DataFrame({"z": pd.array([1, None, 2], dtype="Int64"), "w": [0.0, 1.0, 2.0]})
     with pytest.raises(ValueError, match="NaN"):
         est.predict(nullable)

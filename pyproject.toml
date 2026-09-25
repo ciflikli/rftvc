@@ -19,6 +19,11 @@ dev = [
     "scikit-survival>=0.23",
     "pandas>=2.0",
 ]
+docs = [
+    "sphinx>=8",
+    "numpydoc>=1.8",
+    "pydata-sphinx-theme>=0.16",
+]
 
 [tool.maturin]
 manifest-path = "rust/rftvc-py/Cargo.toml"

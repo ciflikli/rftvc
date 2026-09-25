@@ -270,11 +270,11 @@ def test_check_counting_process_errors():
     check_counting_process(s, t, np.array([False, True]), [0, 0], measured_at=[0.0, 1.0])
 
 
-def test_split_id_policy_makes_segments_separate_groups():
+def test_split_id_policy_makes_segments_separate_chains_but_one_unit():
     s, t = np.array([0.0, 2.0, 0.0]), np.array([1.0, 3.0, 1.0])
     cp = check_counting_process(s, t, None, ["a", "a", "b"], gap_policy="split_id")
-    assert cp.n_groups == 3
-    assert len(set(cp.group.tolist())) == 3
+    assert cp.n_groups == 3 and len(set(cp.group.tolist())) == 3  # chains: a's two segments, b
+    assert cp.n_units == 2 and cp.unit.tolist() == [0, 0, 1]  # resampling units: ids
 
 
 def test_fit_rejects_invalid_counting_process_and_accepts_split_id():
@@ -287,7 +287,7 @@ def test_fit_rejects_invalid_counting_process_and_accepts_split_id():
     with pytest.raises(ValueError, match="gap"):
         SurvivalForestTV(n_estimators=2).fit(X, y_gap, ids=ids)
     model = SurvivalForestTV(n_estimators=2).fit(X, y_gap, ids=ids, gap_policy="split_id")
-    assert model.n_ids_ == 51
+    assert model.n_ids_ == 50  # the split id is still one resampling unit
 
 
 def test_core_rejects_strided_inputs():

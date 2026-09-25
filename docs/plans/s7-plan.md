@@ -42,9 +42,18 @@ Branch `feat/s7-compat`. Parent: `plan.md` S7; design.md "Data contract" (compat
 8. **Out of scope:** publishing to PyPI; a `person_period.py` view (design.md lists it; not needed for v1, deferred).
 
 ## Tasks
-- [ ] narwhals input + `feature_names_in_` + `ids` column name + y as DataFrame; tests
-- [ ] tags, sklearn ≥ 1.6, metadata-routing test, `check_estimator` matrix with documented exclusions
-- [ ] wheels.yml (+ smoke test job) and a green run on the PR
-- [ ] Sphinx skeleton, API reference, user guide, compatibility matrix; `docs` CI job
-- [ ] C&L loader (checksum) + BTSCS case study; PBC2 case study
-- [ ] plan.md tick + "S7 done" notes
+- [x] narwhals input + `feature_names_in_` + `ids` column name + y as DataFrame; tests
+- [x] tags, sklearn ≥ 1.6, metadata-routing test, `check_estimator` matrix with documented exclusions
+- [x] wheels.yml (+ smoke test job) and a green run on the PR
+- [x] Sphinx skeleton, API reference, user guide, compatibility matrix; `docs` CI job
+- [x] C&L loader (checksum) + BTSCS case study; PBC2 case study
+- [x] plan.md tick + "S7 done" notes
+
+## Plan review (Codex, 2026-09-25)
+1. Metadata routing: `groups` must go through `params`, and `cross_validate` needs a scorer (high) → added `predict` (ensemble mortality) and `score` (counting-process C); the routing test passes `params={"ids": ids, "groups": ids}` and checks `ids` is sliced per fold.
+2. The `ids`-column contract at predict was undefined (high). Now: the fit-time id column is always dropped; `ids` may be an array or a column name; a missing column raises. All three are tested.
+3. Stata `origin(clstartdate)`: in the archive `clstartdate` is each war-year's start, so it varies within `CLID` (high). The case study uses the war's earliest `clstartdate` as origin, says so, and does not claim an exact `stset` replication.
+4. `gap_policy="split_id"` made each segment a resampling unit, so gaps from listwise deletion changed the unit from war to segment (high).
+   - **Library fix:** `CountingProcess` now separates chains (`group`: contiguity, coarsening, paths) from resampling units (`unit`: the original id). Fitting resamples, counts leaf ids and runs OOB by `unit`.
+   - The S5 guard that blocked OOB under `split_id` is removed. A test checks both segments of an id share their bags.
+5. The docs job needs pinned deps and the built extension (medium) → a `docs` dependency group; the job builds the package, then runs `sphinx-build -W`.

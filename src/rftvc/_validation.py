@@ -118,15 +118,19 @@ def check_intervals(intervals):
 class CountingProcess(NamedTuple):
     """Row grouping of validated counting-process data.
 
-    ``group[r]`` is the id index (``0..n_groups``) of row ``r``; ``order`` sorts
-    rows by (id index, start); ``offsets`` delimits each id in that order.
-    Ids are numbered by first appearance.
+    ``group[r]`` is the chain index (``0..n_groups``) of row ``r``: its id, or
+    under ``gap_policy="split_id"`` its contiguous segment. ``order`` sorts rows
+    by (chain, start); ``offsets`` delimits each chain in that order.
+    ``unit[r]`` is the original id index (``0..n_units``), the resampling unit:
+    segments of one id stay one unit. Both are numbered by first appearance.
     """
 
     group: np.ndarray
     n_groups: int
     order: np.ndarray
     offsets: np.ndarray
+    unit: np.ndarray
+    n_units: int
 
 
 def _check_ids(ids):
@@ -156,8 +160,9 @@ def check_counting_process(
 
     Per id, rows must be non-overlapping and contiguous (``stop_j == start_{j+1}``),
     and only the last row may carry an event. A gap raises ``ValueError`` unless
-    ``gap_policy="split_id"``, which treats each contiguous segment as its own id
-    (delayed re-entry; an explicit modelling assumption). If ``measured_at`` is
+    ``gap_policy="split_id"``: each contiguous segment is then its own chain
+    (delayed re-entry after the gap, which is not at risk; an explicit modelling
+    assumption), while the id stays one resampling unit (``unit``). If ``measured_at`` is
     given, covariates must be known at the row's ``start`` (``measured_at <= start``).
     """
     if layout not in ("counting_process", "stacked"):
@@ -194,7 +199,8 @@ def check_counting_process(
         group = np.empty(n, dtype=np.int64)
         group[order] = s_group
         offsets = np.r_[np.flatnonzero(new_group), n].astype(np.uint64)
-        return CountingProcess(group.astype(np.uint32), int(s_group[-1]) + 1, order, offsets)
+        group = group.astype(np.uint32)
+        return CountingProcess(group, int(s_group[-1]) + 1, order, offsets, group, int(s_group[-1]) + 1)
     overlap = same & (s_start[1:] < s_stop[:-1])
     if overlap.any():
         raise ValueError(f"{overlap.sum()} overlapping rows within an id")
@@ -215,4 +221,7 @@ def check_counting_process(
     group = np.empty(n, dtype=np.int64)
     group[order] = s_group
     offsets = np.r_[np.flatnonzero(new_group), n].astype(np.uint64)
-    return CountingProcess(group.astype(np.uint32), int(s_group[-1]) + 1 if n else 0, order, offsets)
+    n_units = int(codes.max()) + 1
+    return CountingProcess(
+        group.astype(np.uint32), int(s_group[-1]) + 1, order, offsets, codes.astype(np.uint32), n_units
+    )

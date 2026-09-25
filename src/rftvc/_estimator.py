@@ -158,7 +158,8 @@ class SurvivalForestTV(BaseEstimator):
         cp = check_counting_process(
             start, stop, event, ids, measured_at=measured_at, gap_policy=gap_policy, layout=layout
         )
-        groups, n_ids = cp.group, cp.n_groups
+        # Resampling units are whole ids, even when split_id cuts an id into chains.
+        groups, n_ids = cp.unit, cp.n_units
         self._validate_params()
         kept = None
         if self.ntime is not None:
@@ -173,7 +174,7 @@ class SurvivalForestTV(BaseEstimator):
             if not event.any():
                 raise ValueError("coarsening left no events; use a larger ntime")
             X = np.ascontiguousarray(X[kept])
-            _, groups = np.unique(cp.group[kept], return_inverse=True)
+            _, groups = np.unique(cp.unit[kept], return_inverse=True)
             groups, n_ids = groups.astype(np.uint32), int(groups.max()) + 1
             self.coarse_grid_ = grid
             self.n_coarsen_dropped_rows_ = n - kept.size
@@ -205,11 +206,6 @@ class SurvivalForestTV(BaseEstimator):
         # Coarse mode: the chosen grid, even points whose events were all lost.
         self.event_times_ = np.unique(stop[event]) if kept is None else grid
         if self.oob_score:
-            if gap_policy == "split_id" and ids is not None and cp.n_groups != np.unique(np.asarray(ids)).size:
-                raise ValueError(
-                    "oob_score needs whole ids as resampling units, but gap_policy='split_id' "
-                    "split some ids into segments"
-                )
             y_fit = y if kept is None else make_survival_y(stop, event, start=start)
             pred = self._compute_oob(X, y_fit, groups)
             if kept is not None:  # back to the original rows; dropped rows are NaN
@@ -342,10 +338,12 @@ class SurvivalForestTV(BaseEstimator):
         """
         check_is_fitted(self, "forest_")
         fit_ids = getattr(self, "ids_column_", None)
-        if fit_ids is not None and ids is None and hasattr(X, "columns") and fit_ids in list(X.columns):
-            X, names, _ = split_frame(X, fit_ids)  # the id column is not a feature
+        if isinstance(ids, str):
+            X, names, ids = split_frame(X, ids)  # ids named by column; that column is not a feature
+        elif fit_ids is not None and hasattr(X, "columns") and fit_ids in list(X.columns):
+            X, names, _ = split_frame(X, fit_ids)  # the fit-time id column is never a feature
         else:
-            X, names, ids = split_frame(X, ids)
+            X, names, _ = split_frame(X)
         fitted = getattr(self, "feature_names_in_", None)
         if names is not None and fitted is not None and list(names) != list(fitted):
             raise ValueError(

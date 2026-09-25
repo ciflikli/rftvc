@@ -1,0 +1,15 @@
+{
+ "wars": 382,
+ "war_years": 1957,
+ "terminations_raw": 341,
+ "rows_start_moved": 7,
+ "rows_after_first_end": 0,
+ "rows_missing_covariates": 371,
+ "rows": 1586,
+ "wars_kept": 280,
+ "terminations": 236,
+ "chains": 334,
+ "oob_cindex": 0.626,
+ "cv_forest_cindex": 0.636,
+ "cv_cox_cindex": 0.654
+}
