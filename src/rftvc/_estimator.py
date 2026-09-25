@@ -77,7 +77,7 @@ class SurvivalForestTV(BaseEstimator):
         self.n_jobs = n_jobs
         self.random_state = random_state
 
-    def fit(self, X, y, ids=None, *, measured_at=None, gap_policy="error"):
+    def fit(self, X, y, ids=None, *, measured_at=None, gap_policy="error", layout="counting_process"):
         """Fit on counting-process rows.
 
         Parameters
@@ -91,13 +91,18 @@ class SurvivalForestTV(BaseEstimator):
             When each row's covariates were measured; must be ``<= start``.
         gap_policy : {"error", "split_id"}, default="error"
             How to treat gaps between an id's rows (see ``check_counting_process``).
+        layout : {"counting_process", "stacked"}, default="counting_process"
+            ``"stacked"``: an id's rows are separate observations that may overlap
+            (landmark stacks); ids then only define resampling units.
         """
         X = check_array(X, dtype=np.float64, order="C")
         start, stop, event = check_survival_y(y)
         n = X.shape[0]
         if n != start.shape[0]:
             raise ValueError(f"X has {n} rows but y has {start.shape[0]}")
-        cp = check_counting_process(start, stop, event, ids, measured_at=measured_at, gap_policy=gap_policy)
+        cp = check_counting_process(
+            start, stop, event, ids, measured_at=measured_at, gap_policy=gap_policy, layout=layout
+        )
         groups, n_ids = cp.group, cp.n_groups
         self._validate_params()
 

@@ -98,8 +98,14 @@ def _check_ids(ids):
     return ids
 
 
-def check_counting_process(start, stop, event=None, ids=None, *, measured_at=None, gap_policy="error"):
+def check_counting_process(
+    start, stop, event=None, ids=None, *, measured_at=None, gap_policy="error", layout="counting_process"
+):
     """Validate the per-id structure of counting-process rows.
+
+    ``layout="stacked"`` is for landmark stacks, where an id's rows are separate
+    observations that may overlap in time: ids then only define resampling
+    units, and the per-id structure checks below are skipped.
 
     Per id, rows must be non-overlapping and contiguous (``stop_j == start_{j+1}``),
     and only the last row may carry an event. A gap raises ``ValueError`` unless
@@ -107,6 +113,8 @@ def check_counting_process(start, stop, event=None, ids=None, *, measured_at=Non
     (delayed re-entry; an explicit modelling assumption). If ``measured_at`` is
     given, covariates must be known at the row's ``start`` (``measured_at <= start``).
     """
+    if layout not in ("counting_process", "stacked"):
+        raise ValueError(f"layout must be 'counting_process' or 'stacked', got {layout!r}")
     if gap_policy not in ("error", "split_id"):
         raise ValueError(f"gap_policy must be 'error' or 'split_id', got {gap_policy!r}")
     n = start.shape[0]
@@ -133,6 +141,13 @@ def check_counting_process(start, stop, event=None, ids=None, *, measured_at=Non
     order = np.lexsort((start, codes))
     s_codes, s_start, s_stop = codes[order], start[order], stop[order]
     same = s_codes[1:] == s_codes[:-1]
+    if layout == "stacked":
+        new_group = np.r_[True, ~same]
+        s_group = np.cumsum(new_group) - 1
+        group = np.empty(n, dtype=np.int64)
+        group[order] = s_group
+        offsets = np.r_[np.flatnonzero(new_group), n].astype(np.uint64)
+        return CountingProcess(group.astype(np.uint32), int(s_group[-1]) + 1, order, offsets)
     overlap = same & (s_start[1:] < s_stop[:-1])
     if overlap.any():
         raise ValueError(f"{overlap.sum()} overlapping rows within an id")
