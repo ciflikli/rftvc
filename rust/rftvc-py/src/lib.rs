@@ -1,20 +1,39 @@
 //! Python bindings: `rftvc._core`.
 
 use numpy::ndarray::Array2;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{
+    IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
+};
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rftvc_core::{
-    Aggregate, Binned, FlatForest, Forest, ForestParams, Groups, LtrcLogRank, Profile,
+    Aggregate, Binned, Extrapolate, FlatForest, Forest, ForestParams, Groups, LtrcLogRank, Profile,
     SplitCriterion, SplitParams, SurvData, TreeParams, best_split as core_best_split, fit_forest,
     node_profile, profile_on,
 };
 
-fn matrix(x: &PyReadonlyArray2<f64>) -> (Vec<f64>, usize, usize) {
-    let a = x.as_array();
-    let (n, p) = a.dim();
-    (a.iter().copied().collect(), n, p)
+/// Contiguous 1-d input as a Vec. Strided views (e.g. a field of a structured
+/// array, whose stride need not be a multiple of the item size) are rejected:
+/// reading them through ndarray is not reliable.
+fn vec1<T: numpy::Element + Copy>(a: &PyReadonlyArray1<T>, name: &str) -> PyResult<Vec<T>> {
+    a.as_slice().map(|s| s.to_vec()).map_err(|_| {
+        PyValueError::new_err(format!(
+            "{name} must be a contiguous array (use numpy.ascontiguousarray)"
+        ))
+    })
+}
+
+/// C-contiguous 2-d input as a row-major Vec plus its shape.
+fn matrix(x: &PyReadonlyArray2<f64>) -> PyResult<(Vec<f64>, usize, usize)> {
+    let (n, p) = x.as_array().dim();
+    // `as_slice` also accepts Fortran order, which would be misread as row-major.
+    let v = x
+        .as_slice()
+        .ok()
+        .filter(|_| x.is_c_contiguous())
+        .ok_or_else(|| PyValueError::new_err("X must be a C-contiguous float64 array"))?;
+    Ok((v.to_vec(), n, p))
 }
 
 /// Response arrays must all have `n` entries (`n = X.shape[0]` where X is given).
@@ -33,11 +52,11 @@ fn surv_data(
     start: &PyReadonlyArray1<f64>,
     stop: &PyReadonlyArray1<f64>,
     event: &PyReadonlyArray1<bool>,
-) -> SurvData {
-    let s: Vec<f64> = start.as_array().to_vec();
-    let t: Vec<f64> = stop.as_array().to_vec();
-    let e: Vec<bool> = event.as_array().to_vec();
-    SurvData::new(&s, &t, &e)
+) -> PyResult<SurvData> {
+    let s = vec1(start, "start")?;
+    let t = vec1(stop, "stop")?;
+    let e = vec1(event, "event")?;
+    Ok(SurvData::new(&s, &t, &e))
 }
 
 fn pool(n_jobs: usize) -> PyResult<rayon::ThreadPool> {
@@ -67,7 +86,7 @@ struct PyForest {
 
 impl PyForest {
     fn check_x(&self, x: &PyReadonlyArray2<f64>) -> PyResult<(Vec<f64>, usize, usize)> {
-        let (v, n, p) = matrix(x);
+        let (v, n, p) = matrix(x)?;
         if p != self.inner.n_features {
             return Err(PyValueError::new_err(format!(
                 "X has {p} features, expected {}",
@@ -145,12 +164,86 @@ impl PyForest {
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (v, n, p) = self.check_x(&x)?;
         let agg = aggregate(aggregate_by)?;
-        let times: Vec<f64> = times.as_array().to_vec();
+        let times: Vec<f64> = vec1(&times, "times")?;
         let m = times.len();
         let forest = &self.inner;
         let pool = pool(n_jobs)?;
         let out = py.detach(|| pool.install(|| forest.predict_cumhaz(&v, p, &times, agg)));
         Ok(Array2::from_shape_vec((n, m), out)
+            .expect("shape")
+            .into_pyarray(py))
+    }
+
+    /// Conditional cumulative hazard along covariate paths `(n_paths, n_times)`.
+    ///
+    /// Rows of path `p` are `offsets[p]..offsets[p+1]`, contiguous and sorted by start.
+    #[allow(clippy::too_many_arguments)]
+    fn predict_paths<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        start: PyReadonlyArray1<'py, f64>,
+        stop: PyReadonlyArray1<'py, f64>,
+        offsets: PyReadonlyArray1<'py, u64>,
+        origin: PyReadonlyArray1<'py, f64>,
+        times: PyReadonlyArray1<'py, f64>,
+        aggregate_by: &str,
+        extrapolate: &str,
+        n_jobs: usize,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let (v, n, p) = self.check_x(&x)?;
+        check_lengths(
+            n,
+            &[
+                ("start", start.as_array().len()),
+                ("stop", stop.as_array().len()),
+            ],
+        )?;
+        let offsets: Vec<usize> = vec1(&offsets, "offsets")?
+            .into_iter()
+            .map(|o| o as usize)
+            .collect();
+        let n_paths = offsets.len().saturating_sub(1);
+        let valid = offsets.first() == Some(&0)
+            && offsets.last() == Some(&n)
+            && offsets.windows(2).all(|w| w[0] < w[1]);
+        if !valid || origin.as_array().len() != n_paths {
+            return Err(PyValueError::new_err(
+                "offsets must start at 0, strictly increase and end at n_rows; one origin per path",
+            ));
+        }
+        let agg = aggregate(aggregate_by)?;
+        let extrapolate = match extrapolate {
+            "none" => Extrapolate::None,
+            "locf" => Extrapolate::Locf,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "extrapolate must be 'none' or 'locf'",
+                ));
+            }
+        };
+        let (start, stop) = (vec1(&start, "start")?, vec1(&stop, "stop")?);
+        let origin = vec1(&origin, "origin")?;
+        let times: Vec<f64> = vec1(&times, "times")?;
+        let m = times.len();
+        let forest = &self.inner;
+        let pool = pool(n_jobs)?;
+        let out = py.detach(|| {
+            pool.install(|| {
+                forest.predict_paths(
+                    &v,
+                    p,
+                    &start,
+                    &stop,
+                    &offsets,
+                    &origin,
+                    &times,
+                    agg,
+                    extrapolate,
+                )
+            })
+        });
+        Ok(Array2::from_shape_vec((n_paths, m), out)
             .expect("shape")
             .into_pyarray(py))
     }
@@ -189,10 +282,7 @@ impl PyForest {
         }
         macro_rules! vec_of {
             ($key:expr, $t:ty) => {
-                item(state, $key)?
-                    .extract::<PyReadonlyArray1<$t>>()?
-                    .as_array()
-                    .to_vec()
+                vec1(&item(state, $key)?.extract::<PyReadonlyArray1<$t>>()?, $key)?
             };
         }
         let flat = FlatForest {
@@ -243,7 +333,7 @@ fn fit_forest_py(
     seed: u64,
     n_jobs: usize,
 ) -> PyResult<PyForest> {
-    let (v, n, p) = matrix(&x);
+    let (v, n, p) = matrix(&x)?;
     check_lengths(
         n,
         &[
@@ -256,7 +346,7 @@ fn fit_forest_py(
     if !(2..=256).contains(&max_bins) {
         return Err(PyValueError::new_err("max_bins must be in [2, 256]"));
     }
-    let groups: Vec<u32> = groups.as_array().to_vec();
+    let groups: Vec<u32> = vec1(&groups, "groups")?;
     if n_groups == 0 || groups.iter().any(|&g| g as usize >= n_groups) {
         return Err(PyValueError::new_err("groups must be in [0, n_groups)"));
     }
@@ -265,7 +355,7 @@ fn fit_forest_py(
             "need n_trees >= 1 and 1 <= n_draw (<= n_groups without bootstrap)",
         ));
     }
-    let surv = surv_data(&start, &stop, &event);
+    let surv = surv_data(&start, &stop, &event)?;
     let params = ForestParams {
         tree: TreeParams {
             max_depth,
@@ -304,11 +394,10 @@ fn logrank_score(
             ("left", left.as_array().len()),
         ],
     )?;
-    let surv = surv_data(&start, &stop, &event);
+    let surv = surv_data(&start, &stop, &event)?;
     let all: Vec<u32> = (0..surv.n_rows() as u32).collect();
     let parent = node_profile(&surv, &all);
-    let left_rows: Vec<u32> = left
-        .as_array()
+    let left_rows: Vec<u32> = vec1(&left, "left")?
         .iter()
         .enumerate()
         .filter(|(_, l)| **l)
@@ -327,10 +416,12 @@ fn logrank_score(
     ))
 }
 
-/// Best root split over all features: `(feature, threshold, score, left_mask)` or `None`.
+/// Best root split: `(feature, threshold, score, left_mask, ids_left, ids_right)` or `None`.
+///
+/// `units` (default: one per row) must be contiguous per unit.
 #[pyfunction]
-#[pyo3(signature = (x, start, stop, event, *, min_ids_leaf, min_events_leaf, max_bins=256))]
-#[allow(clippy::type_complexity)]
+#[pyo3(signature = (x, start, stop, event, *, min_ids_leaf, min_events_leaf, max_bins=256, units=None))]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn best_split(
     x: PyReadonlyArray2<'_, f64>,
     start: PyReadonlyArray1<'_, f64>,
@@ -339,8 +430,9 @@ fn best_split(
     min_ids_leaf: usize,
     min_events_leaf: usize,
     max_bins: usize,
-) -> PyResult<Option<(usize, f64, f64, Vec<bool>)>> {
-    let (v, n, p) = matrix(&x);
+    units: Option<PyReadonlyArray1<'_, u32>>,
+) -> PyResult<Option<(usize, f64, f64, Vec<bool>, usize, usize)>> {
+    let (v, n, p) = matrix(&x)?;
     check_lengths(
         n,
         &[
@@ -352,21 +444,40 @@ fn best_split(
     if !(2..=256).contains(&max_bins) {
         return Err(PyValueError::new_err("max_bins must be in [2, 256]"));
     }
-    let surv = surv_data(&start, &stop, &event);
+    let surv = surv_data(&start, &stop, &event)?;
     let binned = Binned::fit(&v, n, p, max_bins);
     let rows: Vec<u32> = (0..n as u32).collect();
+    let units: Vec<u32> = match units {
+        Some(u) => vec1(&u, "u")?,
+        None => rows.clone(),
+    };
+    check_lengths(n, &[("units", units.len())])?;
     let features: Vec<usize> = (0..p).collect();
     let params = SplitParams {
         min_leaf: min_ids_leaf,
         min_events_leaf,
     };
-    Ok(
-        core_best_split(&binned, &surv, &rows, &features, &params, &LtrcLogRank).map(|s| {
-            let col = binned.column(s.feature);
-            let mask = (0..n).map(|i| col[i] <= s.bin).collect();
-            (s.feature, s.threshold, s.score, mask)
-        }),
+    Ok(core_best_split(
+        &binned,
+        &surv,
+        &rows,
+        &units,
+        &features,
+        &params,
+        &LtrcLogRank,
     )
+    .map(|s| {
+        let col = binned.column(s.feature);
+        let mask = (0..n).map(|i| col[i] <= s.bin).collect();
+        (
+            s.feature,
+            s.threshold,
+            s.score,
+            mask,
+            s.ids_left,
+            s.ids_right,
+        )
+    }))
 }
 
 #[pymodule]

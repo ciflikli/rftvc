@@ -78,8 +78,8 @@ pub fn node_profile(surv: &SurvData, rows: &[u32]) -> NodeProfile {
 
 #[derive(Clone, Debug)]
 pub struct SplitParams {
-    /// Minimum rows per child. With one row per id (S1) this equals ids;
-    /// distinct-id counting for straddling ids arrives in S3.
+    /// Minimum distinct units (ids, or bootstrap copies of ids) per child.
+    /// An id whose rows fall on both sides counts in both children.
     pub min_leaf: usize,
     pub min_events_leaf: usize,
 }
@@ -92,18 +92,32 @@ pub struct SplitCandidate {
     /// Raw-value threshold: `x <= threshold` goes left.
     pub threshold: f64,
     pub score: f64,
-    pub n_left: usize,
-    pub n_right: usize,
+    /// Distinct units with at least one row in each child.
+    pub ids_left: usize,
+    pub ids_right: usize,
+}
+
+/// Number of distinct units, given that each unit's rows are contiguous.
+pub fn count_units(units: &[u32]) -> usize {
+    if units.is_empty() {
+        return 0;
+    }
+    1 + units.windows(2).filter(|w| w[0] != w[1]).count()
 }
 
 /// Best admissible split over `features`, using per-feature histograms over
 /// (bin x node event time) built with difference arrays.
+///
+/// `units[i]` is the resampling unit of `rows[i]`; each unit's rows must be
+/// contiguous. Distinct-unit counts per child are exact: a unit is in the left
+/// child iff its lowest bin is `<= b`, in the right iff its highest bin is `> b`.
 ///
 /// Cost per feature: `O(n_node + bins_used * K_node)`.
 pub fn best_split(
     binned: &Binned,
     surv: &SurvData,
     rows: &[u32],
+    units: &[u32],
     features: &[usize],
     params: &SplitParams,
     criterion: &dyn SplitCriterion,
@@ -119,7 +133,7 @@ pub fn best_split(
         at_risk: &p_at,
         events: &p_ev,
     };
-    let n = rows.len();
+    debug_assert_eq!(rows.len(), units.len());
     let n_events = local.iter().filter(|r| r.event).count();
 
     let mut best: Option<SplitCandidate> = None;
@@ -141,6 +155,24 @@ pub fn best_split(
         if nb < 2 {
             continue;
         }
+        // Lowest and highest bin of each unit (runs of equal `units`).
+        let (mut min_hist, mut max_hist) = ([0usize; 256], [0usize; 256]);
+        let mut n_units = 0usize;
+        let mut i = 0;
+        while i < rows.len() {
+            let unit = units[i];
+            let (mut lo, mut hi) = (u8::MAX, 0u8);
+            while i < rows.len() && units[i] == unit {
+                let bin = col[rows[i] as usize];
+                lo = lo.min(bin);
+                hi = hi.max(bin);
+                i += 1;
+            }
+            min_hist[lo as usize] += 1;
+            max_hist[hi as usize] += 1;
+            n_units += 1;
+        }
+
         let mut compact = [0u16; 256];
         for (c, &b) in used.iter().enumerate() {
             compact[b] = c as u16;
@@ -159,7 +191,7 @@ pub fn best_split(
 
         left_at.iter_mut().for_each(|v| *v = 0.0);
         left_ev.iter_mut().for_each(|v| *v = 0.0);
-        let (mut n_left, mut e_left) = (0usize, 0usize);
+        let (mut ids_left, mut max_le, mut e_left) = (0usize, 0usize, 0usize);
         for c in 0..nb - 1 {
             diff_run.copy_from_slice(&diff[c * (k + 1)..(c + 1) * (k + 1)]);
             let mut run = 0.0;
@@ -168,11 +200,12 @@ pub fn best_split(
                 left_at[j] += run;
                 left_ev[j] += ev[c * k + j];
             }
-            n_left += counts[used[c]];
+            ids_left += min_hist[used[c]];
+            max_le += max_hist[used[c]];
             e_left += ev_counts[used[c]];
-            let (n_right, e_right) = (n - n_left, n_events - e_left);
-            if n_left < params.min_leaf
-                || n_right < params.min_leaf
+            let (ids_right, e_right) = (n_units - max_le, n_events - e_left);
+            if ids_left < params.min_leaf
+                || ids_right < params.min_leaf
                 || e_left < params.min_events_leaf
                 || e_right < params.min_events_leaf
             {
@@ -190,8 +223,8 @@ pub fn best_split(
                     bin,
                     threshold: binned.edges[f][bin as usize],
                     score,
-                    n_left,
-                    n_right,
+                    ids_left,
+                    ids_right,
                 });
             }
         }

@@ -10,6 +10,15 @@ use crate::tree::{Tree, TreeParams, build_tree};
 /// Salt separating a tree's resampling stream from its feature-sampling stream.
 const SPLIT_STREAM: u64 = 0xA5A5_5A5A_C3C3_3C3C;
 
+/// Covariates beyond a path's last `stop`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Extrapolate {
+    /// Undefined (NaN): the future covariate path is unknown.
+    None,
+    /// Named scenario: the last row's covariates stay in force.
+    Locf,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Aggregate {
     /// `S = exp(-mean_b Λ_b)`.
@@ -92,12 +101,24 @@ pub fn fit_forest(
         .par_iter()
         .map(|&seed| {
             let ids = draw_ids(seed, groups.len(), params.n_draw, params.bootstrap);
-            let rows: Vec<u32> = ids
-                .iter()
-                .flat_map(|&g| groups.rows_of[g as usize].iter().copied())
-                .collect();
+            // Unit = position in the bag, so bootstrap copies of an id are distinct units.
+            let (mut rows, mut units) = (Vec::new(), Vec::new());
+            for (unit, &g) in ids.iter().enumerate() {
+                for &r in &groups.rows_of[g as usize] {
+                    rows.push(r);
+                    units.push(unit as u32);
+                }
+            }
             let mut rng = Rng::new(seed ^ SPLIT_STREAM);
-            build_tree(binned, surv, rows, &params.tree, &LtrcLogRank, &mut rng)
+            build_tree(
+                binned,
+                surv,
+                rows,
+                units,
+                &params.tree,
+                &LtrcLogRank,
+                &mut rng,
+            )
         })
         .collect();
     Forest {
@@ -165,6 +186,94 @@ impl Forest {
                     for (j, o) in row_out.iter_mut().enumerate() {
                         *o = -(max[j] + (sum[j] / n_trees).ln());
                     }
+                }
+            });
+        out
+    }
+
+    /// Conditional cumulative hazard along covariate paths, `(n_paths, times.len())`.
+    ///
+    /// Path `s` owns rows `offsets[s]..offsets[s+1]`, which must be contiguous
+    /// in time and sorted by `start`. Each row routes its own covariates, and the
+    /// row's leaf hazard accrues on `(start, stop]`. The value at `t` is
+    /// `Λ(t) - Λ(origin[s])`; it is NaN for `t < origin[s]`, and for `t` beyond
+    /// the last `stop` unless `extrapolate` is `Locf` (last row's covariates continue).
+    ///
+    /// `Survival` aggregation averages each tree's conditional survival,
+    /// `mean_b exp(-(Λ_b(t) - Λ_b(origin)))`, in log space.
+    #[allow(clippy::too_many_arguments)]
+    pub fn predict_paths(
+        &self,
+        x: &[f64],
+        n_features: usize,
+        start: &[f64],
+        stop: &[f64],
+        offsets: &[usize],
+        origin: &[f64],
+        times: &[f64],
+        agg: Aggregate,
+        extrapolate: Extrapolate,
+    ) -> Vec<f64> {
+        let m = times.len();
+        let n_trees = self.trees.len() as f64;
+        let n_paths = offsets.len().saturating_sub(1);
+        let mut out = vec![0.0; n_paths * m];
+        out.par_chunks_mut(m.max(1))
+            .enumerate()
+            .for_each(|(p, row_out)| {
+                let (r0, r1) = (offsets[p], offsets[p + 1]);
+                let last_stop = stop[r1 - 1];
+                let u = origin[p];
+                let mut leaves = vec![0usize; r1 - r0];
+                let (mut max, mut sum) = (vec![f64::NEG_INFINITY; m], vec![0.0; m]);
+                for tree in &self.trees {
+                    for (l, r) in leaves.iter_mut().zip(r0..r1) {
+                        *l = tree.apply(&x[r * n_features..(r + 1) * n_features]);
+                    }
+                    // Cumulative hazard of this tree along the path up to time t.
+                    let path_cumhaz = |t: f64| -> f64 {
+                        let mut h = 0.0;
+                        for (i, r) in (r0..r1).enumerate() {
+                            if t <= start[r] {
+                                break;
+                            }
+                            let end = if r == r1 - 1 && extrapolate == Extrapolate::Locf {
+                                t
+                            } else {
+                                t.min(stop[r])
+                            };
+                            h += tree.cumhaz_at(leaves[i], end)
+                                - tree.cumhaz_at(leaves[i], start[r]);
+                        }
+                        h
+                    };
+                    let h_origin = path_cumhaz(u);
+                    for (j, &t) in times.iter().enumerate() {
+                        let h = path_cumhaz(t) - h_origin;
+                        match agg {
+                            Aggregate::Hazard => row_out[j] += h,
+                            Aggregate::Survival => {
+                                let a = -h;
+                                if a > max[j] {
+                                    sum[j] = sum[j] * (max[j] - a).exp() + 1.0;
+                                    max[j] = a;
+                                } else {
+                                    sum[j] += (a - max[j]).exp();
+                                }
+                            }
+                        }
+                    }
+                }
+                for (j, (o, &t)) in row_out.iter_mut().zip(times).enumerate() {
+                    let undefined = t < u || (t > last_stop && extrapolate == Extrapolate::None);
+                    *o = if undefined {
+                        f64::NAN
+                    } else {
+                        match agg {
+                            Aggregate::Hazard => *o / n_trees,
+                            Aggregate::Survival => -(max[j] + (sum[j] / n_trees).ln()),
+                        }
+                    };
                 }
             });
         out
