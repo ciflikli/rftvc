@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::criterion::SplitCriterion;
 use crate::data::{Binned, SurvData};
 use crate::rng::Rng;
@@ -40,7 +42,7 @@ pub struct TreeParams {
 pub struct Tree {
     pub nodes: Vec<Node>,
     pub leaves: Vec<Leaf>,
-    pub grid_times: Vec<f64>,
+    pub grid_times: Arc<Vec<f64>>,
 }
 
 pub fn build_tree(
@@ -113,7 +115,7 @@ pub fn build_tree(
     Tree {
         nodes,
         leaves,
-        grid_times: surv.grid.times.clone(),
+        grid_times: Arc::clone(&surv.grid.times),
     }
 }
 

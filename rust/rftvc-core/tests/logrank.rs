@@ -28,7 +28,7 @@ fn logrank_matches_hand_computation() {
 #[test]
 fn grid_index_convention_at_boundaries() {
     let grid = Grid {
-        times: vec![1.0, 2.0, 3.0],
+        times: std::sync::Arc::new(vec![1.0, 2.0, 3.0]),
     };
     assert_eq!(grid.first_greater(0.5), 0);
     assert_eq!(grid.first_greater(1.0), 1); // start == t_0: not at risk at t_0

@@ -16,6 +16,7 @@ dev = [
     "pytest>=8",
     "hypothesis>=6",
     "lifelines>=0.29",
+    "scikit-survival>=0.23",
 ]
 
 [tool.maturin]

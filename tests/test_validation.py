@@ -43,11 +43,9 @@ def test_rejects_no_events():
         check_survival_y(make_survival_y([1.0, 2.0], [0, 0]))
 
 
-def test_s1_scope_guards():
+def test_scope_guards():
     X = np.zeros((3, 1))
     y = make_survival_y([1.0, 2.0, 3.0], [1, 1, 0])
-    with pytest.raises(NotImplementedError):
-        SurvivalForestTV(n_estimators=2).fit(X, y)
     with pytest.raises(NotImplementedError):
         SurvivalForestTV().fit(X, make_survival_y([1.0, 2.0, 3.0], [1, 1, 0], start=[0.5, 0, 0]))
     with pytest.raises(NotImplementedError):
