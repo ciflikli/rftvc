@@ -5,8 +5,8 @@ Rule: after each slice, run the full test suite, tick the box, and note any devi
 
 ## Status
 - [x] S1: Walking skeleton — a single survival tree, right-censored, fixed covariates (branch `feat/s1-skeleton`)
-- [ ] S2: Forest — id subsampling, rayon, hazard aggregation  <-- NEXT
-- [ ] S3: Counting-process TVCs + left truncation
+- [x] S2: Forest — id subsampling, rayon, hazard aggregation (branch `feat/s2-forest`)
+- [ ] S3: Counting-process TVCs + left truncation  <-- NEXT
 - [ ] S4: Landmark workflow
 - [ ] S5: Model selection + metrics (+ id-level OOB)
 - [ ] S6: Coarse grid mode + performance pass + benchmarks
@@ -74,6 +74,20 @@ Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pyte
 - **Benchmark report (slow, not a gate):** GBSG2 against scikit-survival RSF. Committed fixed folds, seeds, preprocessing, parameter mapping (`min_ids_leaf` ↔ `min_samples_leaf`, one row per id) and prediction times. C-index and IBS via `sksurv.metrics`. Report the differences with a ±0.02 tolerance rationale.
 
 **Accept:** a 500-tree fit on GBSG2 takes under 5 s on 8 cores. This is a provisional bound, revisited in S6.
+
+**S2 done (2026-09-25). Deviations / notes:**
+- `max_samples=None` is the default. It resolves to 0.632 without bootstrap and 1.0 with it, so `bootstrap=True` alone gives a classic bootstrap (the plan had `max_samples=0.632`).
+- Per-tree survival under `aggregate="survival"` is `exp(-Λ_b)` (Nelson–Aalen based), not Kaplan–Meier. This keeps both rules on the hazard scale and makes the Jensen ordering exact.
+- Bags are not stored. Each is recomputed from its per-tree seed (`in_bag_ids`) for OOB (S5) and diagnostics.
+- Resampling draws whole ids through `Groups`, so it is ready for multiple rows per id. Fitting still requires one row per id until S3; the whole-id test becomes meaningful there.
+- Pickling works through a flat struct-of-arrays state (`FlatForest`). On load it validates offsets, index ranges and child ordering (no cycles).
+- `Forest` stores `n_features`; prediction rejects a wrong X width in Rust as well as in Python.
+- The S1 `_core.fit_tree` / `Tree` API is replaced by `_core.fit_forest` / `Forest`. The S1 oracle tests now run on a one-tree, full-sample forest.
+- CI triggers are trimmed to pushes to `main` plus PRs, so jobs no longer run twice.
+- **Benchmark (`docs/bench/s2-gbsg2.md`, M-series, 10 cores):**
+  - parity run ΔC = −0.002, ΔIBS = +0.001 against sksurv RSF
+  - fit time 0.04 s vs sksurv 0.28 s per fold
+  - Accept (< 5 s) met.
 
 ## S3: Counting-process TVCs + left truncation
 **Files:** `_validation.py` (`check_counting_process`); `rust/.../splitter.rs` (entry/exit index convention, straddling-id leaf rule); `predict.rs`; `tests/test_tvc.py`, `tests/sim.py`.

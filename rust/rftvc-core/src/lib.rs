@@ -5,6 +5,8 @@
 
 pub mod criterion;
 pub mod data;
+pub mod flat;
+pub mod forest;
 pub mod grid;
 pub mod rng;
 pub mod splitter;
@@ -12,6 +14,8 @@ pub mod tree;
 
 pub use criterion::{LtrcLogRank, Profile, SplitCriterion};
 pub use data::{Binned, SurvData};
+pub use flat::FlatForest;
+pub use forest::{Aggregate, Forest, ForestParams, Groups, draw_ids, fit_forest};
 pub use grid::Grid;
 pub use splitter::{
     NodeProfile, SplitCandidate, SplitParams, best_split, node_profile, profile_on,

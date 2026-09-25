@@ -1,7 +1,9 @@
-/// Sorted, unique event times `t_0 < … < t_{K-1}`.
+use std::sync::Arc;
+
+/// Sorted, unique event times `t_0 < … < t_{K-1}`, shared (cheaply cloned) by all trees.
 #[derive(Clone, Debug)]
 pub struct Grid {
-    pub times: Vec<f64>,
+    pub times: Arc<Vec<f64>>,
 }
 
 impl Grid {
@@ -15,7 +17,9 @@ impl Grid {
             .collect();
         times.sort_by(|a, b| a.partial_cmp(b).expect("NaN time"));
         times.dedup();
-        Grid { times }
+        Grid {
+            times: Arc::new(times),
+        }
     }
 
     pub fn len(&self) -> usize {

@@ -10,6 +10,11 @@ from lifelines import NelsonAalenFitter
 from rftvc import SurvivalForestTV, _core, make_survival_y
 from tests.ref.logrank_ref import logrank_ref, nelson_aalen_ref
 
+def _tree(**kw):
+    """One tree on all ids: the S1 single-tree setting."""
+    return SurvivalForestTV(**{"n_estimators": 1, "max_samples": 1.0, "max_features": None, **kw})
+
+
 FIXTURES = json.loads((Path(__file__).parent / "fixtures" / "survdiff.json").read_text())
 
 
@@ -26,9 +31,9 @@ def _data(n, p, seed, ties=True):
 @pytest.mark.parametrize("ties", [True, False])
 def test_root_leaf_matches_nelson_aalen(ties):
     X, t, e = _data(300, 3, seed=1, ties=ties)
-    model = SurvivalForestTV(max_depth=0).fit(X, make_survival_y(t, e))
-    assert model.tree_.n_leaves == 1
-    times, d, y, cumhaz = model.tree_.leaf_profile(0)
+    model = _tree(max_depth=0).fit(X, make_survival_y(t, e))
+    assert model.forest_.n_leaves(0) == 1
+    times, d, y, cumhaz = model.forest_.leaf_profile(0, 0)
     naf = NelsonAalenFitter(nelson_aalen_smoothing=False).fit(t, e, timeline=times)
     np.testing.assert_allclose(cumhaz, naf.cumulative_hazard_.to_numpy().ravel(), rtol=0, atol=1e-10)
     np.testing.assert_allclose(model.predict_cumulative_hazard(X[:5], times), np.tile(cumhaz, (5, 1)), atol=1e-10)
@@ -36,8 +41,8 @@ def test_root_leaf_matches_nelson_aalen(ties):
 
 def test_cumulative_hazard_is_right_continuous_step():
     X, t, e = _data(100, 1, seed=2)
-    model = SurvivalForestTV(max_depth=0).fit(X, make_survival_y(t, e))
-    times, *_, cumhaz = map(np.asarray, model.tree_.leaf_profile(0))
+    model = _tree(max_depth=0).fit(X, make_survival_y(t, e))
+    times, *_, cumhaz = map(np.asarray, model.forest_.leaf_profile(0, 0))
     before = model.predict_cumulative_hazard(X[:1], times - 1e-9)[0]
     at = model.predict_cumulative_hazard(X[:1], times)[0]
     np.testing.assert_allclose(at, cumhaz, atol=1e-12)
@@ -93,9 +98,9 @@ def test_histogram_split_matches_brute_force(n, p, seed, min_leaf, min_events):
 
 def test_tree_predictions_follow_leaf_assignment():
     X, t, e = _data(400, 3, seed=3)
-    model = SurvivalForestTV(min_ids_leaf=20, random_state=0).fit(X, make_survival_y(t, e))
-    assert model.tree_.n_leaves > 1
-    leaves = model.apply(X)
+    model = _tree(min_ids_leaf=20, random_state=0).fit(X, make_survival_y(t, e))
+    assert model.forest_.n_leaves(0) > 1
+    leaves = model.apply(X)[:, 0]
     H = model.predict_cumulative_hazard(X)
     for leaf in np.unique(leaves):
         rows = H[leaves == leaf]
@@ -104,8 +109,8 @@ def test_tree_predictions_follow_leaf_assignment():
 
 def test_min_leaf_constraints_hold():
     X, t, e = _data(400, 3, seed=4)
-    model = SurvivalForestTV(min_ids_leaf=25, min_events_leaf=5, random_state=0).fit(X, make_survival_y(t, e))
-    leaves = model.apply(X)
+    model = _tree(min_ids_leaf=25, min_events_leaf=5, random_state=0).fit(X, make_survival_y(t, e))
+    leaves = model.apply(X)[:, 0]
     for leaf in np.unique(leaves):
         in_leaf = leaves == leaf
         assert in_leaf.sum() >= 25
@@ -115,8 +120,8 @@ def test_min_leaf_constraints_hold():
 def test_random_state_is_deterministic():
     X, t, e = _data(300, 4, seed=5)
     y = make_survival_y(t, e)
-    a = SurvivalForestTV(max_features=2, random_state=7).fit(X, y).predict_cumulative_hazard(X)
-    b = SurvivalForestTV(max_features=2, random_state=7).fit(X, y).predict_cumulative_hazard(X)
+    a = _tree(max_features=2, random_state=7).fit(X, y).predict_cumulative_hazard(X)
+    b = _tree(max_features=2, random_state=7).fit(X, y).predict_cumulative_hazard(X)
     np.testing.assert_array_equal(a, b)
 
 
@@ -131,8 +136,8 @@ def test_split_on_extreme_feature_values():
 
 def test_multi_leaf_predictions_match_per_leaf_nelson_aalen():
     X, t, e = _data(500, 3, seed=6)
-    model = SurvivalForestTV(min_ids_leaf=20, random_state=0).fit(X, make_survival_y(t, e))
-    leaves = model.apply(X)
+    model = _tree(min_ids_leaf=20, random_state=0).fit(X, make_survival_y(t, e))
+    leaves = model.apply(X)[:, 0]
     assert len(np.unique(leaves)) >= 3
     times = np.unique(t)
     H = model.predict_cumulative_hazard(X, times)
@@ -193,7 +198,8 @@ def test_core_rejects_mismatched_lengths():
     with pytest.raises(ValueError, match="start"):
         _core.best_split(X, zero, one, ev, min_ids_leaf=1, min_events_leaf=1)
     with pytest.raises(ValueError, match="start"):
-        _core.fit_tree(X, zero, one, ev, max_depth=None, min_ids_leaf=1,
-                       min_events_leaf=1, max_features=1, max_bins=255, seed=0)
+        _core.fit_forest(X, zero, one, ev, np.zeros(1, np.uint32), 1, n_trees=1, n_draw=1,
+                         bootstrap=False, max_depth=None, min_ids_leaf=1, min_events_leaf=1,
+                         max_features=1, max_bins=255, seed=0, n_jobs=1)
     with pytest.raises(ValueError, match="left"):
         _core.logrank_score(zero, one, ev, np.ones(2, bool))

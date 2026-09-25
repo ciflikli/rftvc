@@ -2,12 +2,13 @@
 
 use numpy::ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2};
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use rftvc_core::rng::Rng;
+use pyo3::types::PyDict;
 use rftvc_core::{
-    Binned, LtrcLogRank, Profile, SplitCriterion, SplitParams, SurvData, Tree, TreeParams,
-    best_split as core_best_split, build_tree, node_profile, profile_on,
+    Aggregate, Binned, FlatForest, Forest, ForestParams, Groups, LtrcLogRank, Profile,
+    SplitCriterion, SplitParams, SurvData, TreeParams, best_split as core_best_split, fit_forest,
+    node_profile, profile_on,
 };
 
 fn matrix(x: &PyReadonlyArray2<f64>) -> (Vec<f64>, usize, usize) {
@@ -39,97 +40,209 @@ fn surv_data(
     SurvData::new(&s, &t, &e)
 }
 
+fn pool(n_jobs: usize) -> PyResult<rayon::ThreadPool> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(n_jobs.max(1))
+        .build()
+        .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+}
+
+fn aggregate(name: &str) -> PyResult<Aggregate> {
+    match name {
+        "hazard" => Ok(Aggregate::Hazard),
+        "survival" => Ok(Aggregate::Survival),
+        _ => Err(PyValueError::new_err(
+            "aggregate must be 'hazard' or 'survival'",
+        )),
+    }
+}
+
 /// `(event_times, d, y, cumhaz)` of one leaf.
 type LeafProfile = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>);
 
-#[pyclass(module = "rftvc._core", name = "Tree", frozen)]
-struct PyTree {
-    inner: Tree,
+#[pyclass(module = "rftvc._core", name = "Forest", frozen)]
+struct PyForest {
+    inner: Forest,
+}
+
+impl PyForest {
+    fn check_x(&self, x: &PyReadonlyArray2<f64>) -> PyResult<(Vec<f64>, usize, usize)> {
+        let (v, n, p) = matrix(x);
+        if p != self.inner.n_features {
+            return Err(PyValueError::new_err(format!(
+                "X has {p} features, expected {}",
+                self.inner.n_features
+            )));
+        }
+        Ok((v, n, p))
+    }
+
+    fn tree(&self, tree: usize) -> PyResult<&rftvc_core::Tree> {
+        self.inner
+            .trees
+            .get(tree)
+            .ok_or_else(|| PyValueError::new_err("tree index out of range"))
+    }
 }
 
 #[pymethods]
-impl PyTree {
+impl PyForest {
     #[getter]
-    fn n_leaves(&self) -> usize {
-        self.inner.leaves.len()
+    fn n_trees(&self) -> usize {
+        self.inner.trees.len()
     }
 
-    #[getter]
-    fn n_nodes(&self) -> usize {
-        self.inner.nodes.len()
+    fn n_leaves(&self, tree: usize) -> PyResult<usize> {
+        Ok(self.tree(tree)?.leaves.len())
     }
 
-    /// Leaf index for each row of `x`.
-    fn apply<'py>(
-        &self,
-        py: Python<'py>,
-        x: PyReadonlyArray2<'py, f64>,
-    ) -> Bound<'py, PyArray1<i64>> {
-        let (v, n, p) = matrix(&x);
-        let out: Vec<i64> = (0..n)
-            .map(|i| self.inner.apply(&v[i * p..(i + 1) * p]) as i64)
-            .collect();
-        out.into_pyarray(py)
-    }
-
-    /// Cumulative hazard `(n_rows, n_times)` for rows starting at time 0.
-    fn predict_cumhaz<'py>(
-        &self,
-        py: Python<'py>,
-        x: PyReadonlyArray2<'py, f64>,
-        times: PyReadonlyArray1<'py, f64>,
-    ) -> Bound<'py, PyArray2<f64>> {
-        let (v, n, p) = matrix(&x);
-        let times: Vec<f64> = times.as_array().to_vec();
-        let m = times.len();
-        let tree = &self.inner;
-        let out = py.detach(|| {
-            let mut out = vec![0.0; n * m];
-            for i in 0..n {
-                let leaf = tree.apply(&v[i * p..(i + 1) * p]);
-                for (j, &t) in times.iter().enumerate() {
-                    out[i * m + j] = tree.cumhaz_at(leaf, t);
-                }
-            }
-            out
-        });
-        Array2::from_shape_vec((n, m), out)
-            .expect("shape")
-            .into_pyarray(py)
-    }
-
-    /// `(event_times, d, y, cumhaz)` of one leaf.
-    fn leaf_profile(&self, leaf: usize) -> PyResult<LeafProfile> {
-        let l = self
-            .inner
+    /// `(event_times, d, y, cumhaz)` of one leaf of one tree.
+    fn leaf_profile(&self, tree: usize, leaf: usize) -> PyResult<LeafProfile> {
+        let t = self.tree(tree)?;
+        let l = t
             .leaves
             .get(leaf)
             .ok_or_else(|| PyValueError::new_err("leaf index out of range"))?;
         let times = l
             .event_idx
             .iter()
-            .map(|&k| self.inner.grid_times[k as usize])
+            .map(|&k| t.grid_times[k as usize])
             .collect();
         Ok((times, l.d.clone(), l.y.clone(), l.cumhaz.clone()))
+    }
+
+    /// Id indices each tree was grown on (sorted; repeats under bootstrap).
+    fn in_bag_ids<'py>(&self, py: Python<'py>, tree: usize) -> PyResult<Bound<'py, PyArray1<u32>>> {
+        self.tree(tree)?;
+        Ok(self.inner.in_bag_ids(tree).into_pyarray(py))
+    }
+
+    /// Leaf index per (row, tree).
+    fn apply<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        n_jobs: usize,
+    ) -> PyResult<Bound<'py, PyArray2<u32>>> {
+        let (v, n, p) = self.check_x(&x)?;
+        let k = self.inner.trees.len();
+        let forest = &self.inner;
+        let pool = pool(n_jobs)?;
+        let out = py.detach(|| pool.install(|| forest.apply(&v, p)));
+        Ok(Array2::from_shape_vec((n, k), out)
+            .expect("shape")
+            .into_pyarray(py))
+    }
+
+    /// Ensemble cumulative hazard `(n_rows, n_times)` for rows starting at time 0.
+    fn predict_cumhaz<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        times: PyReadonlyArray1<'py, f64>,
+        aggregate_by: &str,
+        n_jobs: usize,
+    ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let (v, n, p) = self.check_x(&x)?;
+        let agg = aggregate(aggregate_by)?;
+        let times: Vec<f64> = times.as_array().to_vec();
+        let m = times.len();
+        let forest = &self.inner;
+        let pool = pool(n_jobs)?;
+        let out = py.detach(|| pool.install(|| forest.predict_cumhaz(&v, p, &times, agg)));
+        Ok(Array2::from_shape_vec((n, m), out)
+            .expect("shape")
+            .into_pyarray(py))
+    }
+
+    /// Pickle support: rebuild via `Forest._from_state(state)`.
+    fn __reduce__<'py>(
+        slf: &Bound<'py, Self>,
+    ) -> PyResult<(Bound<'py, PyAny>, (Bound<'py, PyDict>,))> {
+        let py = slf.py();
+        let f = FlatForest::from_forest(&slf.get().inner);
+        let d = PyDict::new(py);
+        d.set_item("grid", f.grid.into_pyarray(py))?;
+        d.set_item("tree_seeds", f.tree_seeds.into_pyarray(py))?;
+        d.set_item("n_features", f.n_features)?;
+        d.set_item("n_groups", f.n_groups)?;
+        d.set_item("n_draw", f.n_draw)?;
+        d.set_item("bootstrap", f.bootstrap)?;
+        d.set_item("node_offsets", f.node_offsets.into_pyarray(py))?;
+        d.set_item("node_feature", f.node_feature.into_pyarray(py))?;
+        d.set_item("node_threshold", f.node_threshold.into_pyarray(py))?;
+        d.set_item("node_left", f.node_left.into_pyarray(py))?;
+        d.set_item("node_right", f.node_right.into_pyarray(py))?;
+        d.set_item("leaf_offsets", f.leaf_offsets.into_pyarray(py))?;
+        d.set_item("event_offsets", f.event_offsets.into_pyarray(py))?;
+        d.set_item("event_idx", f.event_idx.into_pyarray(py))?;
+        d.set_item("d", f.d.into_pyarray(py))?;
+        d.set_item("y", f.y.into_pyarray(py))?;
+        Ok((slf.getattr("_from_state")?, (d,)))
+    }
+
+    #[staticmethod]
+    fn _from_state(state: &Bound<'_, PyDict>) -> PyResult<PyForest> {
+        fn item<'py>(d: &Bound<'py, PyDict>, key: &str) -> PyResult<Bound<'py, PyAny>> {
+            d.get_item(key)?
+                .ok_or_else(|| PyValueError::new_err(format!("forest state missing '{key}'")))
+        }
+        macro_rules! vec_of {
+            ($key:expr, $t:ty) => {
+                item(state, $key)?
+                    .extract::<PyReadonlyArray1<$t>>()?
+                    .as_array()
+                    .to_vec()
+            };
+        }
+        let flat = FlatForest {
+            grid: vec_of!("grid", f64),
+            tree_seeds: vec_of!("tree_seeds", u64),
+            n_features: item(state, "n_features")?.extract()?,
+            n_groups: item(state, "n_groups")?.extract()?,
+            n_draw: item(state, "n_draw")?.extract()?,
+            bootstrap: item(state, "bootstrap")?.extract()?,
+            node_offsets: vec_of!("node_offsets", u64),
+            node_feature: vec_of!("node_feature", i64),
+            node_threshold: vec_of!("node_threshold", f64),
+            node_left: vec_of!("node_left", u32),
+            node_right: vec_of!("node_right", u32),
+            leaf_offsets: vec_of!("leaf_offsets", u64),
+            event_offsets: vec_of!("event_offsets", u64),
+            event_idx: vec_of!("event_idx", u32),
+            d: vec_of!("d", f64),
+            y: vec_of!("y", f64),
+        };
+        let inner = flat.to_forest().map_err(PyValueError::new_err)?;
+        Ok(PyForest { inner })
     }
 }
 
 #[pyfunction]
-#[pyo3(signature = (x, start, stop, event, *, max_depth, min_ids_leaf, min_events_leaf, max_features, max_bins, seed))]
+#[pyo3(name = "fit_forest", signature = (
+    x, start, stop, event, groups, n_groups, *, n_trees, n_draw, bootstrap,
+    max_depth, min_ids_leaf, min_events_leaf, max_features, max_bins, seed, n_jobs
+))]
 #[allow(clippy::too_many_arguments)]
-fn fit_tree(
+fn fit_forest_py(
     py: Python<'_>,
     x: PyReadonlyArray2<'_, f64>,
     start: PyReadonlyArray1<'_, f64>,
     stop: PyReadonlyArray1<'_, f64>,
     event: PyReadonlyArray1<'_, bool>,
+    groups: PyReadonlyArray1<'_, u32>,
+    n_groups: usize,
+    n_trees: usize,
+    n_draw: usize,
+    bootstrap: bool,
     max_depth: Option<usize>,
     min_ids_leaf: usize,
     min_events_leaf: usize,
     max_features: usize,
     max_bins: usize,
     seed: u64,
-) -> PyResult<PyTree> {
+    n_jobs: usize,
+) -> PyResult<PyForest> {
     let (v, n, p) = matrix(&x);
     check_lengths(
         n,
@@ -137,31 +250,42 @@ fn fit_tree(
             ("start", start.as_array().len()),
             ("stop", stop.as_array().len()),
             ("event", event.as_array().len()),
+            ("groups", groups.as_array().len()),
         ],
     )?;
     if !(2..=256).contains(&max_bins) {
         return Err(PyValueError::new_err("max_bins must be in [2, 256]"));
     }
+    let groups: Vec<u32> = groups.as_array().to_vec();
+    if n_groups == 0 || groups.iter().any(|&g| g as usize >= n_groups) {
+        return Err(PyValueError::new_err("groups must be in [0, n_groups)"));
+    }
+    if n_trees == 0 || n_draw == 0 || (!bootstrap && n_draw > n_groups) {
+        return Err(PyValueError::new_err(
+            "need n_trees >= 1 and 1 <= n_draw (<= n_groups without bootstrap)",
+        ));
+    }
     let surv = surv_data(&start, &stop, &event);
-    let params = TreeParams {
-        max_depth,
-        min_ids_leaf,
-        min_events_leaf,
-        max_features: max_features.clamp(1, p),
+    let params = ForestParams {
+        tree: TreeParams {
+            max_depth,
+            min_ids_leaf,
+            min_events_leaf,
+            max_features: max_features.clamp(1, p),
+        },
+        n_trees,
+        n_draw,
+        bootstrap,
+        seed,
     };
+    let pool = pool(n_jobs)?;
     let inner = py.detach(|| {
-        let binned = Binned::fit(&v, n, p, max_bins);
-        let rows: Vec<u32> = (0..n as u32).collect();
-        build_tree(
-            &binned,
-            &surv,
-            rows,
-            &params,
-            &LtrcLogRank,
-            &mut Rng::new(seed),
-        )
+        pool.install(|| {
+            let binned = Binned::fit(&v, n, p, max_bins);
+            fit_forest(&binned, &surv, &Groups::new(&groups, n_groups), &params)
+        })
     });
-    Ok(PyTree { inner })
+    Ok(PyForest { inner })
 }
 
 /// LTRC log-rank chi-square comparing `left` rows against the rest.
@@ -247,8 +371,8 @@ fn best_split(
 
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyTree>()?;
-    m.add_function(wrap_pyfunction!(fit_tree, m)?)?;
+    m.add_class::<PyForest>()?;
+    m.add_function(wrap_pyfunction!(fit_forest_py, m)?)?;
     m.add_function(wrap_pyfunction!(logrank_score, m)?)?;
     m.add_function(wrap_pyfunction!(best_split, m)?)?;
     Ok(())

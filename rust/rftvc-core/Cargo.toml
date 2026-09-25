@@ -5,3 +5,4 @@ edition = "2024"
 description = "Survival forest engine for counting-process data (time-varying covariates, left truncation)"
 
 [dependencies]
+rayon = "1.12.0"
