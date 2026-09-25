@@ -23,6 +23,7 @@ from sklearn.model_selection import GroupKFold
 from .landmark import _as_polars, make_landmark_data
 from .metrics import (
     KaplanMeierCensoring,
+    UndefinedMetricError,
     _outcome_classes,
     brier_landmark,
     cindex_dynamic,
@@ -193,7 +194,7 @@ def _score_landmark(forest, X, y, w, scoring, times, censoring_estimator, g_min)
                 out[name] = cindex_dynamic(y, risk, w, kind="incident", **kw)
             else:
                 out[name] = float(scoring[name](y, risk, w, **kw))
-        except ValueError:  # e.g. no cases at this landmark
+        except UndefinedMetricError:  # e.g. no cases at this landmark; configuration errors propagate
             out[name] = np.nan
     return out
 
@@ -239,7 +240,9 @@ def landmark_cross_validate(
     scoring : sequence of str or dict
         Names among ``"brier"``, ``"integrated_brier"`` (over ``n_times`` equally
         spaced times in ``(0, w]``), ``"cindex_cumulative"``, ``"cindex_incident"``,
-        or a dict ``{name: f(y, risk, w, *, censoring_estimator, g_min)}``.
+        or a dict ``{name: f(y, risk, w, *, censoring_estimator, g_min)}``. A score
+        that raises ``metrics.UndefinedMetricError`` at a landmark is NaN there;
+        any other error propagates.
 
     Returns
     -------
@@ -270,6 +273,8 @@ def landmark_cross_validate(
     if candidates is not None and refit not in scoring:
         raise ValueError("refit must be one of the scoring names")
 
+    if not isinstance(n_times, numbers.Integral) or n_times < (2 if "integrated_brier" in scoring else 1):
+        raise ValueError("n_times must be an integer >= 1 (>= 2 with integrated_brier)")
     times = np.linspace(0, w, n_times + 1)[1:]
     data = _landmark_data(model, df)
     ids = data.ids

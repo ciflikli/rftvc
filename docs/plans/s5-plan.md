@@ -28,3 +28,8 @@ Branch `feat/s5-model-selection`. Parent: `plan.md` S5, `design.md` "Model selec
 2. sksurv parity excludes test non-events at `stop == w` (medium) → item 3 wording; fixture avoids it.
 3. "incident" is Uno's truncated C, not a single-time I/D AUC (medium) → documented as integrated I/D concordance (item 6).
 4. Per-bin KM calibration assumes within-bin independent censoring (medium) → documented (item 7).
+
+## Diff review (Codex, 2026-09-25)
+1. A bad `n_times` became NaN scores via a blanket `except ValueError` (high/medium) → `n_times` validated up front; only `metrics.UndefinedMetricError` becomes NaN.
+2. Nested-CV test too weak (high/low) → already fixed by the test-quality pass (independent inner-loop replay, min and max scorers).
+3. Censoring-model spy covered only `RollingOriginSplit` (high/low) → also runs on `GroupTimeSplit`, against the fold's own test rows.

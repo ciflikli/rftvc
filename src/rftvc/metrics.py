@@ -27,12 +27,17 @@ from ._validation import check_survival_y
 
 __all__ = [
     "KaplanMeierCensoring",
+    "UndefinedMetricError",
     "brier_landmark",
     "calibration_table",
     "cindex_dynamic",
     "concordance_index_cp",
     "integrated_brier",
 ]
+
+
+class UndefinedMetricError(ValueError):
+    """The metric is undefined on these outcomes (e.g. no case or no comparable pair)."""
 
 
 class KaplanMeierCensoring(BaseEstimator):
@@ -283,7 +288,7 @@ def concordance_index_cp(y, risk, ids=None):
     groups = None if ids is None else np.unique(np.asarray(ids), return_inverse=True)[1].ravel()
     num, den, _ = _concordance(start, stop, event, risk, np.ones(stop.size), groups)
     if den == 0:
-        raise ValueError("no comparable pairs")
+        raise UndefinedMetricError("no comparable pairs")
     return num / den
 
 
@@ -311,7 +316,7 @@ def cindex_dynamic(
     case, control, weights, info = _ipcw(stop, event, w, y_censor, censoring_estimator, g_min)
     if kind == "cumulative":
         if not case.any() or not control.any():
-            raise ValueError("need at least one case and one control at w")
+            raise UndefinedMetricError("need at least one case and one control at w")
         ctrl = np.sort(risk[control])
         rc = risk[case]
         less = np.searchsorted(ctrl, rc, side="left")
@@ -321,7 +326,7 @@ def cindex_dynamic(
     else:
         num, den, _ = _concordance(np.zeros(stop.size), stop, event, risk, np.square(weights), event_mask=case)
         if den == 0:
-            raise ValueError("no comparable pairs before w")
+            raise UndefinedMetricError("no comparable pairs before w")
         score = num / den
     return (score, info) if return_info else score
 

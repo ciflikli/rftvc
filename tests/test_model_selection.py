@@ -139,15 +139,19 @@ def _fold_test_ids(cv, data, fold):
     return np.unique(data.ids[test])
 
 
-def test_censoring_model_is_fitted_on_each_test_landmark_only(panel):
+@pytest.mark.parametrize("cv", [RollingOriginSplit(2, test_size=6, gap=6), GroupTimeSplit(2, test_size=6, gap=6)])
+def test_censoring_model_is_fitted_on_each_test_landmark_only(panel, cv):
     SpyCensoring.seen = []
-    cv = RollingOriginSplit(2, test_size=6, gap=6)
     res = landmark_cross_validate(_model(), panel, cv, censoring_estimator=SpyCensoring())
     data = make_landmark_data(panel, horizon=6.0, step=6.0, history_features=FEATURES)
     ipcw_rows = res.filter(pl.col("n_censored") > 0)
     assert len(SpyCensoring.seen) == ipcw_rows.height > 0
-    for y, s in zip(SpyCensoring.seen, ipcw_rows["landmark"]):
-        expected = data.y[data.s == s]  # the test risk set at s, nothing else
+    tests = [test for _, test in cv.split(data.s, groups=data.groups)]
+    for y, fold, s in zip(SpyCensoring.seen, ipcw_rows["fold"], ipcw_rows["landmark"]):
+        test = tests[fold]
+        expected = data.y[test[data.s[test] == s]]  # this fold's test risk set at s, nothing else
+        if isinstance(cv, GroupTimeSplit):
+            assert expected.size < (data.s == s).sum()  # other groups at s are excluded
         np.testing.assert_array_equal(np.sort(y, order=["stop", "event"]), np.sort(expected, order=["stop", "event"]))
 
 
@@ -166,6 +170,12 @@ def test_group_kfold_is_new_subject_cv(panel):
         assert df_train.sort(["id", "start"]).equals(full.sort(["id", "start"]))
         np.testing.assert_array_equal(train_s, np.unique(data.s[train]))
         assert not np.isin(data.ids[test], train_ids).any()
+
+
+@pytest.mark.parametrize("scoring, n_times", [(["integrated_brier"], 1), (["brier"], 0)])
+def test_invalid_time_grid_raises_instead_of_scoring_nan(panel, scoring, n_times):
+    with pytest.raises(ValueError, match="n_times"):
+        landmark_cross_validate(_model(), panel, RollingOriginSplit(2, test_size=6, gap=6), scoring, n_times=n_times)
 
 
 def test_scorer_callables_and_shorter_horizon(panel):
