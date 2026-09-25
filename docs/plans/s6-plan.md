@@ -39,13 +39,13 @@ Branch `feat/s6-coarse-grid`. Parent: `plan.md` S6, `design.md` D8 "Time grid an
 9. **Targets** are written back into design.md from the measured numbers, e.g. "1M rows × 100 trees coarse < N s on 10 cores; peak memory < M × data size".
 
 ## Tasks
-- [ ] Rust: `Grid::quantile`, snapping grid, `coarsen()` + unit tests; binding `_core.coarsen`
-- [ ] Python: `ntime` param, fit wiring, diagnostics, docs
-- [ ] Tests: table-driven D8 fixtures (non-first collapsed event row, first-row collapse → dropped + counted, in-bin entry, in-bin censoring, beyond-last-event rows, stacked layout); single-node Λ on coarsened data = `nelson_aalen_ref`/lifelines on hand-built coarsened rows; coarse forest = exact forest on hand-built rows (same seed)
-- [ ] Baseline profile → `docs/scratch/perf.md`
-- [ ] Performance fixes (profile-driven), with the oracle suite green after each
-- [ ] `bench/compare.py` → `docs/bench/s6-perf.md`
-- [ ] design.md targets; plan.md tick + "S6 done" notes
+- [x] Rust: `Grid::quantile`, snapping grid, `coarsen()` + unit tests; binding `_core.coarsen`
+- [x] Python: `ntime` param, fit wiring, diagnostics, docs
+- [x] Tests: table-driven D8 fixtures (non-first collapsed event row, first-row collapse → dropped + counted, in-bin entry, in-bin censoring, beyond-last-event rows, stacked layout); single-node Λ on coarsened data = `nelson_aalen_ref`/lifelines on hand-built coarsened rows; coarse forest = exact forest on hand-built rows (same seed)
+- [x] Baseline profile → `docs/scratch/perf.md`
+- [x] Performance fixes (profile-driven), with the oracle suite green after each
+- [x] `bench/compare.py` → `docs/bench/s6-perf.md`
+- [x] design.md targets; plan.md tick + "S6 done" notes
 
 ## Plan review (Codex, 2026-09-25)
 1. Entry wording wrong under ceil snapping (high) → corrected (item 3); D8 semantics kept.

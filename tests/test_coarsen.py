@@ -126,11 +126,15 @@ def test_oob_in_coarse_mode_keeps_original_rows():
     X, y, ids = _cp_data(60, seed=4, max_rows=4)
     f = SurvivalForestTV(n_estimators=20, min_ids_leaf=3, ntime=5, oob_score=True, random_state=0)
     f.fit(X, y, ids)
-    kept = coarsen_ref(y["start"], y["stop"], y["event"], ids, 5)[0]
+    kept, s, t, e, _, _ = coarsen_ref(y["start"], y["stop"], y["event"], ids, 5)
     dropped = np.setdiff1d(np.arange(X.shape[0]), kept)
-    assert f.oob_prediction_.shape == (X.shape[0],)
-    assert np.isnan(f.oob_prediction_[dropped]).all() and np.isfinite(f.oob_prediction_[kept]).all()
-    assert 0 < f.oob_score_ < 1
+    assert dropped.size > 0 and f.oob_prediction_.shape == (X.shape[0],)
+    assert np.isnan(f.oob_prediction_[dropped]).all()
+    # Kept rows carry exactly the OOB of an exact-mode forest on the coarsened rows.
+    exact = SurvivalForestTV(n_estimators=20, min_ids_leaf=3, oob_score=True, random_state=0)
+    exact.fit(X[kept], make_survival_y(t, e, start=s), ids[kept])
+    np.testing.assert_allclose(f.oob_prediction_[kept], exact.oob_prediction_, rtol=1e-12)
+    assert f.oob_score_ == pytest.approx(exact.oob_score_, abs=1e-15)
 
 
 def test_invalid_ntime():

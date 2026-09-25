@@ -9,8 +9,8 @@ Rule: after each slice, run the full test suite, tick the box, and note any devi
 - [x] S3: Counting-process TVCs + left truncation (branch `feat/s3-tvc`)
 - [x] S4: Landmark workflow (branch `feat/s4-landmark`)
 - [x] S5: Model selection + metrics (+ id-level OOB) (branch `feat/s5-model-selection`)
-- [ ] S6: Coarse grid mode + performance pass + benchmarks  <-- NEXT
-- [ ] S7: sklearn compatibility matrix, DataFrame input, wheels, docs/case studies
+- [x] S6: Coarse grid mode + performance pass + benchmarks (branch `feat/s6-coarse-grid`)
+- [ ] S7: sklearn compatibility matrix, DataFrame input, wheels, docs/case studies  <-- NEXT
 - [ ] S8: Criterion + aggregation bake-off
 
 Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pytest`, `hypothesis`; `cargo test`. Test oracles are lifelines and scikit-survival (dev dependencies), plus `tests/ref/logrank_ref.py`: an independent, deliberately naive O(n·K) LTRC log-rank reference (risk sets, events, numerator, hypergeometric variance, ties). Fixtures are generated once and committed as `.npz`. **Oracle conventions:** Nelson–Aalen uses `NelsonAalenFitter(nelson_aalen_smoothing=False)` with an explicit `timeline=` equal to the event grid; cumulative hazard is right-continuous (the value immediately after each event time). Statistical/benchmark tests are marked `@pytest.mark.slow` and are **not** merge gates. Setup: `git init` on branch `main`; slice work happens on `feat/sN-*` branches (commit only when the user asks).
@@ -212,6 +212,33 @@ Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pyte
 - A profiling report exists (`docs/scratch/perf.md`).
 - Fit time and peak memory against scikit-survival RSF at n = 10k/100k/1M rows are recorded.
 - Performance targets are written back into design.md.
+
+**S6 done (2026-09-25). Deviations / notes** (slice plan and review log: `s6-plan.md`):
+- **`ntime=K` (coarse mode, D8).** The grid is the inverse-CDF quantiles of the event times at `j/K` (≤ K points, each an event time, the last the maximum).
+  - **Clarifies D8: the snapping grid also includes the earliest `start`.** With event points alone, `g(0) = t_1` would delay every subject entering at 0.
+  - Other entries round up: an entry inside `(t_{k−1}, t_k]` is at risk from `t_{k+1}`. Censoring inside a bin counts as at risk through the bin end, as in discrete-time conventions.
+  - Times past the last grid point are clamped to it, which leaves every risk set unchanged.
+- **Chains vs resampling groups.** Collapsed rows are dropped per *chain*: an id's contiguous rows, or each row when `layout="stacked"`. A dropped event moves to the chain's previous kept row, or is lost and counted.
+  - Diagnostics: `coarse_grid_`, `n_coarsen_dropped_rows_`, `n_coarsen_lost_events_`.
+  - `n_ids_`, `min_ids_leaf_` and `n_draw_` are resolved after coarsening.
+  - `oob_prediction_` keeps the original rows (NaN for dropped ones); `oob_score_` uses the kept rows and their coarsened outcomes.
+- **Oracles:**
+  - table-driven D8 fixtures, including stacked chains;
+  - a naive Python coarsening reference (`tests/ref/coarsen_ref.py`, hypothesis);
+  - single-node Λ equals `nelson_aalen_ref` and lifelines on hand-coarsened rows;
+  - coarse forest (and its OOB) equals an exact forest on reference-coarsened rows, to 1e-12.
+- **Performance pass** (`docs/scratch/perf.md`); trees are unchanged by each step:
+  - a precomputed log-rank node scorer (`SplitCriterion::node_scorer`, multiply-adds only);
+  - bin-by-bin accumulation into one O(K) difference array, with prefix sums only for admissible thresholds;
+  - node profile reuse, O(1) grid lookup tables and a single gather of each feature's bins per node.
+  - Exact mode at 100k rows: 19.4 s / 2.6 GB → 10.2 s / 0.46 GB.
+- **Sibling subtraction not implemented:** row accumulation was ~3% of the profile, and subtraction is unspecified with node-local grids and per-node feature sampling.
+- **Benchmarks (`docs/bench/s6-perf.md`, `bench/compare.py`),** matched bootstrap settings, 100 trees, 10 threads:
+  - 10k rows: rftvc 0.5 s (exact) / 0.15 s (`ntime=100`) vs sksurv RSF 47 s (7.3 GB; ~73 GB projected at 100k; `low_memory=True` timed out at 100k after 30 min), with equal test C.
+  - rftvc at 1M rows: 113 s exact, 18 s coarse, 2.3–2.4 GB.
+  - Coarse C is within 0.002 of exact at every size.
+- **Targets** are written into design.md (Validation strategy 5).
+- **Deferred:** leaf storage (drop `d`/`y` from fitted leaves; this changes `leaf_profile` and the pickle format). The default stays `ntime=None` (D8.3); S8's bake-off can revisit it.
 
 ## S7: Compatibility, packaging, docs
 **Files:**
