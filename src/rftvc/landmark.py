@@ -84,9 +84,14 @@ def _agg_expr(name, column, agg, start):
     return exprs[agg].alias(name)
 
 
-def _history_features(df, s, specs, *, id, start, known):
-    """Features from rows whose covariates are known at ``s`` (``known <= s``), one row per id."""
-    hist = df.filter(pl.col(known) <= s)
+def _history_features(df, s, specs, *, id, start):
+    """Features from the rows known at ``s``, one row per id.
+
+    A row is known at ``s`` iff ``start <= s``. A later row must not be used even
+    if its covariates were measured before ``s``: the row exists only because
+    the subject survived to its start, which is not yet known at ``s``.
+    """
+    hist = df.filter(pl.col(start) <= s)
     return hist.group_by(id, maintain_order=True).agg([_agg_expr(n, c, a, start) for n, c, a in specs])
 
 
@@ -122,22 +127,26 @@ def make_landmark_data(
     entry), with ``U`` an id's last ``stop`` (event or censoring time):
 
     1. Risk set: ids that have entered (first ``start <= s``) and are event-free
-       and uncensored at ``s`` (``U > s``). An id with no history row known at
-       ``s`` is skipped.
+       and uncensored at ``s`` (``U > s``).
     2. Row: ``start = 0``, ``stop = min(U, s + horizon) - s``,
        ``event = 1{event and U <= s + horizon}``.
-    3. Features: ``history_features`` computed from rows known at ``s``
-       (``start <= s``, or ``measured_at <= s`` if given), plus ``s`` itself.
+    3. Features: ``history_features`` computed from the rows known at ``s``
+       (``start <= s``; every subject in the risk set has at least one), plus
+       ``s`` itself. ``measured_at``, if given, is validated to be ``<= start``.
 
     Validity rests on censoring being independent of the event given
     ``H(s)`` and ``s``. Using ``s`` as a feature lets the forest learn
     landmark-dependent effects; it does not correct for selection or censoring.
+
+    Estimand: as in the stacked landmark super-model, every (subject, landmark)
+    row is an observation in the forest's risk sets and leaf estimates, so a
+    subject at risk at many landmarks carries more weight. Only resampling (and
+    leaf sizes) are by subject. Thin the grid (``step``) to limit the overlap.
     """
     df = _as_polars(df)
     if not horizon > 0:
         raise ValueError("horizon must be positive")
-    known = measured_at or start
-    required = {id, start, stop, event, known}
+    required = {id, start, stop, event} | ({measured_at} if measured_at else set())
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"df is missing columns {sorted(missing)}")
@@ -165,7 +174,7 @@ def make_landmark_data(
         at_risk = subjects.filter((pl.col("_entry") <= s) & (pl.col("_U") > s))
         if at_risk.height == 0:
             continue
-        feats = _history_features(df.join(at_risk.select(id), on=id), s, specs, id=id, start=start, known=known)
+        feats = _history_features(df.join(at_risk.select(id), on=id), s, specs, id=id, start=start)
         part = at_risk.join(feats, on=id, how="inner", maintain_order="left").with_columns(
             pl.lit(s).alias("landmark"),
             ((pl.min_horizontal("_U", pl.lit(s + horizon))) - s).alias("_stop"),
@@ -186,12 +195,16 @@ def make_landmark_data(
 def landmark_features(df, s, *, history_features, id="id", start="start", stop="stop", event=None, measured_at=None):
     """Features at landmark ``s`` for prediction: ``(ids, X)``, X including ``s``.
 
-    Subjects must have entered by ``s`` and be observed through ``s`` (last
-    ``stop >= s``). If ``event`` is given, subjects with an event at or before
-    ``s`` are excluded (they are not event-free at ``s``).
+    The prediction population is subjects event-free and under observation at
+    ``s``: entered by ``s`` and observed through ``s`` (last ``stop >= s``). This
+    includes a last ``stop`` exactly at ``s``, the usual case for current data.
+    (Training needs ``U > s`` only because such a subject would contribute a
+    zero-length row, not because it is outside the target population.) If
+    ``event`` is given, subjects with an event at or before ``s`` are excluded.
+    ``measured_at`` is accepted for signature symmetry; rows are known at
+    ``s`` iff ``start <= s`` (see ``make_landmark_data``).
     """
     df = _as_polars(df)
-    known = measured_at or start
     specs = _feature_specs(history_features, forbidden={stop, id} | ({event} if event else set()))
     agg = [pl.col(start).cast(pl.Float64).min().alias("_entry"), pl.col(stop).cast(pl.Float64).max().alias("_U")]
     if event is not None:
@@ -201,7 +214,7 @@ def landmark_features(df, s, *, history_features, id="id", start="start", stop="
     if event is not None:
         keep = keep & ~(pl.col("_event") & (pl.col("_U") <= s))
     at_risk = subjects.filter(keep)
-    feats = _history_features(df.join(at_risk.select(id), on=id), s, specs, id=id, start=start, known=known)
+    feats = _history_features(df.join(at_risk.select(id), on=id), s, specs, id=id, start=start)
     out = at_risk.join(feats, on=id, how="inner", maintain_order="left").with_columns(pl.lit(float(s)).alias("landmark"))
     names = [name for name, _, _ in specs] + ["landmark"]
     return out[id].to_numpy(), np.ascontiguousarray(out.select(names).to_numpy().astype(np.float64))

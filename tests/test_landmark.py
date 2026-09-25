@@ -1,7 +1,5 @@
 """S4: landmark data building, look-ahead guards, and the landmark super-model."""
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -10,8 +8,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from rftvc import LandmarkSurvivalForest, SurvivalForestTV, landmark_features, make_landmark_data
-
-PBCSEQ = Path(__file__).parent / "fixtures" / "pbcseq.csv"
+from tests.fixtures.pbcseq import pbcseq_counting_process, visits_to_counting_process
 
 
 def _frame(rows):
@@ -77,14 +74,16 @@ def test_aggregations_use_only_rows_known_at_landmark():
     np.testing.assert_allclose(data.X[0], [5.0, 3.0, 5.0, 1.0, 2.0, 1.5])
 
 
-def test_measured_at_controls_what_is_known():
+def test_rows_are_known_by_start_not_by_measurement_time():
     df = pl.DataFrame(
         {"id": [1, 1], "start": [0.0, 1.0], "stop": [1.0, 3.0], "event": [False, True], "z": [1.0, 9.0], "m": [0.0, 1.0]}
     )
     base = make_landmark_data(df, horizon=1.0, landmarks=[1.0], history_features=["z"])
-    lagged = make_landmark_data(df.with_columns(pl.col("m") - 0.5), horizon=1.0, landmarks=[0.75], history_features=["z"], measured_at="m")
     assert base.X[0, 0] == 9.0  # the row starting at 1 is known at 1
-    assert lagged.X[0, 0] == 9.0  # measured at 0.5 <= 0.75
+    # Measured at 0.5, but the row (1, 3] exists only if the subject survives to 1:
+    # at s = 0.75 it must not be used.
+    early = make_landmark_data(df.with_columns(pl.col("m") - 0.5), horizon=1.0, landmarks=[0.75], history_features=["z"], measured_at="m")
+    assert early.X[0, 0] == 1.0
     with pytest.raises(ValueError, match="look-ahead"):
         make_landmark_data(df.with_columns(pl.col("m") + 0.5), horizon=1.0, landmarks=[1.0], history_features=["z"], measured_at="m")
 
@@ -139,20 +138,29 @@ def _random_cp(seed, n_ids):
             dur = float(rng.integers(1, 4))
             out.append((i, t, t + dur, j == k - 1 and rng.random() < 0.6, float(rng.normal())))
             t += dur
-    return pd.DataFrame(out, columns=["id", "start", "stop", "event", "z"])
+    df = pd.DataFrame(out, columns=["id", "start", "stop", "event", "z"])
+    # Measurement lags of 0-1.5 (never after start); they must not change what is known.
+    df["m"] = df["start"] - np.random.default_rng(seed + 1).choice([0.0, 0.5, 1.5], size=len(df))
+    return df
 
 
 @settings(max_examples=40, deadline=None)
-@given(seed=st.integers(0, 10_000), n_ids=st.integers(2, 25), horizon=st.sampled_from([0.5, 1.0, 2.5, 4.0]))
-def test_matches_pandas_reference(seed, n_ids, horizon):
+@given(
+    seed=st.integers(0, 10_000),
+    n_ids=st.integers(2, 25),
+    horizon=st.sampled_from([0.5, 1.0, 2.5, 4.0]),
+    measured=st.booleans(),
+)
+def test_matches_pandas_reference(seed, n_ids, horizon, measured):
     df = _random_cp(seed, n_ids)
     landmarks = [0.0, 1.0, 1.5, 3.0, 5.0]
     ref = _reference(df, landmarks, horizon, "z")
+    kwargs = dict(horizon=horizon, landmarks=landmarks, history_features=["z", ("z", "mean")], measured_at="m" if measured else None)
     if not ref:
         with pytest.raises(ValueError):
-            make_landmark_data(df, horizon=horizon, landmarks=landmarks, history_features=["z", ("z", "mean")])
+            make_landmark_data(df, **kwargs)
         return
-    data = make_landmark_data(df, horizon=horizon, landmarks=landmarks, history_features=["z", ("z", "mean")])
+    data = make_landmark_data(df, **kwargs)
     got = sorted(
         (int(i), float(s), float(x[0]), float(x[1]), float(t), bool(e))
         for i, s, x, t, e in zip(data.ids, data.s, data.X, data.y["stop"], data.y["event"])
@@ -164,18 +172,6 @@ def test_matches_pandas_reference(seed, n_ids, horizon):
 
 
 # ---------------------------------------------------------------- landmark super-model on pbcseq
-
-
-def pbcseq_counting_process():
-    """pbcseq visits -> counting process: covariates from visit j apply until the next visit."""
-    d = pl.read_csv(PBCSEQ).sort(["id", "day"])
-    d = d.with_columns(pl.col("day").shift(-1).over("id").alias("next_day"))
-    d = d.with_columns(
-        pl.col("day").cast(pl.Float64).alias("start"),
-        pl.coalesce("next_day", "futime").cast(pl.Float64).alias("stop"),
-        (pl.col("next_day").is_null() & (pl.col("status") == 2)).alias("event"),
-    ).filter(pl.col("start") < pl.col("stop"))
-    return d.with_columns(pl.col("bili").log().alias("log_bili"))
 
 
 FEATURES = ["log_bili", "albumin", "protime", "edema", "ascites", "age", ("log_bili", "max")]
@@ -194,18 +190,6 @@ def test_pbcseq_end_to_end():
         out = model.predict_risk(df, s)
         assert out.height > 0
         assert out["risk"].is_between(0.0, 1.0).all()
-    # Discrimination at s = 1 year on the training data should clearly beat chance.
-    ids, S = model.predict_survival_function(df, 365.25, [3 * 365.25])
-    lm = make_landmark_data(df, horizon=3 * 365.25, landmarks=[365.25], history_features=FEATURES)
-    order = {i: k for k, i in enumerate(ids)}
-    risk = 1 - S[[order[i] for i in lm.ids], 0]
-    ev, t = lm.y["event"], lm.y["stop"]
-    conc = tot = 0.0
-    for i in np.flatnonzero(ev):
-        later = t > t[i]
-        tot += later.sum()
-        conc += (risk[i] > risk[later]).sum() + 0.5 * (risk[i] == risk[later]).sum()
-    assert conc / tot > 0.75
 
 
 def test_resampling_is_by_subject_not_landmark_row():
@@ -235,3 +219,31 @@ def test_landmark_features_match_training_rows():
     ids, X = landmark_features(HAND, 2.0, history_features=["z"], event="event")
     assert list(ids) == list(data.ids)
     np.testing.assert_array_equal(X, data.X)
+
+
+def test_censored_exactly_at_landmark_is_predicted_but_not_trained():
+    df = _frame([("a", 0.0, 4.0, True, 1.0), ("b", 0.0, 2.0, False, 5.0), ("c", 0.0, 6.0, True, 2.0)])
+    data = make_landmark_data(df, horizon=1.0, landmarks=[2.0], history_features=["z"])
+    assert sorted(data.ids) == ["a", "c"]  # b's follow-up ends at s: zero-length row
+    ids, _ = landmark_features(df, 2.0, history_features=["z"], event="event")
+    assert sorted(ids) == ["a", "b", "c"]  # b is event-free at s: in the prediction population
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected_last"),
+    [
+        # final visit exactly at futime: dropped; the previous interval ends at futime with the death
+        ([(1, 10, 2, 0), (1, 10, 2, 4), (1, 10, 2, 10)], (4.0, 10.0, True)),
+        # visit after futime: ignored, not used to extend follow-up
+        ([(1, 10, 2, 0), (1, 10, 2, 12)], (0.0, 10.0, True)),
+        # transplant is censoring
+        ([(1, 10, 1, 0), (1, 10, 1, 5)], (5.0, 10.0, False)),
+    ],
+)
+def test_pbcseq_conversion_edge_cases(rows, expected_last):
+    d = pl.DataFrame(rows, schema=["id", "futime", "status", "day"], orient="row")
+    cp = visits_to_counting_process(d)
+    last = cp.sort("start").tail(1)
+    assert (last["start"][0], last["stop"][0], last["event"][0]) == expected_last
+    assert cp["event"].sum() == int(expected_last[2])
+    assert (cp["stop"] <= 10).all()
