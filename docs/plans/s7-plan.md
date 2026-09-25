@@ -57,3 +57,12 @@ Branch `feat/s7-compat`. Parent: `plan.md` S7; design.md "Data contract" (compat
    - **Library fix:** `CountingProcess` now separates chains (`group`: contiguity, coarsening, paths) from resampling units (`unit`: the original id). Fitting resamples, counts leaf ids and runs OOB by `unit`.
    - The S5 guard that blocked OOB under `split_id` is removed. A test checks both segments of an id share their bags.
 5. The docs job needs pinned deps and the built extension (medium) → a `docs` dependency group; the job builds the package, then runs `sphinx-build -W`.
+
+## Diff review (Codex, 2026-09-25)
+1. `score(X, y, ids="col")` skipped the feature-name check, so it silently scored swapped columns (high). Fix: `score` goes through `_check_predict` (same id-column and name rules as `predict`). Test: swapped columns raise; a DataFrame score equals the array score.
+2. PBC2 example: a visit exactly at landmark `s` was left out of the counting-process path, and a patient entering at `s` would be misaligned (`get_indexer` → -1) (medium).
+   - Fix: rows with `start <= s`; a visit at `s` becomes `(s, s + 1e-6]`, carried forward. The alignment is asserted.
+   - Results unchanged: `pbcseq` has no visit exactly on a landmark.
+3. The `check_dict_unchanged` substitute excluded `forest_` (medium). Fix: it now compares the pickled estimator before and after `predict` / `predict_survival_function` / `score`.
+
+No problems found in `split_frame` / `_structured`, `unit` / `n_units`, `ids_column_` handling, `cp.unit` resampling (coarse and OOB), the metadata-routing test, the wheels and docs workflows, the BTSCS preprocessing and CV, or the docs claims vs CSVs.

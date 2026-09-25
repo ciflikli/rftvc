@@ -71,9 +71,12 @@ def main():
             data = make_landmark_data(test, horizon=W, landmarks=[s], history_features=HISTORY)
             # Landmark super-model
             r_lm = 1 - lm.forest_.predict_survival_function(data.X, [W])[:, 0]
-            # Counting-process forest along each test patient's path up to s (then LOCF)
-            path = test.filter(pl.col("id").is_in(data.ids) & (pl.col("start") < s)).with_columns(
-                pl.min_horizontal("stop", pl.lit(s)).alias("stop")
+            # Counting-process forest along each test patient's path up to s (then LOCF).
+            # A visit exactly at s is known at s: it becomes a tiny row (s, s + 1e-6] whose
+            # covariates are then carried forward; earlier rows are cut at s.
+            path = test.filter(pl.col("id").is_in(data.ids) & (pl.col("start") <= s)).with_columns(
+                pl.when(pl.col("start") == s).then(pl.lit(s + 1e-6))
+                .otherwise(pl.min_horizontal("stop", pl.lit(s))).alias("stop")
             )
             r_cp = cp.predict_risk(
                 path.select(BASE + MARKERS).to_numpy(), s + W,
@@ -81,6 +84,7 @@ def main():
                 ids=path["id"].to_numpy(), origin=s, extrapolate="locf",
             )
             order = pd.Index(pd.unique(path["id"].to_numpy())).get_indexer(data.ids)
+            assert (order >= 0).all(), "every landmark subject needs a path"
             r_cp = r_cp[order]
             # Reference: training-fold KM at this landmark
             r_km = np.full(data.ids.size, _km_risk(lm_train.y[lm_train.s == s], W))

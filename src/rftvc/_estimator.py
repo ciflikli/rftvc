@@ -298,8 +298,11 @@ class SurvivalForestTV(BaseEstimator):
         row's covariates held from time 0. It is the quantity behind
         ``oob_prediction_`` and ``score``.
         """
-        X, times, _ = self._check_predict(X, None)
-        H = self.forest_.predict_cumhaz(X, times, self.aggregate, effective_n_jobs(self.n_jobs))
+        X, _, _ = self._check_predict(X, None)
+        return self._mortality(X)
+
+    def _mortality(self, X):
+        H = self.forest_.predict_cumhaz(X, self.event_times_, self.aggregate, effective_n_jobs(self.n_jobs))
         return H.sum(axis=1)
 
     def score(self, X, y, ids=None):
@@ -310,9 +313,8 @@ class SurvivalForestTV(BaseEstimator):
         """
         from .metrics import concordance_index_cp
 
-        if isinstance(ids, str):
-            X, _, ids = split_frame(X, ids)
-        return concordance_index_cp(y, self.predict(X), ids=ids)
+        X, _, ids = self._check_predict(X, None, ids)  # same id-column and feature-name rules as predict
+        return concordance_index_cp(y, self._mortality(X), ids=ids)
 
     def predict_survival_function(self, X, times=None, **path_kwargs):
         """Survival probabilities ``exp(-H)``; see ``predict_cumulative_hazard``."""

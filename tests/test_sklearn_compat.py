@@ -89,12 +89,11 @@ def test_fit_returns_self_and_keeps_params(data):
 def test_predict_leaves_state_unchanged(data):
     est = _fitted(data)
     X = data[0]
-    state = {k: v for k, v in vars(est).items() if k != "forest_"}
+    before = pickle.dumps(est)  # the whole fitted state, forest_ included
     est.predict(X)
     est.predict_survival_function(X[:3])
     est.score(X, data[1], data[2])
-    for k, v in state.items():
-        np.testing.assert_equal(vars(est)[k], v)
+    assert pickle.dumps(est) == before
 
 
 def test_fit_is_idempotent(data):
@@ -214,6 +213,10 @@ def test_dataframe_ids_column_and_dataframe_y(data):
     )
     with pytest.raises(ValueError, match="not in X"):
         est.predict_cumulative_hazard(df, [1.0], intervals=iv, ids="missing")
+    swapped = df[["w", "z", "subject"]]
+    with pytest.raises(ValueError, match="feature names"):
+        est.score(swapped, y, ids="subject")  # score applies the same name check as predict
+    assert est.score(df, y, ids="subject") == pytest.approx(ref.score(X, y, ids))
     nullable = pd.DataFrame({"z": pd.array([1, None, 2], dtype="Int64"), "w": [0.0, 1.0, 2.0]})
     with pytest.raises(ValueError, match="NaN"):
         est.predict(nullable)
