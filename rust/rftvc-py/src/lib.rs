@@ -10,7 +10,7 @@ use pyo3::types::PyDict;
 use rftvc_core::{
     Aggregate, Binned, Extrapolate, FlatForest, Forest, ForestParams, Grid, Groups, LtrcLogRank,
     Profile, SplitCriterion, SplitParams, SurvData, TreeParams, best_split as core_best_split,
-    coarsen, criterion as core_criterion, exposure_of, fit_forest, node_profile, profile_on,
+    coarsen, exposure_of, fit_forest, node_profile, profile_on,
 };
 
 /// Contiguous 1-d input as a Vec. Strided views (e.g. a field of a structured
@@ -335,8 +335,7 @@ impl PyForest {
 #[pyfunction]
 #[pyo3(name = "fit_forest", signature = (
     x, start, stop, event, groups, n_groups, *, n_trees, n_draw, bootstrap,
-    max_depth, min_ids_leaf, min_events_leaf, max_features, max_bins, seed, n_jobs,
-    split_criterion="logrank", criterion_horizon=None
+    max_depth, min_ids_leaf, min_events_leaf, max_features, max_bins, seed, n_jobs
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_forest_py(
@@ -357,11 +356,7 @@ fn fit_forest_py(
     max_bins: usize,
     seed: u64,
     n_jobs: usize,
-    split_criterion: &str,
-    criterion_horizon: Option<f64>,
 ) -> PyResult<PyForest> {
-    let criterion =
-        core_criterion(split_criterion, criterion_horizon).map_err(PyValueError::new_err)?;
     let (v, n, p) = matrix(&x)?;
     check_lengths(
         n,
@@ -406,7 +401,7 @@ fn fit_forest_py(
                 &surv,
                 &Groups::new(&groups, n_groups),
                 &params,
-                criterion.as_ref(),
+                &LtrcLogRank,
             )
         })
     });
@@ -536,71 +531,11 @@ fn logrank_score(
     ))
 }
 
-/// Score of splitting all rows into `left` and the rest under a named criterion
-/// (`rftvc_core::criterion`). `units` (default: one per row) gives each row's
-/// resampling unit; a unit with rows on both sides counts in both children.
-#[pyfunction]
-#[pyo3(signature = (start, stop, event, left, criterion, *, horizon=None, units=None))]
-#[allow(clippy::too_many_arguments)]
-fn criterion_score(
-    start: PyReadonlyArray1<'_, f64>,
-    stop: PyReadonlyArray1<'_, f64>,
-    event: PyReadonlyArray1<'_, bool>,
-    left: PyReadonlyArray1<'_, bool>,
-    criterion: &str,
-    horizon: Option<f64>,
-    units: Option<PyReadonlyArray1<'_, u32>>,
-) -> PyResult<f64> {
-    let n = start.as_array().len();
-    check_lengths(
-        n,
-        &[
-            ("stop", stop.as_array().len()),
-            ("event", event.as_array().len()),
-            ("left", left.as_array().len()),
-        ],
-    )?;
-    let crit = core_criterion(criterion, horizon).map_err(PyValueError::new_err)?;
-    let surv = surv_data(&start, &stop, &event)?;
-    let units: Vec<u32> = match units {
-        Some(u) => vec1(&u, "units")?,
-        None => (0..n as u32).collect(),
-    };
-    check_lengths(n, &[("units", units.len())])?;
-    let left = vec1(&left, "left")?;
-    let distinct = |side: bool| -> f64 {
-        let set: std::collections::HashSet<u32> = (0..n)
-            .filter(|&i| left[i] == side)
-            .map(|i| units[i])
-            .collect();
-        set.len() as f64
-    };
-    let all: Vec<u32> = (0..n as u32).collect();
-    let left_rows: Vec<u32> = all.iter().copied().filter(|&i| left[i as usize]).collect();
-    let parent = node_profile(&surv, &all);
-    let (l_at, l_ev) = profile_on(&surv, &left_rows, &parent.event_idx);
-    let n_all = units.iter().collect::<std::collections::HashSet<_>>().len() as f64;
-    Ok(crit.score(
-        &Profile {
-            at_risk: &l_at,
-            events: &l_ev,
-            times: &parent.times,
-            exposure: exposure_of(&surv, &left_rows),
-            n_units: distinct(true),
-        },
-        &parent.view(n_all),
-        distinct(false),
-    ))
-}
-
 /// Best root split: `(feature, threshold, score, left_mask, ids_left, ids_right)` or `None`.
 ///
 /// `units` (default: one per row) must be contiguous per unit.
 #[pyfunction]
-#[pyo3(signature = (
-    x, start, stop, event, *, min_ids_leaf, min_events_leaf, max_bins=256, units=None,
-    criterion="logrank", horizon=None
-))]
+#[pyo3(signature = (x, start, stop, event, *, min_ids_leaf, min_events_leaf, max_bins=256, units=None))]
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn best_split(
     x: PyReadonlyArray2<'_, f64>,
@@ -611,10 +546,7 @@ fn best_split(
     min_events_leaf: usize,
     max_bins: usize,
     units: Option<PyReadonlyArray1<'_, u32>>,
-    criterion: &str,
-    horizon: Option<f64>,
 ) -> PyResult<Option<(usize, f64, f64, Vec<bool>, usize, usize)>> {
-    let crit = core_criterion(criterion, horizon).map_err(PyValueError::new_err)?;
     let (v, n, p) = matrix(&x)?;
     check_lengths(
         n,
@@ -656,7 +588,7 @@ fn best_split(
         &units,
         &features,
         &params,
-        crit.as_ref(),
+        &LtrcLogRank,
     )
     .map(|s| {
         let col = binned.column(s.feature);
@@ -677,7 +609,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyForest>()?;
     m.add_function(wrap_pyfunction!(fit_forest_py, m)?)?;
     m.add_function(wrap_pyfunction!(logrank_score, m)?)?;
-    m.add_function(wrap_pyfunction!(criterion_score, m)?)?;
     m.add_function(wrap_pyfunction!(coarsen_py, m)?)?;
     m.add_function(wrap_pyfunction!(best_split, m)?)?;
     Ok(())

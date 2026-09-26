@@ -18,7 +18,7 @@ v2 folds in all 4 key and 10 minor findings from `design-review.md` (see Changel
 | D3 | General purpose; domain examples only in docs/case studies | user-confirmed |
 | D4 | v1 excludes: internal-covariate path scenarios, informative visit processes, competing risks | default |
 | D5 | Two public workflows: (a) the core estimator on counting-process data; (b) `make_landmark_data()` + `LandmarkSurvivalForest` meta-estimator. **No Pipeline-based stacking** | default (v2) |
-| D6 | v1 criterion = LTRC log-rank, **unit weights only**; bake-off in a later slice | default (v2) |
+| D6 | v1 criterion = LTRC log-rank, **unit weights only**; confirmed by the S8 bake-off (`docs/bench/s8-bakeoff.md`) | default (v2); S8 |
 | D7 | Engine input = numpy; polars in data builders; `narwhals` for DataFrame-agnostic input | default |
 | D8 | Time coarsening defined as **snapping times to the grid before counting**, so the score is an exact log-rank on the coarsened data | default (v2) |
 | D9 | Unobserved future covariates are never filled silently: `extrapolate="none"` by default | default (v2) |
@@ -136,7 +136,7 @@ All methods take an explicit `times` grid and use the rows supplied for each id.
 4. **Beyond the last `stop`:** `extrapolate="none"` returns NaN.
    - `"locf"` is an opt-in *named scenario*: covariates stay at their last value.
    - Alternatively, the user appends scenario rows for a specified future path. This is valid for external covariates only.
-5. **Ensemble:** `aggregate="hazard"` (the average of Λ over trees) is the default, with `"survival"` as an option. They are different ensemble quantities; the choice is validated by calibration in the bake-off slice.
+5. **Ensemble:** `aggregate="hazard"` (the average of Λ over trees) is the default, with `"survival"` as an option. They are different ensemble quantities; the choice is validated by calibration in the bake-off slice. S8 kept `hazard`: `survival` averaging did not improve calibration on both landmark datasets, and it was worse on the known-truth simulation.
 
 ### Landmark workflow (replaces the Pipeline idea)
 `make_landmark_data(df, id, start, stop, event, landmarks, horizon, history_features, step=None) -> LandmarkData(X, y, ids, groups, s)`.
@@ -189,7 +189,7 @@ It is not a sklearn `Pipeline`, and the docs say so.
 ## Risks & mitigations
 | Risk | Mitigation |
 |---|---|
-| Log-rank optimises separation, not calibration | pluggable criterion; bake-off judged on landmark Brier score |
+| Log-rank optimises separation, not calibration | pluggable criterion; S8 bake-off judged on landmark Brier score and calibration: grouped-likelihood and Poisson criteria tied with log-rank, KM-Gini was worse (`docs/bench/s8-bakeoff.md`) |
 | Exact grid slow on large K | coarse mode (D8, S6: 6× faster at 1M rows, same C) + O(1) updates [Sverdrup et al. 2025] as later optimisation |
 | Top-candidate id checks reject many splits | bounded retries; diagnostics; tune `min_ids_leaf` |
 | Leakage via user features | `measured_at` check; landmark look-ahead check; gap ≥ horizon check |
@@ -206,7 +206,7 @@ It is not a sklearn `Pipeline`, and the docs say so.
 
 ## Resolved user decisions (2026-09-25)
 - D10 Resampling: **subsample 0.632 of ids without replacement** (default); `bootstrap=True` option for parity benchmarks.
-- D11 Aggregation: **`aggregate="hazard"`** default (keeps conditional survival consistent across origins); `"survival"` option; revisit in the bake-off.
+- D11 Aggregation: **`aggregate="hazard"`** default (keeps conditional survival consistent across origins); `"survival"` option. Revisited in S8 and kept.
 - D12 Leaf size: **`min_ids_leaf=15`** default; `"auto"` = `max(15, sqrt(n_ids))`; tune by CV.
 
 ## Changelog

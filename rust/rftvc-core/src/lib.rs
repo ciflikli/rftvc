@@ -12,10 +12,7 @@ pub mod rng;
 pub mod splitter;
 pub mod tree;
 
-pub use criterion::{
-    GroupedLik, KmGini, LtrcLogRank, NodeScorer, PoissonExposure, Profile, SplitCriterion,
-    criterion,
-};
+pub use criterion::{LtrcLogRank, NodeScorer, Profile, SplitCriterion};
 pub use data::{Binned, SurvData};
 pub use flat::FlatForest;
 pub use forest::{Aggregate, Extrapolate, Forest, ForestParams, Groups, draw_ids, fit_forest};

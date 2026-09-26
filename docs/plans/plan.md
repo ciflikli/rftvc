@@ -11,7 +11,7 @@ Rule: after each slice, run the full test suite, tick the box, and note any devi
 - [x] S5: Model selection + metrics (+ id-level OOB) (branch `feat/s5-model-selection`)
 - [x] S6: Coarse grid mode + performance pass + benchmarks (branch `feat/s6-coarse-grid`)
 - [x] S7: sklearn compatibility matrix, DataFrame input, wheels, docs/case studies (branch `feat/s7-compat`)
-- [ ] S8: Criterion + aggregation bake-off  <-- NEXT
+- [x] S8: Criterion + aggregation bake-off (branch `feat/s8-bakeoff`)
 
 Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pytest`, `hypothesis`; `cargo test`. Test oracles are lifelines and scikit-survival (dev dependencies), plus `tests/ref/logrank_ref.py`: an independent, deliberately naive O(n·K) LTRC log-rank reference (risk sets, events, numerator, hypergeometric variance, ties). Fixtures are generated once and committed as `.npz`. **Oracle conventions:** Nelson–Aalen uses `NelsonAalenFitter(nelson_aalen_smoothing=False)` with an explicit `timeline=` equal to the event grid; cumulative hazard is right-continuous (the value immediately after each event time). Statistical/benchmark tests are marked `@pytest.mark.slow` and are **not** merge gates. Setup: `git init` on branch `main`; slice work happens on `feat/sN-*` branches (commit only when the user asks).
 
@@ -280,6 +280,26 @@ Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pyte
 **Scope:** criteria × aggregation (`hazard`/`survival`) × datasets, all under nested CV. Primary metric: landmark Brier score and calibration.
 
 **Accept:** a written recommendation; the winning criterion is ported to Rust behind `SplitCriterion` (its own slice if substantial); D11 is revisited.
+
+**S8 done (2026-09-26). Deviations / notes** (slice plan, pre-registered rule and review log: `s8-plan.md`; results: `docs/bench/s8-bakeoff.md`):
+- **Prototypes in Rust, not numba** (plan review): every candidate is a function of node summaries the splitter already builds.
+  - `Profile` gained `times`, `exposure` (person-time) and `n_units`; `SurvData` gained `duration`.
+  - `SplitCriterion::score` takes the right child's unit count, because units may straddle a split.
+  - `fit_forest` takes the criterion. Log-rank stays bit-identical at +3–4% fit time. These stay as the extension point (user decision).
+- **Candidates:**
+  - `grouped_lik`: grouped-time binomial likelihood;
+  - `poisson`: constant hazard per node over person-time;
+  - `km_gini`: a KM Gini heuristic at τ. It replaced the planned "horizon-Brier", which is not a Brier objective under censoring.
+- **Protocol:**
+  - landmark nested CV on PBC2 and the simulated panel, plus core-forest runs on `sim.py` (known truth) and the war data;
+  - subject-cluster bootstrap and paired t-intervals;
+  - a decision rule fixed before the runs.
+- **Result: nothing adopted.** `logrank` stays the only criterion and `aggregate="hazard"` stays (D11).
+  - `grouped_lik` / `poisson` tie with log-rank and are slightly worse on `sim.py`.
+  - `km_gini` barely splits landmark stacks (straddling units).
+- **Removed after the decision:** the challengers, `split_criterion` / `criterion_horizon` and the harness (history: `a49cf55`).
+- **Kept:** `landmark_cross_validate(return_predictions=True)`, which returns the out-of-fold rows behind every score.
+- Output: `docs/bench/s8-bakeoff/` (CSVs, `decisions.csv`, run log). Full run 395 s.
 
 ---
 

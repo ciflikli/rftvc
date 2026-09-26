@@ -54,21 +54,6 @@ class SurvivalForestTV(BaseEstimator):
         without replacement (design.md D10).
     aggregate : {"hazard", "survival"}, default="hazard"
         Ensemble rule: ``exp(-mean Λ_b)`` or ``mean exp(-Λ_b)`` (design.md D11).
-    split_criterion : {"logrank", "grouped_lik", "poisson", "km_gini"}, default="logrank"
-        Split score. **Experimental** apart from ``"logrank"`` (the LTRC
-        log-rank); the others are S8 bake-off candidates:
-
-        - ``"grouped_lik"``: gain in the grouped-time binomial likelihood of
-          each node's discrete hazard ``d / y`` at the node's event times;
-        - ``"poisson"``: gain in the likelihood of one constant hazard per
-          node, events over person-time ``sum(stop - start)``;
-        - ``"km_gini"``: decrease of ``n_ids · S(τ)(1 − S(τ))``, with ``S`` the
-          node's delayed-entry Kaplan–Meier at ``τ = criterion_horizon``
-          (a heuristic, not a Brier-score objective).
-    criterion_horizon : float or None, default=None
-        ``τ`` for ``split_criterion="km_gini"`` (required there, rejected
-        otherwise), on the time axis of ``y``: time since the landmark for
-        landmark data.
     oob_score : bool, default=False
         Compute ``oob_prediction_`` and ``oob_score_`` from the trees each id
         was left out of. Requires whole-id resampling (``resample_unit="id"``).
@@ -112,8 +97,6 @@ class SurvivalForestTV(BaseEstimator):
         max_samples=None,
         bootstrap=False,
         aggregate="hazard",
-        split_criterion="logrank",
-        criterion_horizon=None,
         oob_score=False,
         n_jobs=None,
         random_state=None,
@@ -129,8 +112,6 @@ class SurvivalForestTV(BaseEstimator):
         self.max_samples = max_samples
         self.bootstrap = bootstrap
         self.aggregate = aggregate
-        self.split_criterion = split_criterion
-        self.criterion_horizon = criterion_horizon
         self.oob_score = oob_score
         self.n_jobs = n_jobs
         self.random_state = random_state
@@ -221,8 +202,6 @@ class SurvivalForestTV(BaseEstimator):
             max_bins=self.max_bins,
             seed=int(rng.randint(np.iinfo(np.int64).max, dtype=np.int64)),
             n_jobs=effective_n_jobs(self.n_jobs),
-            split_criterion=self.split_criterion,
-            criterion_horizon=None if self.criterion_horizon is None else float(self.criterion_horizon),
         )
         # Coarse mode: the chosen grid, even points whose events were all lost.
         self.event_times_ = np.unique(stop[event]) if kept is None else grid
@@ -395,19 +374,6 @@ class SurvivalForestTV(BaseEstimator):
             self._check_int("max_depth", minimum=0)
         if self.ntime is not None:
             self._check_int("ntime", minimum=1)
-        criteria = ("logrank", "grouped_lik", "poisson", "km_gini")
-        if self.split_criterion not in criteria:
-            raise ValueError(f"split_criterion must be one of {criteria}, got {self.split_criterion!r}")
-        h = self.criterion_horizon
-        if self.split_criterion == "km_gini":
-            if h is None:
-                raise ValueError("split_criterion='km_gini' requires criterion_horizon")
-            if isinstance(h, (bool, np.bool_)) or not isinstance(h, numbers.Real) or not (np.isfinite(h) and h > 0):
-                raise ValueError(f"criterion_horizon must be finite and > 0, got {h!r}")
-        elif h is not None:
-            raise ValueError(
-                f"criterion_horizon is only used by split_criterion='km_gini', not {self.split_criterion!r}"
-            )
 
     def _resolve_min_ids_leaf(self, n_ids):
         if self.min_ids_leaf == "auto":

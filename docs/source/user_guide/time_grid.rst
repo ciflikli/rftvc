@@ -2,7 +2,11 @@ The time grid: exact and coarse
 ===============================
 
 Splits maximise the **log-rank statistic for left-truncated, right-censored
-data**. It is computed over a time grid.
+data**. It is computed over a time grid. The S8 bake-off compared it with a
+grouped-time likelihood, a Poisson (person-time) likelihood and a Kaplan–Meier
+impurity, under nested cross-validation. None improved Brier score or
+calibration (``docs/bench/s8-bakeoff.md`` in the repository), so log-rank is the
+only criterion.
 
 ``ntime=None`` (default, exact)
     The grid is every distinct event time. Split search costs about

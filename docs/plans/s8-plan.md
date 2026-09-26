@@ -130,8 +130,15 @@ Branch `feat/s8-bakeoff`. Parent: `plan.md` S8; design.md D6 (criterion), D11 (a
     - `km_gini` is worse on the panel (ΔIBS +0.0047 [+0.0029, +0.0064]). Its forest barely splits on landmark stacks, because subjects straddle children.
     - `survival` aggregation is better in point estimate on PBC2 calibration, but the interval includes 0; it is not better on the panel or `sim.py`.
   - Log: `docs/bench/s8-bakeoff/run.log`; every rule check: `decisions.csv`.
-- [ ] Apply the decision: defaults, removal of losing criteria, user-guide criterion section, design.md D6/D11 updated
-- [ ] plan.md tick + "S8 done" notes
+- [x] Apply the decision: defaults, removal of losing criteria, user-guide criterion section, design.md D6/D11 updated
+  - Removed:
+    - `GroupedLik`, `PoissonExposure`, `KmGini`, `criterion()`;
+    - `_core.criterion_score` and the criterion arguments of `_core.fit_forest` / `best_split`;
+    - `split_criterion` / `criterion_horizon`;
+    - `bench/criteria/` and its tests, `tests/test_criteria.py`, `tests/ref/criteria_ref.py`.
+  - Kept (user decision): `Profile.{times, exposure, n_units}`, `n_units_right`, `SurvData.duration`, `fit_forest(…, criterion)` and the spy / coarse-exposure tests. `return_predictions` is also kept.
+  - Predictions are still bit-identical to `main`. Docs: design.md D6/D11 and the risk table; user guide `time_grid.rst` / `prediction.rst`.
+- [x] plan.md tick + "S8 done" notes
 
 ## Plan review (Codex, 2026-09-26)
 1. The horizon-Brier was not a Brier objective under censoring or delayed entry (high). It is renamed `km_gini`, a heuristic, and an IPCW criterion is out of scope (items 3, 11).
