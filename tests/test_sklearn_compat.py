@@ -57,7 +57,7 @@ def _est(**kw):
 
 
 @parametrize_with_checks(
-    [_est()],
+    [_est(), _est(resample_unit="block", block_length=0.5)],
     expected_failed_checks=lambda est: {k: Y_REASON.format(v) for k, v in EXPECTED_FAILED.items()},
 )
 def test_sklearn_check_estimator(estimator, check):

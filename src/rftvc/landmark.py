@@ -7,6 +7,7 @@ Each (subject, landmark) pair becomes one row with the clock reset to ``s``, so
 the stacked rows have no delayed entry and need no future covariate path.
 """
 
+import warnings
 from typing import NamedTuple
 
 import numpy as np
@@ -242,6 +243,8 @@ class LandmarkSurvivalForest(BaseEstimator):
     forest : SurvivalForestTV or None
         Unfitted forest to clone; defaults to ``SurvivalForestTV()``. Resampling
         is by subject: all landmark rows of a subject enter a tree together.
+        With ``resample_unit="block"`` the unit is a subject's landmarks within
+        one window of width ``block_length`` on the landmark time ``s``.
     id, start, stop, event, measured_at : str
         Column names in the input frames.
     """
@@ -286,7 +289,21 @@ class LandmarkSurvivalForest(BaseEstimator):
             **self._columns(),
         )
         forest = SurvivalForestTV() if self.forest is None else clone(self.forest)
-        self.forest_ = forest.fit(data.X, data.y, ids=data.ids, layout="stacked")
+        # Block resampling groups an id's landmarks into windows of the landmark time s.
+        params = forest.get_params()
+        block_time = None
+        if params["resample_unit"] == "block":
+            block_time = data.s
+            reach = params["block_length"] * params["oob_buffer"]
+            if params["oob_score"] and reach < self.horizon:
+                warnings.warn(
+                    f"block OOB leaks: landmarks within horizon={self.horizon:g} share an outcome window, but "
+                    f"blocks are only excluded {reach:g} apart (block_length * oob_buffer); use "
+                    "block_length >= horizon with oob_buffer=1",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        self.forest_ = forest.fit(data.X, data.y, ids=data.ids, layout="stacked", block_time=block_time)
         self.feature_names_ = data.feature_names
         self.landmarks_ = np.unique(data.s)
         self.n_rows_ = data.X.shape[0]

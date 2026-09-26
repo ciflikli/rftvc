@@ -117,13 +117,13 @@ impl SplitCriterion for LtrcLogRank {
 ### Dependence knobs
 | Param | Default | Meaning |
 |---|---|---|
-| `resample_unit` | `"id"` | the only v1 value; `"row"` and `"block"` are deferred, each needing its own OOB spec |
+| `resample_unit` | `"id"` | or `"block"` (S10): id × time windows of width `block_length`, rows split at window boundaries, or windows of a `block_time` fit argument. `"row"` stays deferred |
 | `max_samples` / `bootstrap` | 0.632 of ids, without replacement / `False` | subsampling keeps OOB id-clean (D10) |
-| `min_ids_leaf` | 15 | distinct ids per child (rule above); `"auto"` = max(15, √n_ids) (D12) |
+| `min_ids_leaf` | 15 | distinct resampling units (ids, or id-blocks) per child (rule above); `"auto"` = max(15, √n_units) (D12) |
 | `min_events_leaf` | 3 | events per child |
 | `ntime` | `None` | exact; `K` = coarse mode (D8) |
 | `max_bins` / `max_features` | 255 / `"sqrt"` | |
-| `oob_score` | `False` | allowed **only** with `resample_unit="id"` (error otherwise). It is documented as a *new-subject* generalisation estimate. Future-period claims require `RollingOriginSplit` or `GroupTimeSplit`; there is no automatic detection heuristic |
+| `oob_score` | `False` | with `"id"`: a *new-subject* estimate. With `"block"`: a buffered block OOB (`oob_buffer`, default 1), an estimate for *held-out periods of training subjects* (S10, `docs/bench/s10-block.md`). Future-period claims require `RollingOriginSplit` or `GroupTimeSplit`; there is no automatic detection heuristic |
 
 `row_weight` is **removed from v1**. Normalising per id or by overlap changes the estimand (review finding 4). Inverse-visit or overlap weighting can come back later as a separately specified estimand with exact per-row formulas.
 
@@ -201,7 +201,6 @@ It is not a sklearn `Pipeline`, and the docs say so.
 - Recurrent events beyond "first event after landmark".
 - Joint models for internal covariates.
 - Weighted criteria.
-- `"block"` resampling.
 - GPU, oblique splits, honest/causal forests.
 
 ## Resolved user decisions (2026-09-25)

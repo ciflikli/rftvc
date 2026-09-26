@@ -154,18 +154,21 @@ impl Forest {
         out
     }
 
-    /// Out-of-bag ensemble mortality per row: `sum_k Λ_oob(t_k | x_row)`.
+    /// Out-of-bag ensemble mortality per row: `sum_k Λ_oob(t_k | x_row)`, and
+    /// the number of trees in each row's out-of-bag ensemble.
     ///
-    /// Row `r` belongs to id `groups[r]`; only trees whose bag does not contain
-    /// that id enter its ensemble. NaN when the id is in every bag.
+    /// Row `r` must be out of bag in units `units[offsets[r]..offsets[r + 1]]`
+    /// (its own unit, plus any buffer units); only trees whose bag contains none
+    /// of them enter its ensemble. NaN when there is no such tree.
     pub fn oob_mortality(
         &self,
         x: &[f64],
         n_features: usize,
-        groups: &[u32],
+        offsets: &[usize],
+        units: &[u32],
         times: &[f64],
         agg: Aggregate,
-    ) -> Vec<f64> {
+    ) -> (Vec<f64>, Vec<u32>) {
         let words = self.n_groups.div_ceil(64);
         let in_bag: Vec<Vec<u64>> = (0..self.trees.len())
             .into_par_iter()
@@ -177,28 +180,31 @@ impl Forest {
                 bits
             })
             .collect();
-        let mut out = vec![0.0; groups.len()];
+        let n_rows = offsets.len() - 1;
+        let (mut out, mut n_oob) = (vec![0.0; n_rows], vec![0u32; n_rows]);
         out.par_iter_mut()
+            .zip(n_oob.par_iter_mut())
             .zip(x.par_chunks(n_features))
-            .zip(groups.par_iter())
+            .zip(offsets.par_windows(2))
             .for_each_init(
                 || vec![0.0; times.len()],
-                |buf, ((o, xr), &g)| {
-                    let (w, bit) = (g as usize / 64, 1u64 << (g % 64));
+                |buf, (((o, k), xr), w)| {
+                    let row_units = &units[w[0]..w[1]];
                     let oob = self
                         .trees
                         .iter()
                         .zip(&in_bag)
-                        .filter(|(_, bits)| bits[w] & bit == 0)
+                        .filter(|(_, bits)| {
+                            row_units
+                                .iter()
+                                .all(|&g| bits[g as usize / 64] & (1 << (g % 64)) == 0)
+                        })
                         .map(|(t, _)| t);
-                    *o = if ensemble_cumhaz(oob, xr, times, agg, buf) == 0 {
-                        f64::NAN
-                    } else {
-                        buf.iter().sum()
-                    };
+                    *k = ensemble_cumhaz(oob, xr, times, agg, buf) as u32;
+                    *o = if *k == 0 { f64::NAN } else { buf.iter().sum() };
                 },
             );
-        out
+        (out, n_oob)
     }
 
     /// Conditional cumulative hazard along covariate paths, `(n_paths, times.len())`.
