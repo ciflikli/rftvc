@@ -54,7 +54,12 @@ def _canonical_ids(ids):
         return np.ascontiguousarray(ids, dtype=np.int64).tobytes()
     if ids.dtype.kind == "f":
         return np.ascontiguousarray(ids, dtype=np.float64).tobytes()
-    return "\x1f".join(str(v) for v in ids.tolist()).encode()
+    # Type-tagged, length-prefixed: no two different id sequences share an encoding.
+    parts = []
+    for v in ids.tolist():
+        raw = f"{type(v).__name__}:{v}".encode()
+        parts.append(len(raw).to_bytes(8, "little") + raw)
+    return b"".join(parts)
 
 
 def _fingerprint(X, start, stop, event, ids, cp, measured_at, block_time, options):
@@ -102,15 +107,14 @@ class _BaseForestTV(BaseEstimator):
 
     def _fit(self, X, y, ids, measured_at, gap_policy, layout, block_time):
         d = self._fit_design(X, y, ids, measured_at, gap_policy, layout, block_time)
-        self.ids_column_ = ids if isinstance(ids, str) else None
-        if d.names is not None:
-            self.feature_names_in_ = d.names
-        elif hasattr(self, "feature_names_in_"):
-            del self.feature_names_in_
         if d.kept is not None:
             self.coarse_grid_ = d.grid
             self.n_coarsen_dropped_rows_ = d.n_rows - d.kept.size
             self.n_coarsen_lost_events_ = d.lost
+        else:  # no stale coarse-mode metadata from an earlier fit
+            for name in ("coarse_grid_", "n_coarsen_dropped_rows_", "n_coarsen_lost_events_"):
+                if hasattr(self, name):
+                    delattr(self, name)
         X, start, stop, event, groups = d.X, d.start, d.stop, d.event, d.groups
         self.n_features_in_ = X.shape[1]
         self.n_ids_ = d.n_ids
@@ -159,10 +163,17 @@ class _BaseForestTV(BaseEstimator):
 
         Deterministic given the data and the constructor parameters (no RNG), so
         OOB tools can rebuild exactly the rows the forest was fitted on
-        (``_rebuild_design``). Sets no attributes except through ``_check_y``.
+        (``_rebuild_design``, which calls it on a copy). Sets ``ids_column_`` and
+        ``feature_names_in_`` as soon as the input is parsed (before later
+        validation, as ``fit`` always has), and label attributes via ``_check_y``.
         """
         X, names, ids_values = split_frame(X, ids)
+        self.ids_column_ = ids if isinstance(ids, str) else None
         X = check_array(X, dtype=np.float64, order="C")
+        if names is not None:
+            self.feature_names_in_ = names
+        elif hasattr(self, "feature_names_in_"):
+            del self.feature_names_in_
         start, stop, event = self._check_y(y)
         n = X.shape[0]
         if n != start.shape[0]:

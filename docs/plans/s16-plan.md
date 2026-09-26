@@ -173,3 +173,18 @@ Codex plan review (2026-09-26), all 5 findings accepted:
 3. **Negative times untested** → literal tests for exposure crossing 0 and events at or before 0.
 4. **The CR AJ check compared the last time only** → the full-grid NumPy AJ reference with the clamp mirrored, and no clamp asserted.
 5. **Refactor call order unguarded** → a spy test of the call order for survival and CR, with ntime and block mode.
+
+Codex diff review (2026-09-26), all 4 findings fixed:
+1. **String-id encoding was ambiguous** (delimiter join) → a type-tagged, length-prefixed encoding; collision and categorical tests.
+2. **Stale coarse attributes after a refit without `ntime`** → deleted; regression test.
+3. **Failed-refit attribute timing had changed from `main`** → `ids_column_` / `feature_names_in_` are set right after parsing again (inside `_fit_design`; `_rebuild_design` works on a copy); test.
+4. **Empty `times` reported 0 OOB trees** → counts still computed; tests for survival and CR.
+
+Test-quality audit (2026-09-26): 17 good, 4 weak, 0 slop, 3 missing, all fixed:
+- per-column OOB values;
+- an independent stacked + coarse + block rebuild check against `oob_prediction_`;
+- the DataFrame ids column;
+- `cause=k` per-event normalisation;
+- literal window values.
+
+The identity bench is bit-identical after all fixes.

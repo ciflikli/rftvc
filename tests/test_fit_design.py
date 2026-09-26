@@ -191,3 +191,43 @@ def test_score_and_oob_score_stay_concordance():
     assert m.score(X, Y, ids=IDS) == pytest.approx(concordance_index_cp(Y, m.predict(X), ids=IDS))
     ok = np.isfinite(m.oob_prediction_)
     assert m.oob_score_ == pytest.approx(concordance_index_cp(Y[ok], m.oob_prediction_[ok], ids=IDS[ok]))
+
+
+def test_ambiguous_string_ids_do_not_collide():
+    from rftvc._estimator import _canonical_ids
+
+    assert _canonical_ids(np.array(["a\x1fb", "c"], dtype=object)) != _canonical_ids(np.array(["a", "b\x1fc"], dtype=object))
+    assert _canonical_ids(np.array(["1", "2"], dtype=object)) != _canonical_ids(np.array([1, 2], dtype=object))
+    assert _canonical_ids([3, 4]) == _canonical_ids(np.array([3, 4], dtype=np.int32))
+
+
+def test_string_and_categorical_ids_rebuild():
+    pd = pytest.importorskip("pandas")
+    sid = np.array([f"s{i}" for i in IDS], dtype=object)
+    m = SurvivalForestTV(n_estimators=3, random_state=0).fit(X, Y, sid)
+    m._rebuild_design(X, Y, sid)
+    cat = pd.Categorical(sid)
+    mc = SurvivalForestTV(n_estimators=3, random_state=0).fit(X, Y, cat)
+    mc._rebuild_design(X, Y, cat)
+    with pytest.raises(ValueError, match="do not match"):
+        m._rebuild_design(X, Y, np.array([f"t{i}" for i in IDS], dtype=object))
+
+
+def test_refit_without_ntime_drops_coarse_attributes():
+    m = SurvivalForestTV(n_estimators=3, ntime=20, random_state=0).fit(X, Y, IDS)
+    assert hasattr(m, "coarse_grid_")
+    m.set_params(ntime=None).fit(X, Y, IDS)
+    for name in ("coarse_grid_", "n_coarsen_dropped_rows_", "n_coarsen_lost_events_"):
+        assert not hasattr(m, name)
+
+
+def test_failed_refit_updates_input_attributes_as_before():
+    pd = pytest.importorskip("pandas")
+    m = SurvivalForestTV(n_estimators=3, random_state=0).fit(X, Y, IDS)
+    df = pd.DataFrame(X, columns=[f"c{j}" for j in range(X.shape[1])])
+    bad = Y.copy()
+    bad["stop"] = bad["start"]  # invalid target: fails after the input is parsed
+    with pytest.raises(ValueError):
+        m.fit(df, bad, IDS)
+    assert list(m.feature_names_in_) == list(df.columns)  # main's behaviour: set before target validation
+    assert m.ids_column_ is None

@@ -460,6 +460,7 @@ impl Forest {
         let (n_rows, m) = (offsets.len() - 1, times.len());
         let (mut out, mut n_oob) = (vec![0.0; n_rows * m], vec![0u32; n_rows]);
         if m == 0 {
+            self.count_oob(&in_bag, offsets, units, &mut n_oob);
             return (out, n_oob);
         }
         out.par_chunks_mut(m)
@@ -491,6 +492,7 @@ impl Forest {
         let (n_rows, m, nc) = (offsets.len() - 1, times.len(), self.n_causes);
         let (mut out, mut n_oob) = (vec![0.0; n_rows * nc * m], vec![0u32; n_rows]);
         if m == 0 {
+            self.count_oob(&in_bag, offsets, units, &mut n_oob);
             return (out, n_oob);
         }
         out.par_chunks_mut(nc * m)
@@ -516,6 +518,14 @@ impl Forest {
                 }
             });
         (out, n_oob)
+    }
+
+    /// Each row's out-of-bag tree count (for calls with no times to evaluate).
+    fn count_oob(&self, in_bag: &[Vec<u64>], offsets: &[usize], units: &[u32], n_oob: &mut [u32]) {
+        n_oob
+            .par_iter_mut()
+            .zip(offsets.par_windows(2))
+            .for_each(|(k, w)| *k = self.oob_trees(in_bag, &units[w[0]..w[1]]).count() as u32);
     }
 
     /// Trees whose bag contains none of `row_units`.

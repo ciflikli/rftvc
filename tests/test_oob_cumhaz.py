@@ -100,3 +100,21 @@ def test_cause_cumhaz_is_consistent_with_oob_cif():
     assert clamped == 0  # this fixture does not exercise the clamp path
     np.testing.assert_allclose(F, cif[ok], rtol=0, atol=1e-12)
     assert np.isnan(H[~ok]).all()
+
+
+def test_empty_times_still_count_oob_trees():
+    m = SurvivalForestTV(n_estimators=10, random_state=0).fit(X, Y, IDS)
+    d = m._rebuild_design(X, Y, IDS)
+    empty = np.array([], dtype=float)
+    H, n = m.forest_.oob_cumhaz(d.X, *d.oob_set, empty, m.aggregate, 1)
+    _, n_ref = m.forest_.oob_mortality(d.X, *d.oob_set, m.event_times_[:1], m.aggregate, 1)
+    assert H.shape == (len(d.X), 0)
+    np.testing.assert_array_equal(n, n_ref)
+    rng = np.random.default_rng(0)
+    y = make_competing_risks_y(Y["stop"], np.where(Y["event"], rng.integers(1, 3, len(Y)), 0), start=Y["start"])
+    mc = CompetingRisksForestTV(n_estimators=10, random_state=0).fit(X, y, IDS)
+    dc = mc._rebuild_design(X, y, IDS)
+    Hc, nc = mc.forest_.oob_cause_cumhaz(dc.X, *dc.oob_set, empty, 1)
+    _, nc_ref = mc.forest_.oob_cause_cumhaz(dc.X, *dc.oob_set, mc.event_times_[:1], 1)
+    assert Hc.shape == (len(dc.X), 2, 0)
+    np.testing.assert_array_equal(nc, nc_ref)
