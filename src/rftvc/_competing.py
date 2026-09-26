@@ -7,7 +7,7 @@ import numpy as np
 import polars as pl
 from joblib import effective_n_jobs
 
-from ._estimator import _BaseForestTV
+from ._estimator import _BaseForestTV, _event_counts
 from ._validation import check_competing_risks_y, competing_risks_labels, make_competing_risks_y
 
 
@@ -85,6 +85,10 @@ max_samples, bootstrap, n_jobs, random_state
     oob_n_trees_ : ndarray of shape (n_rows,)
     oob_score_ : float
         ``metrics.concordance_index_cr`` of the ``score_cause`` column.
+    baseline_cumhaz_ : ndarray of shape (n_causes, n_event_times)
+        Covariate-free (pooled Nelson–Aalen) cause-specific cumulative hazards
+        of the fitted rows at ``event_times_``, in ``causes_`` order: the
+        training null of ``metrics.piecewise_exponential_score``.
     n_ids_, n_units_, coarse_grid_, n_coarsen_dropped_rows_, n_coarsen_lost_events_, forest_
         As in ``SurvivalForestTV``.
     """
@@ -182,6 +186,15 @@ max_samples, bootstrap, n_jobs, random_state
             self._check_int("min_events_leaf_cause", minimum=1)
             if self.split_cause is None:
                 raise ValueError("min_events_leaf_cause requires split_cause")
+
+    def _baseline(self, start, stop, event):
+        """Pooled per-cause Nelson–Aalen of the fitted rows: ``(all-cause counts (K,), cumhaz (J, K))``."""
+        counts, at_risk = _event_counts(self.event_times_, start, stop, event != 0)
+        cumhaz = np.empty((self.n_causes_, self.event_times_.size))
+        for j in range(self.n_causes_):
+            d, _ = _event_counts(self.event_times_, start, stop, event == j + 1)
+            cumhaz[j] = np.cumsum(np.divide(d, at_risk, out=np.zeros_like(d), where=at_risk > 0))
+        return counts, cumhaz
 
     def _oob_target(self, stop, event, start):
         """The coarsened target with cause labels (codes mapped back through ``causes_``)."""

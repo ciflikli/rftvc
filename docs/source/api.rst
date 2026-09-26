@@ -59,5 +59,8 @@ Metrics
    calibration_table
    concordance_index_cp
    concordance_index_cr
+   piecewise_exponential_score
+   event_windows
+   PEScore
    KaplanMeierCensoring
    UndefinedMetricError

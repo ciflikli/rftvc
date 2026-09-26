@@ -435,22 +435,114 @@ impl Forest {
             .for_each_init(
                 || vec![0.0; times.len()],
                 |buf, (((o, k), xr), w)| {
-                    let row_units = &units[w[0]..w[1]];
-                    let oob = self
-                        .trees
-                        .iter()
-                        .zip(&in_bag)
-                        .filter(|(_, bits)| {
-                            row_units
-                                .iter()
-                                .all(|&g| bits[g as usize / 64] & (1 << (g % 64)) == 0)
-                        })
-                        .map(|(t, _)| t);
+                    let oob = self.oob_trees(&in_bag, &units[w[0]..w[1]]);
                     *k = ensemble_cumhaz(oob, xr, times, agg, buf) as u32;
                     *o = if *k == 0 { f64::NAN } else { buf.iter().sum() };
                 },
             );
         (out, n_oob)
+    }
+
+    /// Out-of-bag ensemble cumulative hazard per row, `(n_rows, times.len())`
+    /// row-major, and each row's out-of-bag tree count; the same ensemble and
+    /// aggregation as `oob_mortality` (whose value is the row's sum). Rows with
+    /// no out-of-bag tree are NaN.
+    pub fn oob_cumhaz(
+        &self,
+        x: &[f64],
+        n_features: usize,
+        offsets: &[usize],
+        units: &[u32],
+        times: &[f64],
+        agg: Aggregate,
+    ) -> (Vec<f64>, Vec<u32>) {
+        let in_bag = self.in_bag_bits();
+        let (n_rows, m) = (offsets.len() - 1, times.len());
+        let (mut out, mut n_oob) = (vec![0.0; n_rows * m], vec![0u32; n_rows]);
+        if m == 0 {
+            self.count_oob(&in_bag, offsets, units, &mut n_oob);
+            return (out, n_oob);
+        }
+        out.par_chunks_mut(m)
+            .zip(n_oob.par_iter_mut())
+            .zip(x.par_chunks(n_features))
+            .zip(offsets.par_windows(2))
+            .for_each(|(((o, k), xr), w)| {
+                let oob = self.oob_trees(&in_bag, &units[w[0]..w[1]]);
+                *k = ensemble_cumhaz(oob, xr, times, agg, o) as u32;
+                if *k == 0 {
+                    o.fill(f64::NAN);
+                }
+            });
+        (out, n_oob)
+    }
+
+    /// Out-of-bag per-cause cumulative hazards per row, `(n_rows, n_causes,
+    /// times.len())` row-major: the out-of-bag twin of `predict_cause_cumhaz`
+    /// (tree-averaged). Rows with no out-of-bag tree are NaN.
+    pub fn oob_cause_cumhaz(
+        &self,
+        x: &[f64],
+        n_features: usize,
+        offsets: &[usize],
+        units: &[u32],
+        times: &[f64],
+    ) -> (Vec<f64>, Vec<u32>) {
+        let in_bag = self.in_bag_bits();
+        let (n_rows, m, nc) = (offsets.len() - 1, times.len(), self.n_causes);
+        let (mut out, mut n_oob) = (vec![0.0; n_rows * nc * m], vec![0u32; n_rows]);
+        if m == 0 {
+            self.count_oob(&in_bag, offsets, units, &mut n_oob);
+            return (out, n_oob);
+        }
+        out.par_chunks_mut(nc * m)
+            .zip(n_oob.par_iter_mut())
+            .zip(x.par_chunks(n_features))
+            .zip(offsets.par_windows(2))
+            .for_each(|(((row_out, k), xr), w)| {
+                let mut n = 0u32;
+                for tree in self.oob_trees(&in_bag, &units[w[0]..w[1]]) {
+                    let leaf = tree.apply(xr);
+                    for (j, out_j) in row_out.chunks_mut(m).enumerate() {
+                        for (o, &t) in out_j.iter_mut().zip(times) {
+                            *o += tree.cause_cumhaz_at(leaf, t, j);
+                        }
+                    }
+                    n += 1;
+                }
+                *k = n;
+                if n == 0 {
+                    row_out.fill(f64::NAN);
+                } else {
+                    row_out.iter_mut().for_each(|v| *v /= n as f64);
+                }
+            });
+        (out, n_oob)
+    }
+
+    /// Each row's out-of-bag tree count (for calls with no times to evaluate).
+    fn count_oob(&self, in_bag: &[Vec<u64>], offsets: &[usize], units: &[u32], n_oob: &mut [u32]) {
+        n_oob
+            .par_iter_mut()
+            .zip(offsets.par_windows(2))
+            .for_each(|(k, w)| *k = self.oob_trees(in_bag, &units[w[0]..w[1]]).count() as u32);
+    }
+
+    /// Trees whose bag contains none of `row_units`.
+    fn oob_trees<'a>(
+        &'a self,
+        in_bag: &'a [Vec<u64>],
+        row_units: &'a [u32],
+    ) -> impl Iterator<Item = &'a Tree> + 'a {
+        self.trees
+            .iter()
+            .zip(in_bag)
+            .filter(move |(_, bits)| {
+                row_units
+                    .iter()
+                    .all(|&g| bits[g as usize / 64] & (1 << (g % 64)) == 0)
+            })
+            .map(|(t, _)| t)
     }
 
     /// Conditional cumulative hazard along covariate paths, `(n_paths, times.len())`.

@@ -1,7 +1,10 @@
 """Scikit-learn compatible survival forest estimator."""
 
+import copy
+import hashlib
 import numbers
 import warnings
+from typing import NamedTuple
 
 import numpy as np
 from joblib import effective_n_jobs
@@ -17,6 +20,71 @@ def _as_codes(event):
     """Event codes as ``uint8`` for the engine (a bool array is viewed, not copied)."""
     event = np.ascontiguousarray(event)
     return event.view(np.uint8) if event.dtype == bool else event.astype(np.uint8, copy=False)
+
+
+class _FitDesign(NamedTuple):
+    """Training design of a forest fit (see ``_BaseForestTV._fit_design``)."""
+
+    names: object
+    ids_values: object
+    n_rows: int
+    X: np.ndarray
+    start: np.ndarray
+    stop: np.ndarray
+    event: np.ndarray
+    groups: np.ndarray
+    n_ids: int
+    kept: object
+    grid: object
+    lost: object
+    fit_rows: tuple
+    units: np.ndarray
+    n_units: int
+    oob_set: tuple
+    options: dict
+    fingerprint: str
+
+
+def _canonical_ids(ids):
+    """Bytes of the id labels, independent of the container and integer width."""
+    if ids is None:
+        return b"none"
+    ids = np.asarray(ids)
+    if ids.dtype.kind in "iub":
+        return np.ascontiguousarray(ids, dtype=np.int64).tobytes()
+    if ids.dtype.kind == "f":
+        return np.ascontiguousarray(ids, dtype=np.float64).tobytes()
+    # Type-tagged, length-prefixed: no two different id sequences share an encoding.
+    parts = []
+    for v in ids.tolist():
+        raw = f"{type(v).__name__}:{v}".encode()
+        parts.append(len(raw).to_bytes(8, "little") + raw)
+    return b"".join(parts)
+
+
+def _fingerprint(X, start, stop, event, ids, cp, measured_at, block_time, options):
+    """SHA-256 of the training data and the design options (see ``_rebuild_design``)."""
+    h = hashlib.sha256()
+    for a in (X, start, stop, _as_codes(event)):
+        h.update(np.ascontiguousarray(a).tobytes())
+    h.update(_canonical_ids(ids))
+    for a in (cp.group, cp.order, cp.offsets):
+        h.update(np.ascontiguousarray(a, dtype=np.int64).tobytes())
+    for a in (measured_at, block_time):
+        h.update(b"-" if a is None else np.ascontiguousarray(a, dtype=np.float64).tobytes())
+    h.update(repr(sorted(options.items())).encode())
+    return h.hexdigest()
+
+
+def _event_counts(times, start, stop, event):
+    """Per time in ``times``: events at it (``stop == t`` and ``event``) and rows at risk (``start < t <= stop``)."""
+    times = np.asarray(times, dtype=float)
+    idx = np.searchsorted(times, stop[event])
+    ok = (idx < times.size) & (times[np.minimum(idx, times.size - 1)] == stop[event])
+    counts = np.bincount(idx[ok], minlength=times.size).astype(float)
+    entered = np.searchsorted(np.sort(start), times, side="left")  # rows with start < t
+    left = np.searchsorted(np.sort(stop), times, side="left")  # rows with stop < t
+    return counts, (entered - left).astype(float)
 
 
 class _BaseForestTV(BaseEstimator):
@@ -38,9 +106,69 @@ class _BaseForestTV(BaseEstimator):
         return {}
 
     def _fit(self, X, y, ids, measured_at, gap_policy, layout, block_time):
+        d = self._fit_design(X, y, ids, measured_at, gap_policy, layout, block_time)
+        if d.kept is not None:
+            self.coarse_grid_ = d.grid
+            self.n_coarsen_dropped_rows_ = d.n_rows - d.kept.size
+            self.n_coarsen_lost_events_ = d.lost
+        else:  # no stale coarse-mode metadata from an earlier fit
+            for name in ("coarse_grid_", "n_coarsen_dropped_rows_", "n_coarsen_lost_events_"):
+                if hasattr(self, name):
+                    delattr(self, name)
+        X, start, stop, event, groups = d.X, d.start, d.stop, d.event, d.groups
+        self.n_features_in_ = X.shape[1]
+        self.n_ids_ = d.n_ids
+        self.n_units_ = d.n_units
+        self.min_ids_leaf_ = self._resolve_min_ids_leaf(d.n_units)
+        self.n_draw_ = self._resolve_n_draw(d.n_units)
+        rng = check_random_state(self.random_state)
+        fit_X, fit_start, fit_stop, fit_event = d.fit_rows
+        self.forest_ = _core.fit_forest(
+            fit_X,
+            fit_start,
+            fit_stop,
+            _as_codes(fit_event),
+            d.units,
+            d.n_units,
+            n_trees=self.n_estimators,
+            n_draw=self.n_draw_,
+            bootstrap=bool(self.bootstrap),
+            max_depth=self.max_depth,
+            min_ids_leaf=self.min_ids_leaf_,
+            min_events_leaf=self.min_events_leaf,
+            max_features=self._resolve_max_features(X.shape[1]),
+            max_bins=self.max_bins,
+            seed=int(rng.randint(np.iinfo(np.int64).max, dtype=np.int64)),
+            n_jobs=effective_n_jobs(self.n_jobs),
+            **self._engine_kwargs(),
+        )
+        # Coarse mode: the chosen grid, even points whose events were all lost.
+        self.event_times_ = np.unique(stop[event != 0]) if d.kept is None else d.grid
+        self._event_counts_, self.baseline_cumhaz_ = self._baseline(fit_start, fit_stop, fit_event)
+        self._fit_options_ = d.options
+        self._fit_fingerprint_ = d.fingerprint
+        if self.oob_score:
+            y_fit = y if d.kept is None else self._oob_target(stop, event, start)
+            pred = self._compute_oob(X, y_fit, groups, d.oob_set)
+            if d.kept is not None:  # back to the original rows; dropped rows are NaN
+                self.oob_prediction_ = np.full((d.n_rows,) + pred.shape[1:], np.nan)
+                self.oob_prediction_[d.kept] = pred
+                n_trees = self.oob_n_trees_
+                self.oob_n_trees_ = np.zeros(d.n_rows, dtype=n_trees.dtype)
+                self.oob_n_trees_[d.kept] = n_trees
+        return self
+
+    def _fit_design(self, X, y, ids, measured_at, gap_policy, layout, block_time):
+        """Validated training design: rows after coarsening / block splitting, units and OOB sets.
+
+        Deterministic given the data and the constructor parameters (no RNG), so
+        OOB tools can rebuild exactly the rows the forest was fitted on
+        (``_rebuild_design``, which calls it on a copy). Sets ``ids_column_`` and
+        ``feature_names_in_`` as soon as the input is parsed (before later
+        validation, as ``fit`` always has), and label attributes via ``_check_y``.
+        """
         X, names, ids_values = split_frame(X, ids)
         self.ids_column_ = ids if isinstance(ids, str) else None
-        ids = ids_values
         X = check_array(X, dtype=np.float64, order="C")
         if names is not None:
             self.feature_names_in_ = names
@@ -51,7 +179,7 @@ class _BaseForestTV(BaseEstimator):
         if n != start.shape[0]:
             raise ValueError(f"X has {n} rows but y has {start.shape[0]}")
         cp = check_counting_process(
-            start, stop, event, ids, measured_at=measured_at, gap_policy=gap_policy, layout=layout
+            start, stop, event, ids_values, measured_at=measured_at, gap_policy=gap_policy, layout=layout
         )
         # Resampling units are whole ids, even when split_id cuts an id into chains.
         groups, n_ids = cp.unit, cp.n_units
@@ -67,7 +195,18 @@ class _BaseForestTV(BaseEstimator):
                 "resample_unit='block' with layout='stacked' needs block_time (e.g. the landmark times): "
                 "stacked rows all start at 0"
             )
-        kept = None
+        options = {
+            "layout": layout,
+            "gap_policy": gap_policy,
+            "has_measured_at": measured_at is not None,
+            "has_block_time": block_time is not None,
+            "ntime": self.ntime,
+            "resample_unit": self.resample_unit,
+            "block_length": self.block_length,
+            "oob_buffer": self.oob_buffer,
+        }
+        fingerprint = _fingerprint(X, start, stop, event, ids_values, cp, measured_at, block_time, options)
+        kept = grid = lost = None
         if self.ntime is not None:
             # Chains: an id's contiguous rows, or (stacked) each row on its own.
             if layout == "stacked":
@@ -85,55 +224,45 @@ class _BaseForestTV(BaseEstimator):
             groups, n_ids = groups.astype(np.uint32), int(groups.max()) + 1
             if block_time is not None:
                 block_time = block_time[kept]
-            self.coarse_grid_ = grid
-            self.n_coarsen_dropped_rows_ = n - kept.size
-            self.n_coarsen_lost_events_ = lost
-
-        self.n_features_in_ = X.shape[1]
-        self.n_ids_ = n_ids
         # Training rows and their resampling units; blocks may split rows into pieces.
         fit_rows = (X, start, stop, event)
         units, n_units = groups, n_ids
         if self.resample_unit == "block":
             fit_rows, units, n_units, oob_set = self._block_design(X, start, stop, event, groups, block_time)
-        self.n_units_ = n_units
-        self.min_ids_leaf_ = self._resolve_min_ids_leaf(n_units)
-        self.n_draw_ = self._resolve_n_draw(n_units)
-        rng = check_random_state(self.random_state)
-        fit_X, fit_start, fit_stop, fit_event = fit_rows
-        self.forest_ = _core.fit_forest(
-            fit_X,
-            fit_start,
-            fit_stop,
-            _as_codes(fit_event),
-            units,
-            n_units,
-            n_trees=self.n_estimators,
-            n_draw=self.n_draw_,
-            bootstrap=bool(self.bootstrap),
-            max_depth=self.max_depth,
-            min_ids_leaf=self.min_ids_leaf_,
-            min_events_leaf=self.min_events_leaf,
-            max_features=self._resolve_max_features(X.shape[1]),
-            max_bins=self.max_bins,
-            seed=int(rng.randint(np.iinfo(np.int64).max, dtype=np.int64)),
-            n_jobs=effective_n_jobs(self.n_jobs),
-            **self._engine_kwargs(),
+        else:
+            oob_set = (np.arange(len(groups) + 1, dtype=np.uint64), groups)
+        return _FitDesign(
+            names, ids_values, n, X, start, stop, event, groups, n_ids, kept, grid, lost,
+            fit_rows, units, n_units, oob_set, options, fingerprint,
         )
-        # Coarse mode: the chosen grid, even points whose events were all lost.
-        self.event_times_ = np.unique(stop[event != 0]) if kept is None else grid
-        if self.oob_score:
-            y_fit = y if kept is None else self._oob_target(stop, event, start)
-            if self.resample_unit == "id":
-                oob_set = (np.arange(len(groups) + 1, dtype=np.uint64), groups)
-            pred = self._compute_oob(X, y_fit, groups, oob_set)
-            if kept is not None:  # back to the original rows; dropped rows are NaN
-                self.oob_prediction_ = np.full((n,) + pred.shape[1:], np.nan)
-                self.oob_prediction_[kept] = pred
-                n_trees = self.oob_n_trees_
-                self.oob_n_trees_ = np.zeros(n, dtype=n_trees.dtype)
-                self.oob_n_trees_[kept] = n_trees
-        return self
+
+    def _rebuild_design(self, X, y, ids=None, measured_at=None, block_time=None):
+        """The fit-time design for the training data, checked against ``_fit_fingerprint_``."""
+        check_is_fitted(self, "forest_")
+        opts = getattr(self, "_fit_options_", None)
+        if opts is None:
+            raise AttributeError("refit: this forest predates the stored fit design")
+        if ids is None:
+            ids = getattr(self, "ids_column_", None)
+        # A shallow copy: _check_y may set label attributes, which must not change self.
+        d = copy.copy(self)._fit_design(
+            X, y, ids, measured_at, opts["gap_policy"], opts["layout"], block_time
+        )
+        if d.fingerprint != self._fit_fingerprint_:
+            raise ValueError(
+                "data do not match the fitted data (X, y, ids, measured_at, block_time and the "
+                "design parameters ntime, resample_unit, block_length, oob_buffer must be as at fit)"
+            )
+        return d
+
+    def _baseline(self, start, stop, event):
+        """Pooled Nelson–Aalen of the fitted rows on ``event_times_``: ``(counts (K,), cumhaz)``.
+
+        ``cumhaz`` is ``(K,)`` for survival; the competing-risks forest overrides
+        this with per-cause cumulative hazards ``(J, K)``.
+        """
+        counts, at_risk = _event_counts(self.event_times_, start, stop, event != 0)
+        return counts, np.cumsum(np.divide(counts, at_risk, out=np.zeros_like(counts), where=at_risk > 0))
 
     def _oob_target(self, stop, event, start):
         """The (coarsened) training target that OOB scoring compares against."""
@@ -362,6 +491,10 @@ class SurvivalForestTV(_BaseForestTV):
     oob_n_trees_ : ndarray of shape (n_rows,)
         Trees in each row's OOB ensemble (0 for rows dropped by coarsening).
         Only with ``oob_score=True``.
+    baseline_cumhaz_ : ndarray of shape (n_event_times,)
+        Covariate-free (pooled Nelson–Aalen) cumulative hazard of the fitted
+        rows at ``event_times_``: the training null of
+        ``metrics.piecewise_exponential_score``.
     n_ids_ : int
         Ids (subjects) in the training data.
     n_units_ : int

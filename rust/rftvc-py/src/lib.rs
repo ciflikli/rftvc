@@ -553,6 +553,56 @@ impl PyForest {
         Ok((out.into_pyarray(py), n_oob.into_pyarray(py)))
     }
 
+    /// Out-of-bag ensemble cumulative hazard `(n_rows, n_times)` and each row's
+    /// out-of-bag tree count; rows as in `oob_mortality` (NaN with no tree).
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn oob_cumhaz<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        offsets: PyReadonlyArray1<'py, u64>,
+        units: PyReadonlyArray1<'py, u32>,
+        times: PyReadonlyArray1<'py, f64>,
+        aggregate_by: &str,
+        n_jobs: usize,
+    ) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray1<u32>>)> {
+        let (v, n, p) = self.check_x(&x)?;
+        let (offsets, units) = oob_sets(n, self.inner.n_groups, &offsets, &units)?;
+        let agg = aggregate(aggregate_by)?;
+        let times = times_vec(&times)?;
+        let m = times.len();
+        let forest = &self.inner;
+        let pool = pool(n_jobs)?;
+        let (out, n_oob) =
+            py.detach(|| pool.install(|| forest.oob_cumhaz(&v, p, &offsets, &units, &times, agg)));
+        let out = Array2::from_shape_vec((n, m), out).expect("shape");
+        Ok((out.into_pyarray(py), n_oob.into_pyarray(py)))
+    }
+
+    /// Out-of-bag per-cause cumulative hazards `(n_rows, n_causes, n_times)`
+    /// (tree-averaged, as `predict_cause_cumhaz`) and each row's tree count.
+    #[allow(clippy::too_many_arguments)]
+    fn oob_cause_cumhaz<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        offsets: PyReadonlyArray1<'py, u64>,
+        units: PyReadonlyArray1<'py, u32>,
+        times: PyReadonlyArray1<'py, f64>,
+        n_jobs: usize,
+    ) -> PyResult<(Array3Out<'py>, Bound<'py, PyArray1<u32>>)> {
+        let (v, n, p) = self.check_x(&x)?;
+        let (offsets, units) = oob_sets(n, self.inner.n_groups, &offsets, &units)?;
+        let times = times_vec(&times)?;
+        let (m, nc) = (times.len(), self.inner.n_causes);
+        let forest = &self.inner;
+        let pool = pool(n_jobs)?;
+        let (out, n_oob) =
+            py.detach(|| pool.install(|| forest.oob_cause_cumhaz(&v, p, &offsets, &units, &times)));
+        let out = Array3::from_shape_vec((n, nc, m), out).expect("shape");
+        Ok((out.into_pyarray(py), n_oob.into_pyarray(py)))
+    }
+
     /// Conditional cumulative hazard along covariate paths `(n_paths, n_times)`.
     ///
     /// Rows of path `p` are `offsets[p]..offsets[p+1]`, contiguous and sorted by start.
