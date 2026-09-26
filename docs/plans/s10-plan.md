@@ -55,7 +55,7 @@ Accept: buffered OOB matches the conditional-subsampling check within the Monte 
 - [x] Tests (above) + test-quality audit (the reference computes blocks, unit numbering and bags independently; the oracles are bit-identical, not tolerance, checks)
 - [x] Bench + `docs/bench/s10-block.md` (added a PBC2 landmark part: the case where the buffer matters, which led to the `block_length >= horizon` guidance and warning)
 - [x] Docs: user-guide section on choosing the resampling unit and what each OOB estimates; `design.md` rows; `plan.md` S10 entry + "S10 done"
-- [ ] Codex diff review; fixes
+- [x] Codex diff review; fixes
 
 ## Plan review (Codex, 2026-09-26)
 1. Stacked landmark rows all have `start = 0`, so every row of an id fell into block 0 (blocker) → `block_time=` fit argument; `LandmarkSurvivalForest` passes `s`; stacked + block without it is an error.
@@ -64,5 +64,8 @@ Accept: buffered OOB matches the conditional-subsampling check within the Monte 
 4. Oracle 1's condition was wrong for negative starts (medium) → stated per id.
 5. The OOB availability figures were approximate (medium) → exact finite-population formula, with the power form as an approximation.
 
-## Diff review (Codex)
-_pending_
+## Diff review (Codex, 2026-09-26)
+1. Huge finite times (e.g. `1e20` with `L = 1000`) gave zero-width pieces, because boundaries `k·L` are not distinct in `float64` (high) → `block_index` rejects `|t / L| >= 2**52`, and `split_at_blocks` checks every piece has `start < stop`. Regression tests for ±1e20.
+2. Huge `block_time` values collapsed into one int64 block (medium) → the same `block_index` guard. Test.
+3. The bench's conditional check dropped whole straddling rows and re-binned features, but was worded as the exact OOB distribution (medium) → it refits on the split pieces minus the excluded units' pieces. It is labelled approximate (binning), with the wording changed in the report, plan and PR.
+4. A huge `oob_buffer` overflowed inside `oob_sets` (low) → capped at 10^6 in validation. Test.

@@ -4,6 +4,21 @@ import numpy as np
 
 # Guard against a block_length far below the time scale: rows are split per block.
 MAX_PIECES_PER_ROW = 1000
+# Block indices k must be exact integers in float64, so that k * length gives
+# distinct, ordered boundaries.
+MAX_BLOCK_INDEX = 2.0**52
+MAX_BUFFER = 1_000_000
+
+
+def block_index(t, length):
+    """``floor(t / length)`` as int64, rejecting times too large for exact block boundaries."""
+    k = np.floor(np.asarray(t, dtype=float) / length)
+    if not np.all(np.abs(k) < MAX_BLOCK_INDEX):
+        raise ValueError(
+            f"times / block_length reach {np.max(np.abs(k)):.3g}; block indices must stay below 2**52 "
+            "for exact block boundaries: rescale the times or use a larger block_length"
+        )
+    return k.astype(np.int64)
 
 
 def _number_pairs(a, b):
@@ -20,7 +35,8 @@ def _cut_range(start, stop, length):
     Boundaries are always computed as ``k * length``, so every row and piece of
     an id agrees on them. ``k2 < k1`` means no boundary falls inside the row.
     """
-    k1 = np.floor(start / length) + 1
+    k1 = block_index(start, length).astype(float) + 1
+    block_index(stop, length)  # range check only
     k1 += k1 * length <= start
     k1 -= (k1 - 1) * length > start
     k2 = np.ceil(stop / length) - 1
@@ -56,6 +72,8 @@ def split_at_blocks(start, stop, event, length):
     last = pos == n_pieces[row] - 1
     p_start = np.where(pos == 0, start[row], block * length)
     p_stop = np.where(last, stop[row], (block + 1) * length)
+    if not np.all(p_start < p_stop):  # defensive: boundaries are exact below MAX_BLOCK_INDEX
+        raise ValueError("block splitting produced an empty piece; rescale the times or use a larger block_length")
     return row, block, p_start, p_stop, event[row] & last
 
 

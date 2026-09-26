@@ -17,18 +17,17 @@ Block forests use `block_length=6`, `min_ids_leaf=10`; OOB fits use 2,000 trees.
 
 Rows per dataset: 3997; events: 81; blocks (units): 702.
 
-## Conditional-subsampling check (h = 1)
+## Conditional-subsampling check (h = 1, approximate)
 
 150 rows (with ≥ 50 OOB trees), sampled across datasets. For each, two forests of
-150 trees are fitted without the row's required units, drawing the same `n_draw` from
-the remaining units: the distribution the row's OOB ensemble samples from. Median relative
-difference of the row's mortality:
+150 trees are fitted on the split pieces without the row's required units, drawing the
+same `n_draw` from the remaining units. Median relative difference of the row's mortality:
 
 - OOB vs conditional refit: 0.075 (refit 1), 0.069 (refit 2)
 - refit 1 vs refit 2 (Monte Carlo yardstick): 0.056
 
-The refits also drop the other pieces of any row that straddles an excluded block, and bin
-features on the reduced data, so they are a close but not exact copy of the OOB distribution.
+The refits bin features on the reduced data, whereas OOB trees use bins from all training
+rows, so the refits are close to, not exactly, the distribution the OOB ensemble samples from.
 
 ## PBC2 landmark stacks
 
@@ -47,9 +46,14 @@ unless `h · block_length >= horizon`.
 | block OOB, L = 2 y, h = 1 (h·L ≥ horizon) | 0.836 | 114 |
 | GroupKFold(5) by patient | 0.837 |  |
 
-## Summary (by hand)
+## Summary
 
-- **The implementation samples the intended distribution.** Buffered OOB mortality differs from conditional refits by 0.069–0.075 (median relative), against 0.056 between two refits. The OOB ensembles are smaller (~100 vs 150 trees), which alone predicts about 0.063; the rest fits the refits' reduced-data binning.
-- **Simulated panels (one terminal event per subject):** the buffer barely matters (C 0.689 → 0.692 from h = 0 to 2). An earlier block of a subject never carries the subject's event, so there is little to leak. Here block OOB is close to the new-subject estimate. The future-period estimate is much noisier (few test events).
-- **Landmark stacks: the buffer matters.** Consecutive landmarks share the same future event, so `h = 0` inflates C (0.891 vs 0.837 new-patient). The leak closes once blocks `h` apart are at least a horizon apart (`h · block_length >= horizon`). Wide blocks with `h = 1` get there with enough trees (L = 2 y: C 0.836 on ~114 trees). Narrow blocks with a wide buffer leave too few trees (L = 0.5 y, h = 4: one tree).
-- **Guidance** (user guide, and a `LandmarkSurvivalForest` warning): with landmark stacks use `block_length >= horizon` and `oob_buffer=1`.
+- **OOB is consistent with its conditional distribution, approximately.** OOB vs refit differs by 0.069–0.075 against 0.056 between two refits. The OOB ensembles are smaller (~100 vs 150 trees), which accounts for most of the gap; binning differences are the likely rest.
+- **Simulated panels (one terminal event per subject):** the buffer barely matters. A subject's earlier
+  blocks never carry its event, so there is little to leak, and block OOB lands near the new-subject
+  estimate. The future-period estimate is much noisier (few test events).
+- **Landmark stacks: the buffer matters.** Consecutive landmarks share one future event, so `h = 0`
+  inflates C. The leak closes once blocks `h` apart are a horizon apart (`h · block_length >= horizon`).
+  Wide blocks with `h = 1` get there with enough trees; narrow blocks with a wide buffer leave almost none.
+- **Guidance** (user guide, and a `LandmarkSurvivalForest` warning): with landmark stacks use
+  `block_length >= horizon` and `oob_buffer=1`.

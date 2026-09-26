@@ -7,10 +7,12 @@ covariate, a static covariate, an AR(1) noise covariate and a gamma frailty.
 Per simulated dataset:
 
 1. **Block OOB C** for buffers h = 0, 1, 2 (`resample_unit="block"`).
-2. **Conditional-subsampling check** (the distribution block OOB samples from):
-   for sampled rows, refit with that row's required units removed and `n_draw`
-   units drawn from the rest, then compare the row's mortality with its OOB
-   value. Two refits with different seeds give the Monte Carlo yardstick.
+2. **Conditional-subsampling check** (approximate): for sampled rows, refit on
+   the split pieces without that row's required units, drawing `n_draw` units
+   from the rest, and compare the row's mortality with its OOB value. Two refits
+   with different seeds give the Monte Carlo yardstick. The refits bin features
+   on the reduced data, whereas OOB trees use bins from all training rows, so
+   this is close to, not exactly, the OOB distribution.
 3. **Contrasts:** new-subject C (`GroupKFold` by id) and future-period C
    (train on follow-up up to `TAU`, score rows starting at or after `TAU + GAP`).
 
@@ -74,7 +76,7 @@ def conditional_check(X, y, ids, model, h, rng):
     start, stop = np.asarray(y["start"]), np.asarray(y["stop"])
     _, groups = np.unique(ids, return_inverse=True)
     k1, k2 = _blocks._cut_range(start, stop, L)
-    row, block, *_ = _blocks.split_at_blocks(start, stop, np.asarray(y["event"]), L)
+    row, block, p_start, p_stop, p_event = _blocks.split_at_blocks(start, stop, np.asarray(y["event"]), L)
     units, n_units = _blocks.block_units(groups[row], block)
     unit_id = np.empty(n_units, np.int64)
     unit_block = np.empty(n_units, np.int64)
@@ -85,11 +87,10 @@ def conditional_check(X, y, ids, model, h, rng):
     out = []
     for r in rows:
         excluded = need[offsets[r] : offsets[r + 1]]
-        keep_units = np.setdiff1d(np.arange(n_units), excluded)
-        # Keep original rows none of whose pieces fall in an excluded unit; rows are
-        # whole units' person-time only when unsplit, so drop partially excluded rows.
-        bad_rows = np.unique(row[np.isin(units, excluded)])
-        keep = np.setdiff1d(np.arange(len(X)), bad_rows)
+        # Refit on the split pieces minus the excluded units' pieces, so a row that
+        # straddles an excluded block keeps its other blocks (as in the OOB trees).
+        keep = ~np.isin(units, excluded)
+        yk = make_survival_y(p_stop[keep], p_event[keep], start=p_start[keep])
         preds = []
         for seed in (1, 2):
             refit = SurvivalForestTV(
@@ -98,10 +99,11 @@ def conditional_check(X, y, ids, model, h, rng):
                 n_estimators=CHECK_TREES,
                 max_samples=int(model.n_draw_),
                 **{**COMMON, "random_state": seed},
-            ).fit(X[keep], y[keep], ids[keep], gap_policy="split_id")  # removed blocks leave gaps
+            ).fit(X[row[keep]], yk, groups[row[keep]], gap_policy="split_id")  # removed blocks leave gaps
+            assert refit.n_units_ == n_units - excluded.size
             H = refit.predict_cumulative_hazard(X[r : r + 1], model.event_times_)
             preds.append(H.sum())
-        out.append((model.oob_prediction_[r], *preds, keep_units.size - refit.n_units_))
+        out.append((model.oob_prediction_[r], *preds))
     return np.array(out)
 
 
@@ -200,18 +202,17 @@ def main():
         "",
         f"Rows per dataset: {mean['rows']:.0f}; events: {mean['events']:.0f}; blocks (units): {mean['units']:.0f}.",
         "",
-        "## Conditional-subsampling check (h = 1)",
+        "## Conditional-subsampling check (h = 1, approximate)",
         "",
         f"{len(chk)} rows (with ≥ 50 OOB trees), sampled across datasets. For each, two forests of",
-        f"{CHECK_TREES} trees are fitted without the row's required units, drawing the same `n_draw` from",
-        "the remaining units: the distribution the row's OOB ensemble samples from. Median relative",
-        "difference of the row's mortality:",
+        f"{CHECK_TREES} trees are fitted on the split pieces without the row's required units, drawing the",
+        "same `n_draw` from the remaining units. Median relative difference of the row's mortality:",
         "",
         f"- OOB vs conditional refit: {rel(oob, c1):.3f} (refit 1), {rel(oob, c2):.3f} (refit 2)",
         f"- refit 1 vs refit 2 (Monte Carlo yardstick): {rel(c1, c2):.3f}",
         "",
-        "The refits also drop the other pieces of any row that straddles an excluded block, and bin",
-        "features on the reduced data, so they are a close but not exact copy of the OOB distribution.",
+        "The refits bin features on the reduced data, whereas OOB trees use bins from all training",
+        "rows, so the refits are close to, not exactly, the distribution the OOB ensemble samples from.",
     ]
     lm, n_rows, n_pat = landmark_part()
     lines += [
@@ -227,6 +228,22 @@ def main():
         "|---|---|---|",
     ]
     lines += [f"| {name} | {c:.3f} | {'' if t is None else f'{t:.0f}'} |" for name, c, t in lm]
+    lines += [
+        "",
+        "## Summary",
+        "",
+        f"- **OOB is consistent with its conditional distribution, approximately.** OOB vs refit differs by "
+        f"{min(rel(oob, c1), rel(oob, c2)):.3f}–{max(rel(oob, c1), rel(oob, c2)):.3f} against {rel(c1, c2):.3f} between two refits. The OOB ensembles are "
+        "smaller (~100 vs 150 trees), which accounts for most of the gap; binning differences are the likely rest.",
+        "- **Simulated panels (one terminal event per subject):** the buffer barely matters. A subject's earlier",
+        "  blocks never carry its event, so there is little to leak, and block OOB lands near the new-subject",
+        "  estimate. The future-period estimate is much noisier (few test events).",
+        "- **Landmark stacks: the buffer matters.** Consecutive landmarks share one future event, so `h = 0`",
+        "  inflates C. The leak closes once blocks `h` apart are a horizon apart (`h · block_length >= horizon`).",
+        "  Wide blocks with `h = 1` get there with enough trees; narrow blocks with a wide buffer leave almost none.",
+        "- **Guidance** (user guide, and a `LandmarkSurvivalForest` warning): with landmark stacks use",
+        "  `block_length >= horizon` and `oob_buffer=1`.",
+    ]
     OUT.write_text("\n".join(lines) + "\n")
     print(OUT.read_text())
 

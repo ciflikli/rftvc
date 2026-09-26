@@ -282,7 +282,7 @@ class SurvivalForestTV(BaseEstimator):
             lo, hi = k1 - 1, k2
         else:
             row = np.arange(len(start))
-            block = np.floor(block_time / length).astype(np.int64)
+            block = _blocks.block_index(block_time, length)
             fit_rows = (X, start, stop, event)
             lo = hi = block
         units, n_units = _blocks.block_units(groups[row], block)
@@ -453,6 +453,8 @@ class SurvivalForestTV(BaseEstimator):
         elif self.block_length is not None:
             raise ValueError("block_length is only used with resample_unit='block'")
         self._check_int("oob_buffer", minimum=0)
+        if self.oob_buffer > _blocks.MAX_BUFFER:
+            raise ValueError(f"oob_buffer must be <= {_blocks.MAX_BUFFER}, got {self.oob_buffer}")
         if self.aggregate not in ("hazard", "survival"):
             raise ValueError(f"aggregate must be 'hazard' or 'survival', got {self.aggregate!r}")
         self._check_int("n_estimators", minimum=1)

@@ -251,12 +251,22 @@ def test_unit_counts_resolve_from_blocks():
         (dict(resample_unit="block", block_length=1.0, oob_buffer=-1), "oob_buffer"),
         (dict(resample_unit="row"), "resample_unit must be"),
         (dict(resample_unit="block", block_length=1e-6), "splits a row into"),
+        (dict(resample_unit="block", block_length=1e-16), "below 2\\*\\*52"),
+        (dict(resample_unit="block", block_length=1.0, oob_buffer=2**63), "oob_buffer must be <="),
     ],
 )
 def test_invalid_block_parameters(params, match):
     X, y, ids = _cp_data(10, seed=12)
     with pytest.raises(ValueError, match=match):
         SurvivalForestTV(n_estimators=1, **params).fit(X, y, ids)
+
+
+@pytest.mark.parametrize("scale", [1e20, -1e20])
+def test_huge_times_are_rejected_not_split_into_empty_pieces(scale):
+    start = np.array([scale])
+    stop = np.nextafter(start, np.inf)
+    with pytest.raises(ValueError, match="below 2"):
+        split_at_blocks(start, stop, np.array([True]), 1000.0)
 
 
 def test_block_time_is_validated():
@@ -267,3 +277,5 @@ def test_block_time_is_validated():
         _block(n_estimators=1).fit(X, y, ids, block_time=np.full(len(X), np.nan))
     with pytest.raises(ValueError, match="block_time must be finite"):
         _block(n_estimators=1).fit(X, y, ids, block_time=np.zeros(3))
+    with pytest.raises(ValueError, match="below 2"):  # would all collapse to one int64 block
+        _block(n_estimators=1).fit(X, y, ids, block_time=np.full(len(X), 1e307))
