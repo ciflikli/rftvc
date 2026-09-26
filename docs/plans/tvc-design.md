@@ -36,7 +36,7 @@ Notation:
 | T4 | Default loss = PE score: `windows=8` quantile windows of training event times on `(0, τ]` with `τ` = the last training event time, `alpha=0.01` mixture with the **training** null, zero-rate share always reported. Landmark models also accept `scoring="brier"` / `"ibs"` at horizons | default |
 | T5 | Default permutation `strata="time"` (M2); `strata=None` = naive shuffle (M1), documented as extrapolation-prone; landmark models stratify by landmark `s` | default |
 | T6 | Evaluation on user-supplied held-out data by default; `oob=True` rebuilds the fit-time design deterministically, checks it against a stored fingerprint, and uses a new engine call `oob_cumhaz` | default |
-| T7 | Result = sklearn-style `Bunch` + TVC fields (per-window, per-cause, paired SE, zero-rate share, share of gain) | default |
+| T7 | Result = sklearn-style `Bunch` + TVC fields (per-window, per-cause, cluster-bootstrap or cross-fit SE, zero-rate share, share of gain) | default |
 | T8 | Landmark `AGGREGATIONS` gain `"slope"` and `"std"` (history summaries the research found missing) | default |
 | T9 | `oob_score_` / `score` keep C for now; switching to the PE score is decided in the release pass | default (flagged) |
 | T10 | Estimators store the training null at fit: `baseline_cumhaz_` (pooled Nelson–Aalen on `event_times_`; per cause for CR), so the null never comes from evaluation data | default |
