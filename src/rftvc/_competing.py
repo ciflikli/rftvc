@@ -7,7 +7,7 @@ import numpy as np
 import polars as pl
 from joblib import effective_n_jobs
 
-from ._estimator import _BaseForestTV
+from ._estimator import _BaseForestTV, _event_counts
 from ._validation import check_competing_risks_y, competing_risks_labels, make_competing_risks_y
 
 
@@ -182,6 +182,15 @@ max_samples, bootstrap, n_jobs, random_state
             self._check_int("min_events_leaf_cause", minimum=1)
             if self.split_cause is None:
                 raise ValueError("min_events_leaf_cause requires split_cause")
+
+    def _baseline(self, start, stop, event):
+        """Pooled per-cause Nelson–Aalen of the fitted rows: ``(all-cause counts (K,), cumhaz (J, K))``."""
+        counts, at_risk = _event_counts(self.event_times_, start, stop, event != 0)
+        cumhaz = np.empty((self.n_causes_, self.event_times_.size))
+        for j in range(self.n_causes_):
+            d, _ = _event_counts(self.event_times_, start, stop, event == j + 1)
+            cumhaz[j] = np.cumsum(np.divide(d, at_risk, out=np.zeros_like(d), where=at_risk > 0))
+        return counts, cumhaz
 
     def _oob_target(self, stop, event, start):
         """The coarsened target with cause labels (codes mapped back through ``causes_``)."""
