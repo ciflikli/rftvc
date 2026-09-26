@@ -15,6 +15,7 @@ Rule: after each slice, run the full test suite, tick the box, and note any devi
 - [x] S9: Leaf-storage slimming (branch `feat/s9-leaf-slim`)
 - [x] S10: Block resampling with its own OOB spec (branch `feat/s10-block-resampling`)
 - [x] S11–S14: Competing risks — plan and status in `cr-plan.md` (design: `cr-design.md`)
+- [ ] S16–S20: TVC foundation/importance/effects — plan and status in `tvc-plan.md` (design: `tvc-design.md`)
 
 Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pytest`, `hypothesis`; `cargo test`. Test oracles are lifelines and scikit-survival (dev dependencies), plus `tests/ref/logrank_ref.py`: an independent, deliberately naive O(n·K) LTRC log-rank reference (risk sets, events, numerator, hypergeometric variance, ties). Fixtures are generated once and committed as `.npz`. **Oracle conventions:** Nelson–Aalen uses `NelsonAalenFitter(nelson_aalen_smoothing=False)` with an explicit `timeline=` equal to the event grid; cumulative hazard is right-continuous (the value immediately after each event time). Statistical/benchmark tests are marked `@pytest.mark.slow` and are **not** merge gates. Setup: `git init` on branch `main`; slice work happens on `feat/sN-*` branches (commit only when the user asks).
 
