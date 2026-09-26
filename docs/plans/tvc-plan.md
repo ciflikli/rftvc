@@ -278,7 +278,7 @@ drop_column_importance(estimator, X, y=None, *, ids=None, cv=5, features=None, g
 | API drift before the release pass | one public module; sklearn names; the release pass reviews signatures with everything else |
 
 ## Review log (Codex plan review, 2026-09-26)
-All 12 findings accepted:
+All 11 findings accepted:
 1. **Deviance follow-ups missing** → S16 bench with a decision rule for the `windows` default.
 2. **The M1 warning was not enforced** → a `UserWarning`, docstring and user-guide assertions.
 3. **T1/T9 had no regression tests** → a docs-claims test (S20) and a `score`/`oob_score_` guard (S16).
@@ -290,4 +290,3 @@ All 12 findings accepted:
 9. **Bootstrap tests too weak** → `_resample_ids` tested directly (whole ids, distinct copy labels).
 10. **The ids column in a DataFrame `X` under LOCO** → excluded from units, rejected when named, and refit frames keep it.
 11. **Memory of dense intermediates** → window-streamed scoring and a 1M-row memory gate.
-12. (Coverage summary of 1–3) no separate change.
