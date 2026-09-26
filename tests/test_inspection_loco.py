@@ -240,6 +240,20 @@ def test_dataframe_ids_column():
     with pytest.raises(ValueError, match="ids column"):
         _dci(est, df, y, ids="id", cv=3, groups={"g": ["id"]})
 
+    # the grouping by ids is identical across the full and every dropped fit of a fold
+    # (one ids_values array, sliced once, never re-derived per refit from the DataFrame).
+    SpyForest.seen = []
+    spy = SpyForest(**est.get_params(deep=False))
+    n_units = len(df.columns) - 1
+    _dci(spy, df, y, ids="id", cv=3, n_seeds=1)
+    per_fold = len(SpyForest.seen) // 3
+    assert per_fold == n_units + 1
+    for f in range(3):
+        block = SpyForest.seen[f * per_fold : (f + 1) * per_fold]
+        first_ids = block[0][0]
+        for other_ids, _ in block[1:]:
+            np.testing.assert_array_equal(other_ids, first_ids)
+
 
 # --- competing risks -----------------------------------------------------------------------
 
