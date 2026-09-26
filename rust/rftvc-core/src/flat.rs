@@ -1,13 +1,18 @@
 //! Flat (struct-of-arrays) representation of a fitted forest, used for
-//! pickling from Python. Leaf cumulative hazards are rebuilt on load.
+//! pickling from Python.
 
 use std::sync::Arc;
 
 use crate::forest::Forest;
-use crate::tree::{Leaf, Node, Tree};
+use crate::tree::{Node, Tree};
+
+/// Version of the flat state. v1 (before S9) stored leaf counts `d`, `y`;
+/// v2 stores the leaf cumulative hazards.
+pub const FORMAT_VERSION: u64 = 2;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FlatForest {
+    pub format_version: u64,
     pub grid: Vec<f64>,
     pub tree_seeds: Vec<u64>,
     pub n_features: u64,
@@ -26,13 +31,13 @@ pub struct FlatForest {
     /// Per leaf (all trees), start of its event entries; length `n_leaves + 1`.
     pub event_offsets: Vec<u64>,
     pub event_idx: Vec<u32>,
-    pub d: Vec<f64>,
-    pub y: Vec<f64>,
+    pub cumhaz: Vec<f64>,
 }
 
 impl FlatForest {
     pub fn from_forest(forest: &Forest) -> FlatForest {
         let mut f = FlatForest {
+            format_version: FORMAT_VERSION,
             grid: forest
                 .trees
                 .first()
@@ -71,12 +76,11 @@ impl FlatForest {
                 }
             }
             f.node_offsets.push(f.node_feature.len() as u64);
-            for leaf in &tree.leaves {
-                f.event_idx.extend_from_slice(&leaf.event_idx);
-                f.d.extend_from_slice(&leaf.d);
-                f.y.extend_from_slice(&leaf.y);
-                f.event_offsets.push(f.event_idx.len() as u64);
-            }
+            let base = f.event_idx.len() as u64;
+            f.event_offsets
+                .extend(tree.leaf_offsets[1..].iter().map(|&o| base + o as u64));
+            f.event_idx.extend_from_slice(&tree.event_idx);
+            f.cumhaz.extend_from_slice(&tree.cumhaz);
             f.leaf_offsets.push(f.event_offsets.len() as u64 - 1);
         }
         f
@@ -89,7 +93,23 @@ impl FlatForest {
         let n_nodes = self.node_feature.len();
         let n_leaves = self.event_offsets.len().saturating_sub(1);
         let n_events = self.event_idx.len();
-        let consistent = n_trees >= 1
+        if self.format_version != FORMAT_VERSION {
+            return Err(format!(
+                "forest state has format version {}, expected {FORMAT_VERSION}; refit the model",
+                self.format_version
+            ));
+        }
+        // Scalars must be ones a fit can produce; `cumhaz_at` binary-searches
+        // the grid, so it must be finite and strictly increasing.
+        let scalars_ok = self.n_features >= 1
+            && self.n_groups >= 1
+            && self.n_draw >= 1
+            && (self.bootstrap || self.n_draw <= self.n_groups);
+        let grid_ok =
+            self.grid.iter().all(|t| t.is_finite()) && self.grid.windows(2).all(|w| w[0] < w[1]);
+        let consistent = scalars_ok
+            && grid_ok
+            && n_trees >= 1
             && self.leaf_offsets.len() == n_trees + 1
             && self.tree_seeds.len() == n_trees
             && [
@@ -99,8 +119,7 @@ impl FlatForest {
             ]
             .iter()
             .all(|&l| l == n_nodes)
-            && self.d.len() == n_events
-            && self.y.len() == n_events
+            && self.cumhaz.len() == n_events
             && monotone(&self.node_offsets, n_nodes)
             && monotone(&self.leaf_offsets, n_leaves)
             && monotone(&self.event_offsets, n_events)
@@ -153,41 +172,37 @@ impl FlatForest {
                 };
                 nodes.push(node);
             }
-            let mut leaves = Vec::with_capacity(tree_leaves);
-            for l in l0..l1 {
-                let (e0, e1) = (
-                    self.event_offsets[l] as usize,
-                    self.event_offsets[l + 1] as usize,
-                );
+            let (e0, e1) = (
+                self.event_offsets[l0] as usize,
+                self.event_offsets[l1] as usize,
+            );
+            if u32::try_from(e1 - e0).is_err() {
+                return Err(format!("tree {t} has too many leaf entries"));
+            }
+            // Offsets relative to the tree's first entry (monotone, so in range).
+            let leaf_offsets: Vec<u32> = self.event_offsets[l0..=l1]
+                .iter()
+                .map(|&o| (o as usize - e0) as u32)
+                .collect();
+            for (l, w) in leaf_offsets.windows(2).enumerate() {
                 // `cumhaz_at` binary-searches event times, so they must be strictly
-                // increasing; counts must give finite, non-negative increments.
-                let event_idx = self.event_idx[e0..e1].to_vec();
-                let (d, y) = (self.d[e0..e1].to_vec(), self.y[e0..e1].to_vec());
-                let counts_ok = d.iter().zip(&y).all(|(&d, &y)| {
-                    d.is_finite() && y.is_finite() && 0.0 <= d && d <= y && y > 0.0
-                });
-                if !(event_idx.windows(2).all(|w| w[0] < w[1]) && counts_ok) {
-                    return Err(format!("invalid leaf {l}"));
+                // increasing; the cumulative hazard must be finite, non-negative
+                // and non-decreasing.
+                let (a, b) = (e0 + w[0] as usize, e0 + w[1] as usize);
+                let (idx, ch) = (&self.event_idx[a..b], &self.cumhaz[a..b]);
+                let ok = idx.windows(2).all(|p| p[0] < p[1])
+                    && ch.iter().all(|c| c.is_finite())
+                    && ch.first().is_none_or(|&c| c >= 0.0)
+                    && ch.windows(2).all(|p| p[0] <= p[1]);
+                if !ok {
+                    return Err(format!("invalid leaf {}", l0 + l));
                 }
-                let mut cum = 0.0;
-                let cumhaz = d
-                    .iter()
-                    .zip(&y)
-                    .map(|(d, y)| {
-                        cum += d / y;
-                        cum
-                    })
-                    .collect();
-                leaves.push(Leaf {
-                    event_idx,
-                    d,
-                    y,
-                    cumhaz,
-                });
             }
             trees.push(Tree {
                 nodes,
-                leaves,
+                leaf_offsets,
+                event_idx: self.event_idx[e0..e1].to_vec(),
+                cumhaz: self.cumhaz[e0..e1].to_vec(),
                 grid_times: Arc::clone(&grid),
             });
         }

@@ -76,8 +76,8 @@ fn aggregate(name: &str) -> PyResult<Aggregate> {
     }
 }
 
-/// `(event_times, d, y, cumhaz)` of one leaf.
-type LeafProfile = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>);
+/// `(event_times, cumhaz)` of one leaf.
+type LeafProfile = (Vec<f64>, Vec<f64>);
 
 #[pyclass(module = "rftvc._core", name = "Forest", frozen)]
 struct PyForest {
@@ -112,22 +112,28 @@ impl PyForest {
     }
 
     fn n_leaves(&self, tree: usize) -> PyResult<usize> {
-        Ok(self.tree(tree)?.leaves.len())
+        Ok(self.tree(tree)?.n_leaves())
     }
 
-    /// `(event_times, d, y, cumhaz)` of one leaf of one tree.
+    /// Heap bytes of the fitted trees (nodes, leaves, one copy of the grid).
+    #[getter]
+    fn nbytes(&self) -> usize {
+        self.inner.nbytes()
+    }
+
+    /// `(event_times, cumhaz)` of one leaf of one tree: the Nelson–Aalen
+    /// cumulative hazard at the leaf's event times.
     fn leaf_profile(&self, tree: usize, leaf: usize) -> PyResult<LeafProfile> {
         let t = self.tree(tree)?;
-        let l = t
-            .leaves
-            .get(leaf)
-            .ok_or_else(|| PyValueError::new_err("leaf index out of range"))?;
-        let times = l
-            .event_idx
+        if leaf >= t.n_leaves() {
+            return Err(PyValueError::new_err("leaf index out of range"));
+        }
+        let times = t
+            .leaf_event_idx(leaf)
             .iter()
             .map(|&k| t.grid_times[k as usize])
             .collect();
-        Ok((times, l.d.clone(), l.y.clone(), l.cumhaz.clone()))
+        Ok((times, t.leaf_cumhaz(leaf).to_vec()))
     }
 
     /// Id indices each tree was grown on (sorted; repeats under bootstrap).
@@ -279,6 +285,7 @@ impl PyForest {
         let py = slf.py();
         let f = FlatForest::from_forest(&slf.get().inner);
         let d = PyDict::new(py);
+        d.set_item("format_version", f.format_version)?;
         d.set_item("grid", f.grid.into_pyarray(py))?;
         d.set_item("tree_seeds", f.tree_seeds.into_pyarray(py))?;
         d.set_item("n_features", f.n_features)?;
@@ -293,8 +300,7 @@ impl PyForest {
         d.set_item("leaf_offsets", f.leaf_offsets.into_pyarray(py))?;
         d.set_item("event_offsets", f.event_offsets.into_pyarray(py))?;
         d.set_item("event_idx", f.event_idx.into_pyarray(py))?;
-        d.set_item("d", f.d.into_pyarray(py))?;
-        d.set_item("y", f.y.into_pyarray(py))?;
+        d.set_item("cumhaz", f.cumhaz.into_pyarray(py))?;
         Ok((slf.getattr("_from_state")?, (d,)))
     }
 
@@ -309,7 +315,13 @@ impl PyForest {
                 vec1(&item(state, $key)?.extract::<PyReadonlyArray1<$t>>()?, $key)?
             };
         }
+        if !state.contains("format_version")? {
+            return Err(PyValueError::new_err(
+                "forest state from an older rftvc build (pre-S9 leaf format); refit the model",
+            ));
+        }
         let flat = FlatForest {
+            format_version: item(state, "format_version")?.extract()?,
             grid: vec_of!("grid", f64),
             tree_seeds: vec_of!("tree_seeds", u64),
             n_features: item(state, "n_features")?.extract()?,
@@ -324,8 +336,7 @@ impl PyForest {
             leaf_offsets: vec_of!("leaf_offsets", u64),
             event_offsets: vec_of!("event_offsets", u64),
             event_idx: vec_of!("event_idx", u32),
-            d: vec_of!("d", f64),
-            y: vec_of!("y", f64),
+            cumhaz: vec_of!("cumhaz", f64),
         };
         let inner = flat.to_forest().map_err(PyValueError::new_err)?;
         Ok(PyForest { inner })

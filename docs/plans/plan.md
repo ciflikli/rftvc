@@ -12,6 +12,7 @@ Rule: after each slice, run the full test suite, tick the box, and note any devi
 - [x] S6: Coarse grid mode + performance pass + benchmarks (branch `feat/s6-coarse-grid`)
 - [x] S7: sklearn compatibility matrix, DataFrame input, wheels, docs/case studies (branch `feat/s7-compat`)
 - [x] S8: Criterion + aggregation bake-off (branch `feat/s8-bakeoff`)
+- [x] S9: Leaf-storage slimming (branch `feat/s9-leaf-slim`)
 
 Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pytest`, `hypothesis`; `cargo test`. Test oracles are lifelines and scikit-survival (dev dependencies), plus `tests/ref/logrank_ref.py`: an independent, deliberately naive O(n·K) LTRC log-rank reference (risk sets, events, numerator, hypergeometric variance, ties). Fixtures are generated once and committed as `.npz`. **Oracle conventions:** Nelson–Aalen uses `NelsonAalenFitter(nelson_aalen_smoothing=False)` with an explicit `timeline=` equal to the event grid; cumulative hazard is right-continuous (the value immediately after each event time). Statistical/benchmark tests are marked `@pytest.mark.slow` and are **not** merge gates. Setup: `git init` on branch `main`; slice work happens on `feat/sN-*` branches (commit only when the user asks).
 
@@ -238,7 +239,7 @@ Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pyte
   - rftvc at 1M rows: 113 s exact, 18 s coarse, 2.3–2.4 GB.
   - Coarse C is within 0.002 of exact at every size.
 - **Targets** are written into design.md (Validation strategy 5).
-- **Deferred:** leaf storage (drop `d`/`y` from fitted leaves; this changes `leaf_profile` and the pickle format). The default stays `ntime=None` (D8.3); S8's bake-off can revisit it.
+- **Deferred:** leaf storage (drop `d`/`y` from fitted leaves; this changes `leaf_profile` and the pickle format). Done in S9. The default stays `ntime=None` (D8.3); S8's bake-off can revisit it.
 
 ## S7: Compatibility, packaging, docs
 **Files:**
@@ -300,6 +301,20 @@ Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pyte
 - **Removed after the decision:** the challengers, `split_criterion` / `criterion_horizon` and the harness (history: `a49cf55`).
 - **Kept:** `landmark_cross_validate(return_predictions=True)`, which returns the out-of-fold rows behind every score.
 - Output: `docs/bench/s8-bakeoff/` (CSVs, `decisions.csv`, run log). Full run 395 s.
+
+---
+
+## S9: Leaf-storage slimming
+**Files:** `tree.rs` (flat leaf storage), `flat.rs` (pickle format v2), `rftvc-py/src/lib.rs`; `bench/s9_leaf.py`; `docs/bench/s9-leaf.md`.
+
+**Accept:** predictions bit-identical to S8; forest memory at 1M rows falls ≥ 50%; old and corrupt pickle states rejected without panics.
+
+**S9 done (2026-09-26). Deviations / notes** (slice plan and review log: `s9-plan.md`; results: `docs/bench/s9-leaf.md`):
+- Leaves keep only event-time indices and the cumulative hazard, stored flat per tree (offsets + two arrays). `d` / `y` are gone; `Leaf` and the unused `Tree::leaf_hazard` are removed.
+- `forest_.leaf_profile(tree, leaf)` returns `(event_times, cumhaz)`. `forest_.nbytes` gives the forest's heap size.
+- Pickle state v2 (`format_version = 2`, `cumhaz` in place of `d`, `y`). Pre-S9 states are rejected ("refit the model"), not migrated: the package is pre-release.
+- The loader now also rejects non-finite or unsorted grids and impossible scalars (e.g. `n_features = 0`, which used to panic in prediction). These were plan-review findings; they predate S9.
+- At 1M rows: forest memory −59–61%; peak RSS 2.0–2.3 → 1.5 GB (one row per id) and 1.4 → 1.0–1.1 GB (TVC); pickles −23–31%; fit time unchanged.
 
 ---
 
