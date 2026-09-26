@@ -335,7 +335,8 @@ impl PyForest {
 #[pyfunction]
 #[pyo3(name = "fit_forest", signature = (
     x, start, stop, event, groups, n_groups, *, n_trees, n_draw, bootstrap,
-    max_depth, min_ids_leaf, min_events_leaf, max_features, max_bins, seed, n_jobs
+    max_depth, min_ids_leaf, min_events_leaf, max_features, max_bins, seed, n_jobs,
+    split_criterion="logrank", criterion_horizon=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_forest_py(
@@ -356,7 +357,11 @@ fn fit_forest_py(
     max_bins: usize,
     seed: u64,
     n_jobs: usize,
+    split_criterion: &str,
+    criterion_horizon: Option<f64>,
 ) -> PyResult<PyForest> {
+    let criterion =
+        core_criterion(split_criterion, criterion_horizon).map_err(PyValueError::new_err)?;
     let (v, n, p) = matrix(&x)?;
     check_lengths(
         n,
@@ -396,7 +401,13 @@ fn fit_forest_py(
     let inner = py.detach(|| {
         pool.install(|| {
             let binned = Binned::fit(&v, n, p, max_bins);
-            fit_forest(&binned, &surv, &Groups::new(&groups, n_groups), &params)
+            fit_forest(
+                &binned,
+                &surv,
+                &Groups::new(&groups, n_groups),
+                &params,
+                criterion.as_ref(),
+            )
         })
     });
     Ok(PyForest { inner })
@@ -586,7 +597,10 @@ fn criterion_score(
 ///
 /// `units` (default: one per row) must be contiguous per unit.
 #[pyfunction]
-#[pyo3(signature = (x, start, stop, event, *, min_ids_leaf, min_events_leaf, max_bins=256, units=None))]
+#[pyo3(signature = (
+    x, start, stop, event, *, min_ids_leaf, min_events_leaf, max_bins=256, units=None,
+    criterion="logrank", horizon=None
+))]
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn best_split(
     x: PyReadonlyArray2<'_, f64>,
@@ -597,7 +611,10 @@ fn best_split(
     min_events_leaf: usize,
     max_bins: usize,
     units: Option<PyReadonlyArray1<'_, u32>>,
+    criterion: &str,
+    horizon: Option<f64>,
 ) -> PyResult<Option<(usize, f64, f64, Vec<bool>, usize, usize)>> {
+    let crit = core_criterion(criterion, horizon).map_err(PyValueError::new_err)?;
     let (v, n, p) = matrix(&x)?;
     check_lengths(
         n,
@@ -639,7 +656,7 @@ fn best_split(
         &units,
         &features,
         &params,
-        &LtrcLogRank,
+        crit.as_ref(),
     )
     .map(|s| {
         let col = binned.column(s.feature);

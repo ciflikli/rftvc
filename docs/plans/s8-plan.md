@@ -91,7 +91,15 @@ Branch `feat/s8-bakeoff`. Parent: `plan.md` S8; design.md D6 (criterion), D11 (a
   - invariants: L/R swap symmetry, zero gain for identical children, gain ≥ 0 for C1/C2, `0·log 0`.
   - Done: `GroupedLik`, `PoissonExposure`, `KmGini` in `criterion.rs`, plus `criterion(name, horizon)` (validates the horizon: required and finite > 0 for `km_gini`, rejected otherwise). Rust hand-computed tests (`tests/criteria.rs`: C1 gain = 4 ln 2, C3 at τ inside/at/after the tie). `tests/test_criteria.py` (15 tests, hypothesis parity incl. log-rank) plus a lifelines check of the delayed-entry KM reference. Three mutants (τ exclusive, wrong right exposure, no straddling) each fail 2–5 tests.
   - Note: the `km_gini` gain can be negative (straddling units count twice), so non-negativity is asserted only for C1/C2. The splitter already ignores scores ≤ 0.
-- [ ] `split_criterion` / `criterion_horizon` on `SurvivalForestTV` → `fit_forest_py`. Tests cover validation (`km_gini` without a horizon raises), `clone`, `get_params(deep=True)` via `forest__…`, nested-CV tuning of `forest__split_criterion`, and a fitted pickle round-trip. Re-run the compatibility matrix.
+- [x] `split_criterion` / `criterion_horizon` on `SurvivalForestTV` → `fit_forest_py`. Tests cover validation (`km_gini` without a horizon raises), `clone`, `get_params(deep=True)` via `forest__…`, nested-CV tuning of `forest__split_criterion`, and a fitted pickle round-trip. Re-run the compatibility matrix.
+  - Done: `fit_forest(…, criterion)` in Rust. `_core.fit_forest` / `_core.best_split` take `split_criterion` / `criterion` + horizon, and Rust re-validates. Python validates in `_validate_params` with the same messages.
+  - Tests (10 new in `tests/test_criteria.py`):
+    - hypothesis check that `best_split` equals the brute-force argmax of the naive reference under all 4 criteria on counting-process data with units. It is non-vacuous: a split is found in 40/40 random cases (26/40 for `km_gini`);
+    - param validation;
+    - each criterion grows different, deterministic trees;
+    - clone / pickle / `forest__` nested params;
+    - nested `landmark_cross_validate` tuning `forest__split_criterion`, including `km_gini` + horizon.
+  - Compatibility matrix unchanged (33 passed, 24 xfailed). Default predictions are still bit-identical to `main`. `sphinx-build -W` is clean.
 - [ ] `landmark_cross_validate(return_predictions=True)` + tests
 - [ ] `bench/criteria/`: protocols A and B, calibration summaries, cluster bootstrap, CSV output; smoke config runs in seconds
 - [ ] Full runs; `docs/bench/s8-bakeoff.md`, with the recommendation and D11 verdict against the pre-registered rule

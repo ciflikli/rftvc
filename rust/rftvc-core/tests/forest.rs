@@ -1,5 +1,6 @@
 use rftvc_core::{
-    Aggregate, Binned, FlatForest, ForestParams, Groups, SurvData, TreeParams, draw_ids, fit_forest,
+    Aggregate, Binned, FlatForest, ForestParams, Groups, LtrcLogRank, SurvData, TreeParams,
+    draw_ids, fit_forest,
 };
 
 fn toy(n: usize) -> (Vec<f64>, SurvData) {
@@ -52,7 +53,7 @@ fn flat_roundtrip_preserves_predictions() {
     let groups = Groups::new(&(0..n as u32).collect::<Vec<_>>(), n);
     let times: Vec<f64> = (0..40).map(|t| t as f64).collect();
     for bootstrap in [false, true] {
-        let forest = fit_forest(&binned, &surv, &groups, &params(bootstrap));
+        let forest = fit_forest(&binned, &surv, &groups, &params(bootstrap), &LtrcLogRank);
         let flat = FlatForest::from_forest(&forest);
         let back = flat.to_forest().unwrap();
         assert_eq!(FlatForest::from_forest(&back), flat);
@@ -72,7 +73,13 @@ fn corrupt_flat_state_errors() {
     let (x, surv) = toy(n);
     let binned = Binned::fit(&x, n, 1, 255);
     let groups = Groups::new(&(0..n as u32).collect::<Vec<_>>(), n);
-    let flat = FlatForest::from_forest(&fit_forest(&binned, &surv, &groups, &params(false)));
+    let flat = FlatForest::from_forest(&fit_forest(
+        &binned,
+        &surv,
+        &groups,
+        &params(false),
+        &LtrcLogRank,
+    ));
     let mut bad = flat.clone();
     bad.node_left[0] = u32::MAX;
     assert!(bad.to_forest().is_err());
@@ -89,7 +96,13 @@ fn valid_flat() -> FlatForest {
     let (x, surv) = toy(n);
     let binned = Binned::fit(&x, n, 1, 255);
     let groups = Groups::new(&(0..n as u32).collect::<Vec<_>>(), n);
-    FlatForest::from_forest(&fit_forest(&binned, &surv, &groups, &params(false)))
+    FlatForest::from_forest(&fit_forest(
+        &binned,
+        &surv,
+        &groups,
+        &params(false),
+        &LtrcLogRank,
+    ))
 }
 
 #[test]

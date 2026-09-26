@@ -127,3 +127,116 @@ def test_criterion_score_validates_name_and_horizon(name, kw, match):
 def test_criterion_score_logrank_equals_logrank_score():
     start, stop, event, left, _ = _rows(40, seed=3)
     assert _score("logrank", start, stop, event, left) == _core.logrank_score(start, stop, event, left)
+
+
+# --- estimator wiring -------------------------------------------------------------
+
+from sklearn.base import clone  # noqa: E402
+
+from rftvc import LandmarkSurvivalForest, SurvivalForestTV  # noqa: E402
+from rftvc.model_selection import RollingOriginSplit, landmark_cross_validate  # noqa: E402
+from tests.sim_panel import simulate_panel  # noqa: E402
+from tests.test_tvc import _cp_data  # noqa: E402
+
+CRITERIA = [("logrank", {}), ("grouped_lik", {}), ("poisson", {}), ("km_gini", {"horizon": 1.5})]
+REFS = {"logrank": logrank_ref, "grouped_lik": grouped_lik_ref, "poisson": poisson_ref}
+
+
+def _ref_score(name, kw, start, stop, event, left, units):
+    if name == "km_gini":
+        return km_gini_ref(start, stop, event, left, kw["horizon"], units)
+    return REFS[name](start, stop, event, left)
+
+
+@settings(max_examples=40, deadline=None)
+@given(n_ids=st.integers(6, 30), seed=st.integers(0, 10_000), which=st.integers(0, 3))
+def test_best_split_is_the_argmax_of_each_criterion(n_ids, seed, which):
+    """The splitter (with its per-bin exposure and unit counts) picks the brute-force best."""
+    name, kw = CRITERIA[which]
+    X, y, ids = _cp_data(n_ids, seed)
+    start, stop, event = (np.ascontiguousarray(y[k]) for k in ("start", "stop", "event"))
+    units = ids.astype(np.uint32)
+    min_ids, min_ev = 2, 1
+    best = 0.0
+    for f in range(X.shape[1]):
+        for v in np.unique(X[:, f])[:-1]:
+            left = X[:, f] <= v
+            if (min(len(np.unique(units[left])), len(np.unique(units[~left]))) < min_ids
+                    or min(event[left].sum(), event[~left].sum()) < min_ev):
+                continue
+            best = max(best, _ref_score(name, kw, start, stop, event, left, units))
+    got = _core.best_split(X, start, stop, event, min_ids_leaf=min_ids, min_events_leaf=min_ev,
+                           units=units, criterion=name, **kw)
+    if got is None:
+        assert best <= 1e-9
+        return
+    _, _, score, mask, _, _ = got
+    assert score == pytest.approx(best, rel=1e-9, abs=1e-12)
+    assert _ref_score(name, kw, start, stop, event, np.asarray(mask), units) == pytest.approx(score, rel=1e-9, abs=1e-12)
+
+
+def _fit(**kw):
+    X, y, ids = _cp_data(120, seed=5)
+    model = SurvivalForestTV(n_estimators=10, min_ids_leaf=5, random_state=0, **kw).fit(X, y, ids=ids)
+    return model, X
+
+
+@pytest.mark.parametrize("kw,match", [
+    ({"split_criterion": "gini"}, "split_criterion must be one of"),
+    ({"split_criterion": "km_gini"}, "requires criterion_horizon"),
+    ({"split_criterion": "km_gini", "criterion_horizon": -1.0}, "finite and > 0"),
+    ({"split_criterion": "km_gini", "criterion_horizon": True}, "finite and > 0"),
+    ({"split_criterion": "km_gini", "criterion_horizon": "2"}, "finite and > 0"),
+    ({"split_criterion": "poisson", "criterion_horizon": 2.0}, "only used by"),
+])
+def test_estimator_validates_criterion_params(kw, match):
+    with pytest.raises(ValueError, match=match):
+        _fit(**kw)
+
+
+def test_each_criterion_grows_its_own_trees():
+    base, X = _fit()
+    t = np.linspace(0.2, 5.0, 25)
+    ref = base.predict_survival_function(X, t)
+    for name, kw in CRITERIA[1:]:
+        params = {"split_criterion": name}
+        if "horizon" in kw:
+            params["criterion_horizon"] = kw["horizon"]
+        a, _ = _fit(**params)
+        b, _ = _fit(**params)
+        sa = a.predict_survival_function(X, t)
+        assert np.all((sa >= 0) & (sa <= 1))
+        np.testing.assert_array_equal(sa, b.predict_survival_function(X, t))  # deterministic
+        assert not np.array_equal(sa, ref), name  # a different split rule, different trees
+
+
+def test_criterion_params_survive_clone_and_pickle():
+    import pickle
+
+    model, X = _fit(split_criterion="km_gini", criterion_horizon=1.5)
+    c = clone(model)
+    assert (c.split_criterion, c.criterion_horizon) == ("km_gini", 1.5)
+    restored = pickle.loads(pickle.dumps(model))
+    assert restored.split_criterion == "km_gini"
+    np.testing.assert_array_equal(restored.predict(X), model.predict(X))
+    lm = LandmarkSurvivalForest(horizon=6.0, forest=SurvivalForestTV())
+    lm.set_params(forest__split_criterion="poisson")
+    params = clone(lm).get_params(deep=True)
+    assert params["forest__split_criterion"] == "poisson"
+    assert params["forest__criterion_horizon"] is None
+
+
+def test_nested_cv_tunes_the_split_criterion():
+    panel = simulate_panel(n_units=100, n_periods=36, seed=2)
+    forest = SurvivalForestTV(n_estimators=10, min_ids_leaf=5, random_state=0)
+    model = LandmarkSurvivalForest(horizon=6.0, history_features=["x", "z"], step=6.0, forest=forest)
+    grid = [
+        {"forest__split_criterion": ["logrank", "poisson"]},
+        {"forest__split_criterion": ["km_gini"], "forest__criterion_horizon": [6.0]},
+    ]
+    outer, inner = RollingOriginSplit(1, test_size=6, gap=6), RollingOriginSplit(2, test_size=6, gap=6)
+    res = landmark_cross_validate(model, panel, outer, scoring=["brier"], param_grid=grid, inner_cv=inner,
+                                  refit="brier")
+    allowed = {repr({"forest__split_criterion": c}) for c in ("logrank", "poisson")}
+    allowed.add(repr({"forest__split_criterion": "km_gini", "forest__criterion_horizon": 6.0}))
+    assert set(res["params"]) <= allowed and np.isfinite(res["brier"].to_numpy()).all()
