@@ -117,14 +117,14 @@ The rule is **descriptive and conservative**, as in S8. Many comparisons are mad
 - The identity bench is bit-identical (`--pickle`).
 
 ## Tasks
-- [ ] S13 diff-review findings (separate commit)
-- [ ] Criteria prototypes (Rust + binding + Python) + tests
-- [ ] `bench/s14_cr_sim.py` (+ truth tests), run, CSV
-- [ ] Parity: folds, R script (rfsrc scratch lib), Python arms, run, CSV
-- [ ] Scale bench, run
-- [ ] Decision per the rule; `docs/bench/s14-cr.md`; remove losers (P5)
-- [ ] Docs: user guide, compatibility, case study + example
-- [ ] Identity bench; `cr-plan.md` status + "S14 done"; `plan.md` S11–S14 line
+- [x] S13 diff-review findings (separate commit)
+- [x] Criteria prototypes (Rust + binding + Python) + tests
+- [x] `bench/s14_cr_sim.py` (+ truth tests), run, CSV
+- [x] Parity: folds, R script (rfsrc scratch lib), Python arms, run, CSV
+- [x] Scale bench, run
+- [x] Decision per the rule; `docs/bench/s14-cr.md`; remove losers (P5)
+- [x] Docs: user guide, compatibility, case study + example
+- [x] Identity bench; `cr-plan.md` status + "S14 done"; `plan.md` S11–S14 line
 - [ ] Codex diff review; fixes
 
 ## Plan review (Codex, 2026-09-26)
@@ -136,3 +136,17 @@ The rule is **descriptive and conservative**, as in S8. Many comparisons are mad
 6. The landmark CIF Brier from cr-plan was missing (medium) → a landmark simulation with a Monte Carlo truth; IPCW Brier vs the oracle Brier, reported only.
 7. The rare-cause rate had no floor (medium) → a 3–5% target, 800 ids, and the exclusion rule for replicates with < 10 cause-3 events.
 8. The scale acceptance was not measurable (medium) → a defined label generator, leaf bytes separated from node bytes, and numeric time and RSS limits.
+
+## Results and deviations (2026-09-26)
+- Decisions per the rule: **C3 `composite` (unchanged), C4 `aggregate="cif"` (changed), C5 `min_events_leaf_cause=None` (unchanged)**. Write-up: `docs/bench/s14-cr.md`. The losers were removed (P5); their arms rerun at `66ccad8`.
+- On continuous times, `quadratic` ≡ `composite` and `ishwaran` ≡ `logrank_all` (no tied cause events). This was noted, and the pre-registered rule was not changed.
+- The scenario B pre-check value was 2.06 against a threshold of "< 2" on a single draw. The population value is 0 by construction, so 2.06 is χ²₁ noise; it was recorded, not re-drawn.
+- The C5 arms first recorded only cause 3. The rule needs causes 1–2 too, so they were rerun with all causes (seeds fixed; other arms identical).
+- The planned "single-leaf forest approaches the truth" test was replaced by a stronger DGP test: the simulated event times match the closed-form truth (40k draws).
+- The landmark simulation has 10 replications (reported only).
+- The case study uses `landmark_cross_validate` with a single-leaf-tree Aalen–Johansen reference.
+
+## Test-quality audit (2026-09-26)
+- The challenger criteria were tested against independent references (a numpy pinv quadratic form with a singular fixture, an Ishwaran formula, the all-cause log-rank ref) and for J = 1 bit identity. They were removed with the criteria.
+- The simulation truth is tested against numerical integration (1e-9) and empirical CIFs of the DGP.
+- The default switch changed two tests that pin the hazard transform, which now set `aggregate="hazard"` explicitly. The J = 1 identity tests are unchanged.

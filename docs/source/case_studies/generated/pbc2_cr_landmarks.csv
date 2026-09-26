@@ -1,0 +1,17 @@
+cause,landmark_years,model,n,cases,brier,ibs,c
+transplant,1.0,landmark competing-risks forest,290,8,0.025,0.01,0.886
+transplant,2.0,landmark competing-risks forest,278,10,0.033,0.021,0.841
+transplant,3.0,landmark competing-risks forest,245,7,0.027,0.014,0.839
+transplant,4.0,landmark competing-risks forest,225,9,0.04,0.023,0.709
+transplant,1.0,Aalen–Johansen (no covariates),290,8,0.027,0.01,0.5
+transplant,2.0,Aalen–Johansen (no covariates),278,10,0.035,0.022,0.5
+transplant,3.0,Aalen–Johansen (no covariates),245,7,0.028,0.014,0.5
+transplant,4.0,Aalen–Johansen (no covariates),225,9,0.04,0.023,0.5
+death,1.0,landmark competing-risks forest,290,37,0.082,0.047,0.86
+death,2.0,landmark competing-risks forest,278,42,0.083,0.064,0.886
+death,3.0,landmark competing-risks forest,245,29,0.085,0.053,0.824
+death,4.0,landmark competing-risks forest,225,23,0.084,0.054,0.806
+death,1.0,Aalen–Johansen (no covariates),290,37,0.112,0.054,0.5
+death,2.0,Aalen–Johansen (no covariates),278,42,0.129,0.086,0.5
+death,3.0,Aalen–Johansen (no covariates),245,29,0.106,0.064,0.5
+death,4.0,Aalen–Johansen (no covariates),225,23,0.096,0.059,0.5

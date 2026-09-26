@@ -38,7 +38,8 @@ def main():
                 forest=CompetingRisksForestTV(n_estimators=300, max_depth=depth, random_state=0),
             )
             res = landmark_cross_validate(model, df, GroupKFold(5), ("brier", "integrated_brier", "cindex_incident"),
-                                          n_times=8).to_pandas()
+                                          n_times=8)
+            res = pd.DataFrame(res.to_dicts())
             res["model"], res["cause"] = model_name, cause_name
             rows.append(res)
     res = pd.concat(rows)

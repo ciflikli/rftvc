@@ -7,7 +7,7 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 - [x] S11: Core — cause-coded `y`, engine cause dimension, composite criterion, per-cause leaves, `CompetingRisksForestTV` fit + per-row CIF (branch `feat/s11-cr-core`)
 - [x] S12: Paths, coarsening, `aggregate="cif"`, OOB + Wolbers C, Approach-B equivalence (branch `feat/s12-cr-paths`)
 - [x] S13: Cause-specific metrics + landmark competing-risks workflow (branch `feat/s13-cr-landmark`)
-- [ ] S14: Bench (simulations, parity, bake-off) + docs + case study (branch `feat/s14-cr-bench`)
+- [x] S14: Bench (simulations, parity, bake-off) + docs + case study (branch `feat/s14-cr-bench`)
 
 ## Plan-level decisions (defaults; the slice plan reviews may change them)
 - **P1. Aalen–Johansen runs in Rust.** The CIF needs the increments at every event time between the origin and `t`, not only at requested times. Per row (or path), increments are accumulated into a dense per-thread `K × J` buffer over the leaf entries, then one sweep writes `S` and `F_k` at the requested times. `O(K·J)` per row, no `n × J × K` array crosses into Python.
@@ -148,3 +148,12 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 - `_LandmarkBase` is shared. `LandmarkCompetingRisksForest` adds `causes`, `score_cause`, `predict_risk(cause=)` and `predict_cumulative_incidence`. `LandmarkSurvivalForest` rejects labels > 1.
 - `landmark_cross_validate` has a CR branch: one vocabulary and scored cause are pinned before splitting and in every inner fit, and `cif` / `cause` prediction columns replace `survival`. `_censor_at` keeps labels.
 - The Brier oracle is a committed comprisk 0.8.0 fixture generated from a scratch install; no new dependency.
+
+**S14 done (2026-09-26). Deviations / notes** (slice plan, review logs and results: `s14-plan.md`, `docs/bench/s14-cr.md`):
+- Bake-off: `composite` stays (C3); **`aggregate="cif"` becomes the default** (C4); `min_events_leaf_cause` stays `None` (C5: a rare-cause floor harms the other causes).
+- The challengers `quadratic`, `ishwaran` and `logrank_all` were removed (P5; rerun at `66ccad8`).
+- randomForestSRC's composite (Ishwaran eq. 3.2) was verified from its C source: with equal weights it sums numerators into the all-cause numerator, and it was 12–26% worse in simulation.
+- PBC parity: rftvc is better than rfsrc on transplant and similar on death, and 35× faster including R start-up.
+- Scale: J = 2 is ≤ 1.4× and J = 4 ≤ 2.2× the single-event fit time, peak RSS ≤ 1.5×, and leaf bytes equal the `(1 + 2J)/3` bound.
+- Docs: a competing-risks user-guide page, compatibility, and a PBC2 transplant-vs-death case study (`examples/pbc2_competing.py`).
+- Out of scope, as designed: Fine–Gray / Gray splitting (C6), competing-risks AUC, multi-state.

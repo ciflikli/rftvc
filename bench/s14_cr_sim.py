@@ -1,6 +1,9 @@
 """S14 competing-risks simulations with a known truth (s14-plan.md; not a merge gate).
 
     python -m bench.s14_cr_sim check          # pre-run scenario checks (plan review 3, 7)
+
+The challenger criteria ("quadratic", "ishwaran", "logrank_all") were removed
+after the bake-off (P5); rerun their arms at commit 66ccad8.
     python -m bench.s14_cr_sim run [n_reps]   # writes docs/bench/s14-cr/sim.csv
 
 Data-generating process: external covariates, so the truth along a path is exact.

@@ -11,8 +11,8 @@ from ._estimator import _BaseForestTV
 from ._validation import check_competing_risks_y, competing_risks_labels, make_competing_risks_y
 
 
-# "quadratic", "ishwaran" and "logrank_all" are S14 bake-off challengers (experimental).
-_CRITERIA = ("composite", "quadratic", "ishwaran", "logrank_all")
+# The S14 bake-off challengers ("quadratic", "ishwaran", "logrank_all") lost and were removed.
+_CRITERIA = ("composite",)
 
 
 class CompetingRisksForestTV(_BaseForestTV):
@@ -40,10 +40,12 @@ max_samples, bootstrap, n_jobs, random_state
         label with it.
     min_events_leaf : int, default=3
         Minimum events of any cause per child.
-    aggregate : {"hazard", "cif"}, default="hazard"
+    aggregate : {"cif", "hazard"}, default="cif"
+        ``"cif"``: Aalen–Johansen per tree, then average ``F`` and ``S``.
         ``"hazard"``: average the cause-specific hazard increments over trees,
-        then apply Aalen–Johansen. ``"cif"``: Aalen–Johansen per tree, then
-        average ``F`` and ``S``. Cumulative hazards are the tree average under both.
+        then apply Aalen–Johansen. Cumulative hazards are the tree average under
+        both. The default comes from the S14 bake-off: ``"cif"`` was better with
+        opposing cause effects and not worse elsewhere (``docs/bench/s14-cr.md``).
     oob_score : bool, default=False
         Compute ``oob_prediction_`` and ``oob_score_`` (see ``SurvivalForestTV``
         for what each resampling unit's OOB estimates).
@@ -55,8 +57,9 @@ max_samples, bootstrap, n_jobs, random_state
     criterion : {"composite"}, default="composite"
         Split rule: the sum over causes of the per-cause LTRC log-rank
         chi-square statistics, which detects a covariate that raises one cause
-        and lowers another (the all-cause log-rank does not). With one cause it
-        is the survival forest's log-rank.
+        and lowers another (the all-cause log-rank, and the equal-weight
+        composite of Ishwaran et al. 2014, do not). With one cause it is the
+        survival forest's log-rank. Chosen in the S14 bake-off.
     split_cause : int or None, default=None
         A cause label: split on that cause's log-rank alone, other causes
         counting as censoring (cause-specific forest). Overrides ``criterion``.
@@ -102,7 +105,7 @@ max_samples, bootstrap, n_jobs, random_state
         oob_buffer=1,
         max_samples=None,
         bootstrap=False,
-        aggregate="hazard",
+        aggregate="cif",
         oob_score=False,
         n_jobs=None,
         random_state=None,

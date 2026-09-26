@@ -10,10 +10,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rftvc_core::{
     Aggregate, AjOutput, Binned, CifAggregate, CompositeCauseLogRank, Extrapolate, FlatForest,
-    Forest, ForestParams, Grid, Groups, IshwaranComposite, LtrcLogRank, Profile,
-    QuadraticCauseLogRank, SingleCause, SplitCriterion, SplitParams, SurvData, TreeParams,
-    best_split as core_best_split, cause_profile_on, coarsen, exposure_of, fit_forest,
-    node_profile, profile_on,
+    Forest, ForestParams, Grid, Groups, LtrcLogRank, Profile, SingleCause, SplitCriterion,
+    SplitParams, SurvData, TreeParams, best_split as core_best_split, cause_profile_on, coarsen,
+    exposure_of, fit_forest, node_profile, profile_on,
 };
 
 /// Contiguous 1-d input as a Vec. Strided views (e.g. a field of a structured
@@ -133,17 +132,10 @@ fn criterion_for(
         (Some(k), _) if !(1..=n_causes).contains(&k) => Err(PyValueError::new_err(
             "split_cause must be in [1, n_causes]",
         )),
-        (_, c) if !["composite", "quadratic", "ishwaran", "logrank_all"].contains(&c) => {
-            Err(PyValueError::new_err(
-                "criterion must be 'composite', 'quadratic', 'ishwaran' or 'logrank_all'",
-            ))
-        }
+        // S14 bake-off: "composite" won; the challengers were removed (P5).
+        (_, c) if c != "composite" => Err(PyValueError::new_err("criterion must be 'composite'")),
         _ if n_causes == 1 => Ok(Box::new(LtrcLogRank)),
         (Some(k), _) => Ok(Box::new(SingleCause { cause: k - 1 })),
-        (None, "quadratic") => Ok(Box::new(QuadraticCauseLogRank)),
-        (None, "ishwaran") => Ok(Box::new(IshwaranComposite)),
-        // `Profile::events` holds the all-cause events.
-        (None, "logrank_all") => Ok(Box::new(LtrcLogRank)),
         (None, _) => Ok(Box::new(CompositeCauseLogRank)),
     }
 }
