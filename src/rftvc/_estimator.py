@@ -9,7 +9,7 @@ from sklearn.base import BaseEstimator
 from sklearn.utils import check_random_state
 from sklearn.utils.validation import check_array, check_is_fitted
 
-from . import _core
+from . import _blocks, _core
 from ._validation import check_counting_process, check_intervals, check_survival_y, make_survival_y, split_frame
 
 
@@ -20,7 +20,8 @@ class SurvivalForestTV(BaseEstimator):
     each row's covariates apply on ``(start, stop]``, rows of an id are
     contiguous, and only an id's last row may carry the event. Delayed entry
     (``start > 0`` on an id's first row) is handled as left truncation.
-    Resampling, leaf sizes and OOB count ids, not rows.
+    Resampling, leaf sizes and OOB count resampling units (ids, or id × time
+    blocks with ``resample_unit="block"``), not rows.
 
     Parameters
     ----------
@@ -30,7 +31,8 @@ class SurvivalForestTV(BaseEstimator):
     max_depth : int or None, default=None
         ``0`` gives single-leaf trees (Nelson–Aalen on each tree's sample).
     min_ids_leaf : int or "auto", default=15
-        Minimum ids per child. ``"auto"`` uses ``max(15, floor(sqrt(n_ids)))``.
+        Minimum resampling units (ids, or id-blocks) per child. ``"auto"`` uses
+        ``max(15, floor(sqrt(n_units)))``.
     min_events_leaf : int, default=3
         Minimum events per child.
     max_bins : int, default=255
@@ -44,10 +46,21 @@ class SurvivalForestTV(BaseEstimator):
         the same bin is dropped and its event moves to the subject's previous
         row; an entry inside a bin counts from the following grid point.
         Opt-in until benchmarks justify a default.
-    resample_unit : {"id"}, default="id"
-        Unit drawn when growing each tree. Only whole ids in v1.
+    resample_unit : {"id", "block"}, default="id"
+        Unit drawn when growing each tree. ``"id"``: whole ids. ``"block"``: an
+        id's person-time within one window ``(k L, (k+1) L]`` of the time axis,
+        ``L = block_length`` (rows are split at window boundaries, which leaves
+        every risk set unchanged), or within ``floor(block_time / L)`` when
+        ``fit`` gets ``block_time``. Blocks suit long series with few ids.
+    block_length : float or None, default=None
+        Block width ``L``; required with ``resample_unit="block"``, an error otherwise.
+    oob_buffer : int, default=1
+        Block OOB only: a row's OOB ensemble uses trees whose bag leaves out the
+        row's blocks *and* ``oob_buffer`` neighbouring blocks of its id on each
+        side, so near-copies in adjacent periods do not leak. Wider buffers leave
+        fewer trees (see ``oob_n_trees_``). Ignored with ``resample_unit="id"``.
     max_samples : int, float or None, default=None
-        Ids drawn per tree: a fraction of ids (float) or a count (int).
+        Units drawn per tree: a fraction of units (float) or a count (int).
         ``None`` is 0.632 without bootstrap and 1.0 with it.
     bootstrap : bool, default=False
         Draw ids with replacement (classic bootstrap). The default subsamples
@@ -55,10 +68,15 @@ class SurvivalForestTV(BaseEstimator):
     aggregate : {"hazard", "survival"}, default="hazard"
         Ensemble rule: ``exp(-mean Λ_b)`` or ``mean exp(-Λ_b)`` (design.md D11).
     oob_score : bool, default=False
-        Compute ``oob_prediction_`` and ``oob_score_`` from the trees each id
-        was left out of. Requires whole-id resampling (``resample_unit="id"``).
-        This estimates performance on *new subjects*; for future periods use a
-        time-based splitter (``rftvc.model_selection``).
+        Compute ``oob_prediction_`` and ``oob_score_`` from the trees each unit
+        was left out of. What it estimates depends on the unit:
+
+        - ``"id"``: performance on *new subjects*;
+        - ``"block"``: performance on *held-out periods of training subjects*
+          (interpolation). The rest of the subject's history stays in the bag,
+          so this is neither new-subject nor forecast error.
+
+        For future periods use a time-based splitter (``rftvc.model_selection``).
     n_jobs : int or None, default=None
         Threads for fitting and prediction; ``-1`` uses all cores.
     random_state : int, RandomState or None, default=None
@@ -67,9 +85,15 @@ class SurvivalForestTV(BaseEstimator):
     ----------
     oob_prediction_ : ndarray of shape (n_rows,)
         Out-of-bag ensemble mortality of each training row, ``sum_k Λ(t_k | x_row)``
-        over ``event_times_`` (NaN for ids that are in every bag, and for rows
-        dropped by coarsening). Only with
-        ``oob_score=True``.
+        over ``event_times_`` (NaN for rows with no qualifying tree, and for rows
+        dropped by coarsening). Only with ``oob_score=True``.
+    oob_n_trees_ : ndarray of shape (n_rows,)
+        Trees in each row's OOB ensemble (0 for rows dropped by coarsening).
+        Only with ``oob_score=True``.
+    n_ids_ : int
+        Ids (subjects) in the training data.
+    n_units_ : int
+        Resampling units: ``n_ids_``, or the number of id-blocks.
     coarse_grid_ : ndarray
         Event grid of coarse mode (``ntime`` set); equals ``event_times_``.
     n_coarsen_dropped_rows_ : int
@@ -81,7 +105,8 @@ class SurvivalForestTV(BaseEstimator):
     oob_score_ : float
         Concordance of ``oob_prediction_`` with the training outcomes
         (``rftvc.metrics.concordance_index_cp``: each event against the rows of
-        other ids at risk at its time). Only with ``oob_score=True``.
+        other ids at risk at its time, for either resampling unit). Only with
+        ``oob_score=True``.
     """
 
     def __init__(
@@ -94,6 +119,8 @@ class SurvivalForestTV(BaseEstimator):
         max_bins=255,
         ntime=None,
         resample_unit="id",
+        block_length=None,
+        oob_buffer=1,
         max_samples=None,
         bootstrap=False,
         aggregate="hazard",
@@ -109,6 +136,8 @@ class SurvivalForestTV(BaseEstimator):
         self.max_bins = max_bins
         self.ntime = ntime
         self.resample_unit = resample_unit
+        self.block_length = block_length
+        self.oob_buffer = oob_buffer
         self.max_samples = max_samples
         self.bootstrap = bootstrap
         self.aggregate = aggregate
@@ -122,7 +151,9 @@ class SurvivalForestTV(BaseEstimator):
         tags.input_tags.allow_nan = False
         return tags
 
-    def fit(self, X, y, ids=None, *, measured_at=None, gap_policy="error", layout="counting_process"):
+    def fit(
+        self, X, y, ids=None, *, measured_at=None, gap_policy="error", layout="counting_process", block_time=None
+    ):
         """Fit on counting-process rows.
 
         Parameters
@@ -142,6 +173,13 @@ class SurvivalForestTV(BaseEstimator):
         layout : {"counting_process", "stacked"}, default="counting_process"
             ``"stacked"``: an id's rows are separate observations that may overlap
             (landmark stacks); ids then only define resampling units.
+        block_time : array-like of shape (n_rows,), default=None
+            Only with ``resample_unit="block"``: a time per row on which blocks
+            are formed, ``floor(block_time / block_length)``, instead of the
+            model's time axis (rows are then not split). Use it for a calendar
+            clock when the analysis clock is a duration. Required with
+            ``layout="stacked"``, whose rows all start at 0
+            (``LandmarkSurvivalForest`` passes the landmark times).
         """
         X, names, ids_values = split_frame(X, ids)
         self.ids_column_ = ids if isinstance(ids, str) else None
@@ -161,6 +199,17 @@ class SurvivalForestTV(BaseEstimator):
         # Resampling units are whole ids, even when split_id cuts an id into chains.
         groups, n_ids = cp.unit, cp.n_units
         self._validate_params()
+        if block_time is not None:
+            if self.resample_unit != "block":
+                raise ValueError("block_time is only used with resample_unit='block'")
+            block_time = np.asarray(block_time, dtype=float)
+            if block_time.shape != (n,) or not np.isfinite(block_time).all():
+                raise ValueError(f"block_time must be finite with {n} entries")
+        elif self.resample_unit == "block" and layout == "stacked":
+            raise ValueError(
+                "resample_unit='block' with layout='stacked' needs block_time (e.g. the landmark times): "
+                "stacked rows all start at 0"
+            )
         kept = None
         if self.ntime is not None:
             # Chains: an id's contiguous rows, or (stacked) each row on its own.
@@ -176,22 +225,27 @@ class SurvivalForestTV(BaseEstimator):
             X = np.ascontiguousarray(X[kept])
             _, groups = np.unique(cp.unit[kept], return_inverse=True)
             groups, n_ids = groups.astype(np.uint32), int(groups.max()) + 1
+            if block_time is not None:
+                block_time = block_time[kept]
             self.coarse_grid_ = grid
             self.n_coarsen_dropped_rows_ = n - kept.size
             self.n_coarsen_lost_events_ = lost
 
         self.n_features_in_ = X.shape[1]
         self.n_ids_ = n_ids
-        self.min_ids_leaf_ = self._resolve_min_ids_leaf(n_ids)
-        self.n_draw_ = self._resolve_n_draw(n_ids)
+        # Training rows and their resampling units; blocks may split rows into pieces.
+        fit_rows = (X, start, stop, event)
+        units, n_units = groups, n_ids
+        if self.resample_unit == "block":
+            fit_rows, units, n_units, oob_set = self._block_design(X, start, stop, event, groups, block_time)
+        self.n_units_ = n_units
+        self.min_ids_leaf_ = self._resolve_min_ids_leaf(n_units)
+        self.n_draw_ = self._resolve_n_draw(n_units)
         rng = check_random_state(self.random_state)
         self.forest_ = _core.fit_forest(
-            X,
-            start,
-            stop,
-            event,
-            groups,
-            n_ids,
+            *fit_rows,
+            units,
+            n_units,
             n_trees=self.n_estimators,
             n_draw=self.n_draw_,
             bootstrap=bool(self.bootstrap),
@@ -207,27 +261,57 @@ class SurvivalForestTV(BaseEstimator):
         self.event_times_ = np.unique(stop[event]) if kept is None else grid
         if self.oob_score:
             y_fit = y if kept is None else make_survival_y(stop, event, start=start)
-            pred = self._compute_oob(X, y_fit, groups)
+            if self.resample_unit == "id":
+                oob_set = (np.arange(len(groups) + 1, dtype=np.uint64), groups)
+            pred = self._compute_oob(X, y_fit, groups, oob_set)
             if kept is not None:  # back to the original rows; dropped rows are NaN
                 self.oob_prediction_ = np.full(n, np.nan)
                 self.oob_prediction_[kept] = pred
+                n_trees = self.oob_n_trees_
+                self.oob_n_trees_ = np.zeros(n, dtype=n_trees.dtype)
+                self.oob_n_trees_[kept] = n_trees
         return self
 
-    def _compute_oob(self, X, y, groups):
-        """OOB mortality of the fitted rows; sets ``oob_prediction_`` and ``oob_score_``."""
-        if self.resample_unit != "id":
-            raise ValueError("oob_score requires resample_unit='id'")
-        pred = self.forest_.oob_mortality(
-            X, groups, self.event_times_, self.aggregate, effective_n_jobs(self.n_jobs)
+    def _block_design(self, X, start, stop, event, groups, block_time):
+        """Block-mode training rows, units and per-row OOB sets (see ``_blocks``)."""
+        length = float(self.block_length)
+        if block_time is None:
+            row, block, p_start, p_stop, p_event = _blocks.split_at_blocks(start, stop, event, length)
+            fit_rows = (np.ascontiguousarray(X[row]), p_start, p_stop, p_event)
+            k1, k2 = _blocks._cut_range(start, stop, length)
+            lo, hi = k1 - 1, k2
+        else:
+            row = np.arange(len(start))
+            block = _blocks.block_index(block_time, length)
+            fit_rows = (X, start, stop, event)
+            lo = hi = block
+        units, n_units = _blocks.block_units(groups[row], block)
+        unit_id = np.empty(n_units, dtype=np.int64)
+        unit_block = np.empty(n_units, dtype=np.int64)
+        unit_id[units], unit_block[units] = groups[row], block
+        oob_set = _blocks.oob_sets(groups, lo, hi, unit_id, unit_block, self.oob_buffer)
+        return fit_rows, units, n_units, oob_set
+
+    def _compute_oob(self, X, y, groups, oob_set):
+        """OOB mortality of the fitted rows; sets ``oob_prediction_``, ``oob_n_trees_`` and ``oob_score_``.
+
+        ``oob_set`` is the CSR ``(offsets, units)`` of resampling units each row
+        must be out of bag in: its id, or its blocks plus ``oob_buffer`` neighbours.
+        ``groups`` (the id of each row) keeps concordance pairs across ids.
+        """
+        pred, n_trees = self.forest_.oob_mortality(
+            X, *oob_set, self.event_times_, self.aggregate, effective_n_jobs(self.n_jobs)
         )
         self.oob_prediction_ = pred
+        self.oob_n_trees_ = n_trees
         ok = np.isfinite(pred)
+        unit = "id" if self.resample_unit == "id" else "block (with its buffer)"
         if not ok.any():
-            raise ValueError("no id is out of bag in any tree; lower max_samples or add trees")
+            raise ValueError(f"no {unit} is out of bag in any tree; lower max_samples or add trees")
         if not ok.all():
             warnings.warn(
-                f"{int((~ok).sum())} rows belong to ids that are in every bag; they are left out "
-                "of oob_score_",
+                f"{int((~ok).sum())} rows have no tree whose bag leaves out their {unit}; "
+                "they are left out of oob_score_",
                 UserWarning,
             )
         from .metrics import concordance_index_cp
@@ -360,8 +444,17 @@ class SurvivalForestTV(BaseEstimator):
         return X, np.ascontiguousarray(times), ids
 
     def _validate_params(self):
-        if self.resample_unit != "id":
-            raise ValueError(f"resample_unit must be 'id' in v1, got {self.resample_unit!r}")
+        if self.resample_unit not in ("id", "block"):
+            raise ValueError(f"resample_unit must be 'id' or 'block', got {self.resample_unit!r}")
+        if self.resample_unit == "block":
+            bl = self.block_length
+            if isinstance(bl, (bool, np.bool_)) or not isinstance(bl, numbers.Real) or not (0 < bl < np.inf):
+                raise ValueError(f"resample_unit='block' needs a positive finite block_length, got {bl!r}")
+        elif self.block_length is not None:
+            raise ValueError("block_length is only used with resample_unit='block'")
+        self._check_int("oob_buffer", minimum=0)
+        if self.oob_buffer > _blocks.MAX_BUFFER:
+            raise ValueError(f"oob_buffer must be <= {_blocks.MAX_BUFFER}, got {self.oob_buffer}")
         if self.aggregate not in ("hazard", "survival"):
             raise ValueError(f"aggregate must be 'hazard' or 'survival', got {self.aggregate!r}")
         self._check_int("n_estimators", minimum=1)

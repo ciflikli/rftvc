@@ -66,7 +66,7 @@ def test_oob_survival_aggregation_and_no_oob_error():
 def test_oob_warns_for_ids_in_every_bag():
     X, y, ids = _cp_data(30, seed=6)
     f = SurvivalForestTV(n_estimators=2, max_samples=0.9, min_ids_leaf=3, oob_score=True, random_state=0)
-    with pytest.warns(UserWarning, match="every bag"):
+    with pytest.warns(UserWarning, match="no tree whose bag leaves out their id"):
         f.fit(X, y, ids)
     assert np.isnan(f.oob_prediction_).any() and np.isfinite(f.oob_score_)
 

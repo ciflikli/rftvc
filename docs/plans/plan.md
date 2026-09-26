@@ -13,6 +13,7 @@ Rule: after each slice, run the full test suite, tick the box, and note any devi
 - [x] S7: sklearn compatibility matrix, DataFrame input, wheels, docs/case studies (branch `feat/s7-compat`)
 - [x] S8: Criterion + aggregation bake-off (branch `feat/s8-bakeoff`)
 - [x] S9: Leaf-storage slimming (branch `feat/s9-leaf-slim`)
+- [x] S10: Block resampling with its own OOB spec (branch `feat/s10-block-resampling`)
 
 Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pytest`, `hypothesis`; `cargo test`. Test oracles are lifelines and scikit-survival (dev dependencies), plus `tests/ref/logrank_ref.py`: an independent, deliberately naive O(n·K) LTRC log-rank reference (risk sets, events, numerator, hypergeometric variance, ties). Fixtures are generated once and committed as `.npz`. **Oracle conventions:** Nelson–Aalen uses `NelsonAalenFitter(nelson_aalen_smoothing=False)` with an explicit `timeline=` equal to the event grid; cumulative hazard is right-continuous (the value immediately after each event time). Statistical/benchmark tests are marked `@pytest.mark.slow` and are **not** merge gates. Setup: `git init` on branch `main`; slice work happens on `feat/sN-*` branches (commit only when the user asks).
 
@@ -318,9 +319,23 @@ Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pyte
 
 ---
 
+## S10: Block resampling with its own OOB spec
+**Files:** `_blocks.py` (splitting, units, OOB sets), `_estimator.py`, `landmark.py`, `forest.rs` / binding (`oob_mortality` with per-row unit sets); `tests/test_blocks.py`; `bench/s10_block.py`; `docs/bench/s10-block.md`; user guide "Choosing the error estimate".
+
+**Accept:** block OOB is correct against a first-principles reference and approximately matches conditional refits; its estimand is documented and contrasted with new-subject and future-period estimates.
+
+**S10 done (2026-09-26). Deviations / notes** (slice plan, user decisions and review log: `s10-plan.md`; results: `docs/bench/s10-block.md`):
+- `resample_unit="block"` with `block_length`. Blocks are an id's person-time in `(kL, (k+1)L]`, and rows are split at boundaries. A `block_time=` fit argument forms blocks on another clock, with no splitting; it is required for stacked layouts, and `LandmarkSurvivalForest` passes `s`. `min_ids_leaf` / `max_samples` count blocks (`n_units_`).
+- `block_time` was planned as deferred; the plan review made it necessary, because stacked rows all start at 0.
+- Buffered block OOB (`oob_buffer`, default 1) estimates held-out periods of training subjects. `oob_n_trees_` gives each row's ensemble size. The engine's `oob_mortality` takes per-row unit sets; id-mode results are unchanged.
+- Oracles: one block per id is bit-identical to id resampling; one block per row equals row units. Splitting leaves the Nelson–Aalen estimate unchanged.
+- Guards (diff review): block indices must stay below 2**52 (exact `float64` boundaries), and `oob_buffer` is capped.
+- Bench: OOB approximately matches conditional refits (these re-bin features on reduced data). On landmark stacks, `h = 0` leaks (C 0.891 vs 0.837 new-patient) and `block_length >= horizon` with `h = 1` does not (0.836). `LandmarkSurvivalForest` warns when `block_length * oob_buffer < horizon`.
+
+---
+
 ## Deferred (post-v1)
 - O(1) log-rank updates (Sverdrup et al. 2025).
-- `"block"` resampling with its own OOB spec.
 - Weighted criteria / overlap weights.
 - Competing risks and multi-state models.
 - Recurrent events.

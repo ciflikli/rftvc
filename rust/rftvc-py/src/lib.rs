@@ -180,28 +180,45 @@ impl PyForest {
             .into_pyarray(py))
     }
 
-    /// Out-of-bag ensemble mortality per row (NaN if the row's id is in every bag).
+    /// Out-of-bag ensemble mortality per row and the size of its ensemble.
+    ///
+    /// Row `r` must be out of bag in every unit of
+    /// `units[offsets[r]..offsets[r+1]]` (at least one). Mortality is NaN when
+    /// no tree qualifies.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn oob_mortality<'py>(
         &self,
         py: Python<'py>,
         x: PyReadonlyArray2<'py, f64>,
-        groups: PyReadonlyArray1<'py, u32>,
+        offsets: PyReadonlyArray1<'py, u64>,
+        units: PyReadonlyArray1<'py, u32>,
         times: PyReadonlyArray1<'py, f64>,
         aggregate_by: &str,
         n_jobs: usize,
-    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<u32>>)> {
         let (v, n, p) = self.check_x(&x)?;
-        check_lengths(n, &[("groups", groups.as_array().len())])?;
-        let groups: Vec<u32> = vec1(&groups, "groups")?;
-        if groups.iter().any(|&g| g as usize >= self.inner.n_groups) {
-            return Err(PyValueError::new_err("groups must be in [0, n_groups)"));
+        check_lengths(n + 1, &[("offsets", offsets.as_array().len())])?;
+        let offsets: Vec<usize> = vec1(&offsets, "offsets")?
+            .into_iter()
+            .map(|o: u64| o as usize)
+            .collect();
+        let units: Vec<u32> = vec1(&units, "units")?;
+        if offsets[0] != 0 || offsets.windows(2).any(|w| w[0] >= w[1]) || offsets[n] != units.len()
+        {
+            return Err(PyValueError::new_err(
+                "offsets must start at 0, give each row at least one unit and end at len(units)",
+            ));
+        }
+        if units.iter().any(|&g| g as usize >= self.inner.n_groups) {
+            return Err(PyValueError::new_err("units must be in [0, n_groups)"));
         }
         let agg = aggregate(aggregate_by)?;
         let times: Vec<f64> = vec1(&times, "times")?;
         let forest = &self.inner;
         let pool = pool(n_jobs)?;
-        let out = py.detach(|| pool.install(|| forest.oob_mortality(&v, p, &groups, &times, agg)));
-        Ok(out.into_pyarray(py))
+        let (out, n_oob) = py
+            .detach(|| pool.install(|| forest.oob_mortality(&v, p, &offsets, &units, &times, agg)));
+        Ok((out.into_pyarray(py), n_oob.into_pyarray(py)))
     }
 
     /// Conditional cumulative hazard along covariate paths `(n_paths, n_times)`.
