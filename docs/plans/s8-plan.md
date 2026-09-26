@@ -124,7 +124,12 @@ Branch `feat/s8-bakeoff`. Parent: `plan.md` S8; design.md D6 (criterion), D11 (a
     - `align` rejects mismatched rows;
     - the decision rule on synthetic inputs (adopts, then fails each of the 4 checks in turn);
     - a smoke end-to-end run.
-- [ ] Full runs; `docs/bench/s8-bakeoff.md`, with the recommendation and D11 verdict against the pre-registered rule
+- [x] Full runs; `docs/bench/s8-bakeoff.md`, with the recommendation and D11 verdict against the pre-registered rule
+  - Full run: 395 s (2026-09-26). **Nothing adopted:** `logrank` stays the default and `aggregate="hazard"` stays (D11).
+    - `grouped_lik` / `poisson` match log-rank on landmark IBS/ICI (all intervals include 0) and are slightly, not significantly, worse on `sim.py` ISE.
+    - `km_gini` is worse on the panel (ΔIBS +0.0047 [+0.0029, +0.0064]). Its forest barely splits on landmark stacks, because subjects straddle children.
+    - `survival` aggregation is better in point estimate on PBC2 calibration, but the interval includes 0; it is not better on the panel or `sim.py`.
+  - Log: `docs/bench/s8-bakeoff/run.log`; every rule check: `decisions.csv`.
 - [ ] Apply the decision: defaults, removal of losing criteria, user-guide criterion section, design.md D6/D11 updated
 - [ ] plan.md tick + "S8 done" notes
 
