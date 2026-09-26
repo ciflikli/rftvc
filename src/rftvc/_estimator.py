@@ -13,7 +13,245 @@ from . import _blocks, _core
 from ._validation import check_counting_process, check_intervals, check_survival_y, make_survival_y, split_frame
 
 
-class SurvivalForestTV(BaseEstimator):
+def _as_codes(event):
+    """Event codes as ``uint8`` for the engine (a bool array is viewed, not copied)."""
+    event = np.ascontiguousarray(event)
+    return event.view(np.uint8) if event.dtype == bool else event.astype(np.uint8, copy=False)
+
+
+class _BaseForestTV(BaseEstimator):
+    """Shared fitting, validation and routing of the counting-process forests.
+
+    Subclasses define ``__init__`` (sklearn reads parameters from it),
+    ``_check_y(y) -> (start, stop, event)`` and ``_engine_kwargs()``.
+    """
+
+    _AGGREGATES = ("hazard", "survival")
+
+    def __sklearn_tags__(self):
+        tags = super().__sklearn_tags__()
+        tags.target_tags.required = True
+        tags.input_tags.allow_nan = False
+        return tags
+
+    def _engine_kwargs(self):
+        return {}
+
+    def _fit(self, X, y, ids, measured_at, gap_policy, layout, block_time):
+        X, names, ids_values = split_frame(X, ids)
+        self.ids_column_ = ids if isinstance(ids, str) else None
+        ids = ids_values
+        X = check_array(X, dtype=np.float64, order="C")
+        if names is not None:
+            self.feature_names_in_ = names
+        elif hasattr(self, "feature_names_in_"):
+            del self.feature_names_in_
+        start, stop, event = self._check_y(y)
+        n = X.shape[0]
+        if n != start.shape[0]:
+            raise ValueError(f"X has {n} rows but y has {start.shape[0]}")
+        cp = check_counting_process(
+            start, stop, event, ids, measured_at=measured_at, gap_policy=gap_policy, layout=layout
+        )
+        # Resampling units are whole ids, even when split_id cuts an id into chains.
+        groups, n_ids = cp.unit, cp.n_units
+        self._validate_params()
+        if block_time is not None:
+            if self.resample_unit != "block":
+                raise ValueError("block_time is only used with resample_unit='block'")
+            block_time = np.asarray(block_time, dtype=float)
+            if block_time.shape != (n,) or not np.isfinite(block_time).all():
+                raise ValueError(f"block_time must be finite with {n} entries")
+        elif self.resample_unit == "block" and layout == "stacked":
+            raise ValueError(
+                "resample_unit='block' with layout='stacked' needs block_time (e.g. the landmark times): "
+                "stacked rows all start at 0"
+            )
+        kept = None
+        if self.ntime is not None:
+            # Chains: an id's contiguous rows, or (stacked) each row on its own.
+            if layout == "stacked":
+                order, offsets = np.arange(n, dtype=np.uint32), np.arange(n + 1, dtype=np.uint64)
+            else:
+                order, offsets = cp.order.astype(np.uint32), cp.offsets
+            kept, start, stop, event, grid, lost = _core.coarsen(
+                start, stop, event, order, offsets, int(self.ntime)
+            )
+            if not event.any():
+                raise ValueError("coarsening left no events; use a larger ntime")
+            X = np.ascontiguousarray(X[kept])
+            _, groups = np.unique(cp.unit[kept], return_inverse=True)
+            groups, n_ids = groups.astype(np.uint32), int(groups.max()) + 1
+            if block_time is not None:
+                block_time = block_time[kept]
+            self.coarse_grid_ = grid
+            self.n_coarsen_dropped_rows_ = n - kept.size
+            self.n_coarsen_lost_events_ = lost
+
+        self.n_features_in_ = X.shape[1]
+        self.n_ids_ = n_ids
+        # Training rows and their resampling units; blocks may split rows into pieces.
+        fit_rows = (X, start, stop, event)
+        units, n_units = groups, n_ids
+        if self.resample_unit == "block":
+            fit_rows, units, n_units, oob_set = self._block_design(X, start, stop, event, groups, block_time)
+        self.n_units_ = n_units
+        self.min_ids_leaf_ = self._resolve_min_ids_leaf(n_units)
+        self.n_draw_ = self._resolve_n_draw(n_units)
+        rng = check_random_state(self.random_state)
+        fit_X, fit_start, fit_stop, fit_event = fit_rows
+        self.forest_ = _core.fit_forest(
+            fit_X,
+            fit_start,
+            fit_stop,
+            _as_codes(fit_event),
+            units,
+            n_units,
+            n_trees=self.n_estimators,
+            n_draw=self.n_draw_,
+            bootstrap=bool(self.bootstrap),
+            max_depth=self.max_depth,
+            min_ids_leaf=self.min_ids_leaf_,
+            min_events_leaf=self.min_events_leaf,
+            max_features=self._resolve_max_features(X.shape[1]),
+            max_bins=self.max_bins,
+            seed=int(rng.randint(np.iinfo(np.int64).max, dtype=np.int64)),
+            n_jobs=effective_n_jobs(self.n_jobs),
+            **self._engine_kwargs(),
+        )
+        # Coarse mode: the chosen grid, even points whose events were all lost.
+        self.event_times_ = np.unique(stop[event != 0]) if kept is None else grid
+        if self.oob_score:
+            y_fit = y if kept is None else make_survival_y(stop, event, start=start)
+            if self.resample_unit == "id":
+                oob_set = (np.arange(len(groups) + 1, dtype=np.uint64), groups)
+            pred = self._compute_oob(X, y_fit, groups, oob_set)
+            if kept is not None:  # back to the original rows; dropped rows are NaN
+                self.oob_prediction_ = np.full(n, np.nan)
+                self.oob_prediction_[kept] = pred
+                n_trees = self.oob_n_trees_
+                self.oob_n_trees_ = np.zeros(n, dtype=n_trees.dtype)
+                self.oob_n_trees_[kept] = n_trees
+        return self
+
+    def _block_design(self, X, start, stop, event, groups, block_time):
+        """Block-mode training rows, units and per-row OOB sets (see ``_blocks``)."""
+        length = float(self.block_length)
+        if block_time is None:
+            row, block, p_start, p_stop, p_event = _blocks.split_at_blocks(start, stop, event, length)
+            fit_rows = (np.ascontiguousarray(X[row]), p_start, p_stop, p_event)
+            k1, k2 = _blocks._cut_range(start, stop, length)
+            lo, hi = k1 - 1, k2
+        else:
+            row = np.arange(len(start))
+            block = _blocks.block_index(block_time, length)
+            fit_rows = (X, start, stop, event)
+            lo = hi = block
+        units, n_units = _blocks.block_units(groups[row], block)
+        unit_id = np.empty(n_units, dtype=np.int64)
+        unit_block = np.empty(n_units, dtype=np.int64)
+        unit_id[units], unit_block[units] = groups[row], block
+        oob_set = _blocks.oob_sets(groups, lo, hi, unit_id, unit_block, self.oob_buffer)
+        return fit_rows, units, n_units, oob_set
+
+    def apply(self, X):
+        """Leaf index per (row, tree), shape ``(n_samples, n_estimators)``."""
+        X, _, _ = self._check_predict(X, None)
+        return self.forest_.apply(X, effective_n_jobs(self.n_jobs))
+
+    def _check_predict(self, X, times, ids=None):
+        """Numeric ``X``, the time grid and ``ids`` (resolved if it names a column).
+
+        With a DataFrame ``X``, the column named at fit by ``ids`` is dropped
+        if present, and the remaining names must equal ``feature_names_in_``.
+        """
+        check_is_fitted(self, "forest_")
+        fit_ids = getattr(self, "ids_column_", None)
+        if isinstance(ids, str):
+            X, names, ids = split_frame(X, ids)  # ids named by column; that column is not a feature
+        elif fit_ids is not None and hasattr(X, "columns") and fit_ids in list(X.columns):
+            X, names, _ = split_frame(X, fit_ids)  # the fit-time id column is never a feature
+        else:
+            X, names, _ = split_frame(X)
+        fitted = getattr(self, "feature_names_in_", None)
+        if names is not None and fitted is not None and list(names) != list(fitted):
+            raise ValueError(
+                f"X has feature names {list(names)}, but the forest was fitted with {list(fitted)}"
+            )
+        X = check_array(X, dtype=np.float64, order="C")
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError(f"X has {X.shape[1]} features, expected {self.n_features_in_}")
+        times = self.event_times_ if times is None else np.asarray(times, dtype=float).ravel()
+        if np.isnan(times).any():
+            raise ValueError("times must not contain NaN")
+        return X, np.ascontiguousarray(times), ids
+
+    def _validate_params(self):
+        if self.resample_unit not in ("id", "block"):
+            raise ValueError(f"resample_unit must be 'id' or 'block', got {self.resample_unit!r}")
+        if self.resample_unit == "block":
+            bl = self.block_length
+            if isinstance(bl, (bool, np.bool_)) or not isinstance(bl, numbers.Real) or not (0 < bl < np.inf):
+                raise ValueError(f"resample_unit='block' needs a positive finite block_length, got {bl!r}")
+        elif self.block_length is not None:
+            raise ValueError("block_length is only used with resample_unit='block'")
+        self._check_int("oob_buffer", minimum=0)
+        if self.oob_buffer > _blocks.MAX_BUFFER:
+            raise ValueError(f"oob_buffer must be <= {_blocks.MAX_BUFFER}, got {self.oob_buffer}")
+        if self.aggregate not in self._AGGREGATES:
+            options = " or ".join(repr(a) for a in self._AGGREGATES)
+            raise ValueError(f"aggregate must be {options}, got {self.aggregate!r}")
+        self._check_int("n_estimators", minimum=1)
+        self._check_int("min_events_leaf", minimum=1)
+        if self.min_ids_leaf != "auto":
+            self._check_int("min_ids_leaf", minimum=1)
+        if not (isinstance(self.max_bins, numbers.Integral) and 2 <= self.max_bins <= 256):
+            raise ValueError("max_bins must be an integer in [2, 256]")
+        if self.max_depth is not None:
+            self._check_int("max_depth", minimum=0)
+        if self.ntime is not None:
+            self._check_int("ntime", minimum=1)
+
+    def _resolve_min_ids_leaf(self, n_ids):
+        if self.min_ids_leaf == "auto":
+            return max(15, int(np.floor(np.sqrt(n_ids))))
+        return int(self.min_ids_leaf)
+
+    def _resolve_n_draw(self, n_ids):
+        ms = self.max_samples
+        if ms is None:
+            ms = 1.0 if self.bootstrap else 0.632
+        if isinstance(ms, (bool, np.bool_)):
+            raise ValueError(f"invalid max_samples={ms!r}: use an int count or a float fraction")
+        if isinstance(ms, numbers.Integral):
+            if ms < 1 or (ms > n_ids and not self.bootstrap):
+                raise ValueError(f"max_samples={ms} must be in [1, n_ids={n_ids}] without bootstrap")
+            return int(ms)
+        if isinstance(ms, numbers.Real) and 0 < ms <= 1:
+            return max(1, int(round(ms * n_ids)))
+        raise ValueError(f"invalid max_samples={ms!r}")
+
+    def _resolve_max_features(self, p):
+        mf = self.max_features
+        if mf is None:
+            return p
+        if mf == "sqrt":
+            return max(1, int(np.sqrt(p)))
+        if mf == "log2":
+            return max(1, int(np.log2(p)))
+        if isinstance(mf, numbers.Integral) and 1 <= mf:
+            return min(int(mf), p)
+        if isinstance(mf, numbers.Real) and 0 < mf <= 1:
+            return max(1, int(mf * p))
+        raise ValueError(f"invalid max_features={mf!r}")
+
+    def _check_int(self, name, minimum):
+        value = getattr(self, name)
+        if not isinstance(value, numbers.Integral) or value < minimum:
+            raise ValueError(f"{name} must be an integer >= {minimum}, got {value!r}")
+
+
+class SurvivalForestTV(_BaseForestTV):
     """Random survival forest for counting-process data.
 
     Data are counting-process rows ``(start, stop, event, X)`` grouped by ``ids``:
@@ -145,12 +383,6 @@ class SurvivalForestTV(BaseEstimator):
         self.n_jobs = n_jobs
         self.random_state = random_state
 
-    def __sklearn_tags__(self):
-        tags = super().__sklearn_tags__()
-        tags.target_tags.required = True
-        tags.input_tags.allow_nan = False
-        return tags
-
     def fit(
         self, X, y, ids=None, *, measured_at=None, gap_policy="error", layout="counting_process", block_time=None
     ):
@@ -181,116 +413,10 @@ class SurvivalForestTV(BaseEstimator):
             ``layout="stacked"``, whose rows all start at 0
             (``LandmarkSurvivalForest`` passes the landmark times).
         """
-        X, names, ids_values = split_frame(X, ids)
-        self.ids_column_ = ids if isinstance(ids, str) else None
-        ids = ids_values
-        X = check_array(X, dtype=np.float64, order="C")
-        if names is not None:
-            self.feature_names_in_ = names
-        elif hasattr(self, "feature_names_in_"):
-            del self.feature_names_in_
-        start, stop, event = check_survival_y(y)
-        n = X.shape[0]
-        if n != start.shape[0]:
-            raise ValueError(f"X has {n} rows but y has {start.shape[0]}")
-        cp = check_counting_process(
-            start, stop, event, ids, measured_at=measured_at, gap_policy=gap_policy, layout=layout
-        )
-        # Resampling units are whole ids, even when split_id cuts an id into chains.
-        groups, n_ids = cp.unit, cp.n_units
-        self._validate_params()
-        if block_time is not None:
-            if self.resample_unit != "block":
-                raise ValueError("block_time is only used with resample_unit='block'")
-            block_time = np.asarray(block_time, dtype=float)
-            if block_time.shape != (n,) or not np.isfinite(block_time).all():
-                raise ValueError(f"block_time must be finite with {n} entries")
-        elif self.resample_unit == "block" and layout == "stacked":
-            raise ValueError(
-                "resample_unit='block' with layout='stacked' needs block_time (e.g. the landmark times): "
-                "stacked rows all start at 0"
-            )
-        kept = None
-        if self.ntime is not None:
-            # Chains: an id's contiguous rows, or (stacked) each row on its own.
-            if layout == "stacked":
-                order, offsets = np.arange(n, dtype=np.uint32), np.arange(n + 1, dtype=np.uint64)
-            else:
-                order, offsets = cp.order.astype(np.uint32), cp.offsets
-            kept, start, stop, event, grid, lost = _core.coarsen(
-                start, stop, event, order, offsets, int(self.ntime)
-            )
-            if not event.any():
-                raise ValueError("coarsening left no events; use a larger ntime")
-            X = np.ascontiguousarray(X[kept])
-            _, groups = np.unique(cp.unit[kept], return_inverse=True)
-            groups, n_ids = groups.astype(np.uint32), int(groups.max()) + 1
-            if block_time is not None:
-                block_time = block_time[kept]
-            self.coarse_grid_ = grid
-            self.n_coarsen_dropped_rows_ = n - kept.size
-            self.n_coarsen_lost_events_ = lost
+        return self._fit(X, y, ids, measured_at, gap_policy, layout, block_time)
 
-        self.n_features_in_ = X.shape[1]
-        self.n_ids_ = n_ids
-        # Training rows and their resampling units; blocks may split rows into pieces.
-        fit_rows = (X, start, stop, event)
-        units, n_units = groups, n_ids
-        if self.resample_unit == "block":
-            fit_rows, units, n_units, oob_set = self._block_design(X, start, stop, event, groups, block_time)
-        self.n_units_ = n_units
-        self.min_ids_leaf_ = self._resolve_min_ids_leaf(n_units)
-        self.n_draw_ = self._resolve_n_draw(n_units)
-        rng = check_random_state(self.random_state)
-        self.forest_ = _core.fit_forest(
-            *fit_rows,
-            units,
-            n_units,
-            n_trees=self.n_estimators,
-            n_draw=self.n_draw_,
-            bootstrap=bool(self.bootstrap),
-            max_depth=self.max_depth,
-            min_ids_leaf=self.min_ids_leaf_,
-            min_events_leaf=self.min_events_leaf,
-            max_features=self._resolve_max_features(X.shape[1]),
-            max_bins=self.max_bins,
-            seed=int(rng.randint(np.iinfo(np.int64).max, dtype=np.int64)),
-            n_jobs=effective_n_jobs(self.n_jobs),
-        )
-        # Coarse mode: the chosen grid, even points whose events were all lost.
-        self.event_times_ = np.unique(stop[event]) if kept is None else grid
-        if self.oob_score:
-            y_fit = y if kept is None else make_survival_y(stop, event, start=start)
-            if self.resample_unit == "id":
-                oob_set = (np.arange(len(groups) + 1, dtype=np.uint64), groups)
-            pred = self._compute_oob(X, y_fit, groups, oob_set)
-            if kept is not None:  # back to the original rows; dropped rows are NaN
-                self.oob_prediction_ = np.full(n, np.nan)
-                self.oob_prediction_[kept] = pred
-                n_trees = self.oob_n_trees_
-                self.oob_n_trees_ = np.zeros(n, dtype=n_trees.dtype)
-                self.oob_n_trees_[kept] = n_trees
-        return self
-
-    def _block_design(self, X, start, stop, event, groups, block_time):
-        """Block-mode training rows, units and per-row OOB sets (see ``_blocks``)."""
-        length = float(self.block_length)
-        if block_time is None:
-            row, block, p_start, p_stop, p_event = _blocks.split_at_blocks(start, stop, event, length)
-            fit_rows = (np.ascontiguousarray(X[row]), p_start, p_stop, p_event)
-            k1, k2 = _blocks._cut_range(start, stop, length)
-            lo, hi = k1 - 1, k2
-        else:
-            row = np.arange(len(start))
-            block = _blocks.block_index(block_time, length)
-            fit_rows = (X, start, stop, event)
-            lo = hi = block
-        units, n_units = _blocks.block_units(groups[row], block)
-        unit_id = np.empty(n_units, dtype=np.int64)
-        unit_block = np.empty(n_units, dtype=np.int64)
-        unit_id[units], unit_block[units] = groups[row], block
-        oob_set = _blocks.oob_sets(groups, lo, hi, unit_id, unit_block, self.oob_buffer)
-        return fit_rows, units, n_units, oob_set
+    def _check_y(self, y):
+        return check_survival_y(y)
 
     def _compute_oob(self, X, y, groups, oob_set):
         """OOB mortality of the fitted rows; sets ``oob_prediction_``, ``oob_n_trees_`` and ``oob_score_``.
@@ -410,98 +536,3 @@ class SurvivalForestTV(BaseEstimator):
         With ``intervals``, this is ``P(T <= horizon | T > origin, path)``.
         """
         return 1.0 - self.predict_survival_function(X, [horizon], **path_kwargs)[:, 0]
-
-    def apply(self, X):
-        """Leaf index per (row, tree), shape ``(n_samples, n_estimators)``."""
-        X, _, _ = self._check_predict(X, None)
-        return self.forest_.apply(X, effective_n_jobs(self.n_jobs))
-
-    def _check_predict(self, X, times, ids=None):
-        """Numeric ``X``, the time grid and ``ids`` (resolved if it names a column).
-
-        With a DataFrame ``X``, the column named at fit by ``ids`` is dropped
-        if present, and the remaining names must equal ``feature_names_in_``.
-        """
-        check_is_fitted(self, "forest_")
-        fit_ids = getattr(self, "ids_column_", None)
-        if isinstance(ids, str):
-            X, names, ids = split_frame(X, ids)  # ids named by column; that column is not a feature
-        elif fit_ids is not None and hasattr(X, "columns") and fit_ids in list(X.columns):
-            X, names, _ = split_frame(X, fit_ids)  # the fit-time id column is never a feature
-        else:
-            X, names, _ = split_frame(X)
-        fitted = getattr(self, "feature_names_in_", None)
-        if names is not None and fitted is not None and list(names) != list(fitted):
-            raise ValueError(
-                f"X has feature names {list(names)}, but the forest was fitted with {list(fitted)}"
-            )
-        X = check_array(X, dtype=np.float64, order="C")
-        if X.shape[1] != self.n_features_in_:
-            raise ValueError(f"X has {X.shape[1]} features, expected {self.n_features_in_}")
-        times = self.event_times_ if times is None else np.asarray(times, dtype=float).ravel()
-        if np.isnan(times).any():
-            raise ValueError("times must not contain NaN")
-        return X, np.ascontiguousarray(times), ids
-
-    def _validate_params(self):
-        if self.resample_unit not in ("id", "block"):
-            raise ValueError(f"resample_unit must be 'id' or 'block', got {self.resample_unit!r}")
-        if self.resample_unit == "block":
-            bl = self.block_length
-            if isinstance(bl, (bool, np.bool_)) or not isinstance(bl, numbers.Real) or not (0 < bl < np.inf):
-                raise ValueError(f"resample_unit='block' needs a positive finite block_length, got {bl!r}")
-        elif self.block_length is not None:
-            raise ValueError("block_length is only used with resample_unit='block'")
-        self._check_int("oob_buffer", minimum=0)
-        if self.oob_buffer > _blocks.MAX_BUFFER:
-            raise ValueError(f"oob_buffer must be <= {_blocks.MAX_BUFFER}, got {self.oob_buffer}")
-        if self.aggregate not in ("hazard", "survival"):
-            raise ValueError(f"aggregate must be 'hazard' or 'survival', got {self.aggregate!r}")
-        self._check_int("n_estimators", minimum=1)
-        self._check_int("min_events_leaf", minimum=1)
-        if self.min_ids_leaf != "auto":
-            self._check_int("min_ids_leaf", minimum=1)
-        if not (isinstance(self.max_bins, numbers.Integral) and 2 <= self.max_bins <= 256):
-            raise ValueError("max_bins must be an integer in [2, 256]")
-        if self.max_depth is not None:
-            self._check_int("max_depth", minimum=0)
-        if self.ntime is not None:
-            self._check_int("ntime", minimum=1)
-
-    def _resolve_min_ids_leaf(self, n_ids):
-        if self.min_ids_leaf == "auto":
-            return max(15, int(np.floor(np.sqrt(n_ids))))
-        return int(self.min_ids_leaf)
-
-    def _resolve_n_draw(self, n_ids):
-        ms = self.max_samples
-        if ms is None:
-            ms = 1.0 if self.bootstrap else 0.632
-        if isinstance(ms, (bool, np.bool_)):
-            raise ValueError(f"invalid max_samples={ms!r}: use an int count or a float fraction")
-        if isinstance(ms, numbers.Integral):
-            if ms < 1 or (ms > n_ids and not self.bootstrap):
-                raise ValueError(f"max_samples={ms} must be in [1, n_ids={n_ids}] without bootstrap")
-            return int(ms)
-        if isinstance(ms, numbers.Real) and 0 < ms <= 1:
-            return max(1, int(round(ms * n_ids)))
-        raise ValueError(f"invalid max_samples={ms!r}")
-
-    def _resolve_max_features(self, p):
-        mf = self.max_features
-        if mf is None:
-            return p
-        if mf == "sqrt":
-            return max(1, int(np.sqrt(p)))
-        if mf == "log2":
-            return max(1, int(np.log2(p)))
-        if isinstance(mf, numbers.Integral) and 1 <= mf:
-            return min(int(mf), p)
-        if isinstance(mf, numbers.Real) and 0 < mf <= 1:
-            return max(1, int(mf * p))
-        raise ValueError(f"invalid max_features={mf!r}")
-
-    def _check_int(self, name, minimum):
-        value = getattr(self, name)
-        if not isinstance(value, numbers.Integral) or value < minimum:
-            raise ValueError(f"{name} must be an integer >= {minimum}, got {value!r}")

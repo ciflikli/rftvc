@@ -1,18 +1,31 @@
 """Random survival forests with time-varying covariates."""
 
+from ._competing import CompetingRisksForestTV
 from ._estimator import SurvivalForestTV
 from .landmark import LandmarkData, LandmarkSurvivalForest, landmark_features, make_landmark_data
 from . import metrics, model_selection
-from ._validation import SURV_DTYPE, check_counting_process, check_survival_y, make_survival_y
+from ._validation import (
+    CR_DTYPE,
+    SURV_DTYPE,
+    check_competing_risks_y,
+    check_counting_process,
+    check_survival_y,
+    make_competing_risks_y,
+    make_survival_y,
+)
 
 __all__ = [
+    "CR_DTYPE",
     "SURV_DTYPE",
+    "CompetingRisksForestTV",
     "LandmarkData",
     "LandmarkSurvivalForest",
     "SurvivalForestTV",
+    "check_competing_risks_y",
     "check_counting_process",
     "check_survival_y",
     "landmark_features",
+    "make_competing_risks_y",
     "make_landmark_data",
     "make_survival_y",
     "metrics",

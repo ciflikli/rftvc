@@ -12,14 +12,16 @@ pub mod rng;
 pub mod splitter;
 pub mod tree;
 
-pub use criterion::{LtrcLogRank, NodeScorer, Profile, SplitCriterion};
+pub use criterion::{
+    CompositeCauseLogRank, LtrcLogRank, NodeScorer, Profile, SingleCause, SplitCriterion,
+};
 pub use data::{Binned, SurvData};
 pub use flat::{FORMAT_VERSION, FlatForest};
 pub use forest::{Aggregate, Extrapolate, Forest, ForestParams, Groups, draw_ids, fit_forest};
 pub use grid::{Coarsened, Grid, coarsen};
 pub use rng::Rng;
 pub use splitter::{
-    NodeProfile, SplitCandidate, SplitParams, best_split, count_units, exposure_of, node_profile,
-    profile_on,
+    NodeProfile, SplitCandidate, SplitParams, best_split, cause_profile_on, count_units,
+    exposure_of, node_profile, profile_on,
 };
 pub use tree::{Tree, TreeParams, build_tree};

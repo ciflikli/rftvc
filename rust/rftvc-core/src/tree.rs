@@ -30,13 +30,16 @@ pub struct TreeParams {
 
 #[derive(Clone, Debug)]
 /// Leaves are stored flat: leaf `l` owns entries `leaf_offsets[l]..leaf_offsets[l + 1]`
-/// of `event_idx` (its event times, as sorted grid indices) and `cumhaz` (the
-/// Nelson–Aalen cumulative hazard, right-continuous, at those times).
+/// of `event_idx` (its event times of any cause, as sorted grid indices) and
+/// `cumhaz` (the per-cause Nelson–Aalen cumulative hazards, right-continuous,
+/// at those times). `cumhaz` is entry-major: entry `e`, cause `j` is at
+/// `e * n_causes + j`, so `cumhaz.len() == event_idx.len() * n_causes`.
 pub struct Tree {
     pub nodes: Vec<Node>,
     pub leaf_offsets: Vec<u32>,
     pub event_idx: Vec<u32>,
     pub cumhaz: Vec<f64>,
+    pub n_causes: usize,
     pub grid_times: Arc<Vec<f64>>,
 }
 
@@ -106,12 +109,28 @@ pub fn build_tree(
                 stack.push((ri, r_rows, r_units, depth + 1));
                 stack.push((li, l_rows, l_units, depth + 1));
             }
-            None => {
+            None if surv.n_causes == 1 => {
                 let mut cum = 0.0;
                 cumhaz.extend(profile.events.iter().zip(&profile.at_risk).map(|(d, y)| {
                     cum += d / y;
                     cum
                 }));
+                event_idx.extend_from_slice(&profile.event_idx);
+                nodes[node_id] = Node::Leaf {
+                    leaf: leaf_offsets.len() as u32 - 1,
+                };
+                leaf_offsets.push(u32::try_from(event_idx.len()).expect("leaf entries exceed u32"));
+            }
+            None => {
+                let nc = surv.n_causes;
+                let mut cum = vec![0.0; nc];
+                let k = profile.at_risk.len();
+                for (t, y) in profile.at_risk.iter().enumerate() {
+                    for (j, c) in cum.iter_mut().enumerate() {
+                        *c += profile.cause_events[j * k + t] / y;
+                    }
+                    cumhaz.extend_from_slice(&cum);
+                }
                 event_idx.extend_from_slice(&profile.event_idx);
                 nodes[node_id] = Node::Leaf {
                     leaf: leaf_offsets.len() as u32 - 1,
@@ -130,6 +149,7 @@ pub fn build_tree(
         leaf_offsets,
         event_idx,
         cumhaz,
+        n_causes: surv.n_causes,
         grid_times: Arc::clone(&surv.grid.times),
     }
 }
@@ -161,7 +181,7 @@ impl Tree {
         self.leaf_offsets.len() - 1
     }
 
-    fn entries(&self, leaf: usize) -> std::ops::Range<usize> {
+    pub(crate) fn entries(&self, leaf: usize) -> std::ops::Range<usize> {
         self.leaf_offsets[leaf] as usize..self.leaf_offsets[leaf + 1] as usize
     }
 
@@ -170,13 +190,26 @@ impl Tree {
         &self.event_idx[self.entries(leaf)]
     }
 
-    /// Leaf cumulative hazard at its event times.
+    /// Leaf cumulative hazards at its event times, entry-major (`n_causes` per entry).
     pub fn leaf_cumhaz(&self, leaf: usize) -> &[f64] {
-        &self.cumhaz[self.entries(leaf)]
+        let r = self.entries(leaf);
+        &self.cumhaz[r.start * self.n_causes..r.end * self.n_causes]
     }
 
-    /// Leaf cumulative hazard at time `t` (right-continuous step function).
+    /// Cause `j`'s leaf cumulative hazard at time `t` (right-continuous step function).
+    pub fn cause_cumhaz_at(&self, leaf: usize, t: f64, j: usize) -> f64 {
+        let r = self.entries(leaf);
+        let pos = self.event_idx[r.clone()].partition_point(|&k| self.grid_times[k as usize] <= t);
+        if pos == 0 {
+            0.0
+        } else {
+            self.cumhaz[(r.start + pos - 1) * self.n_causes + j]
+        }
+    }
+
+    /// Leaf cumulative hazard at time `t` (right-continuous step function), single-event trees.
     pub fn cumhaz_at(&self, leaf: usize, t: f64) -> f64 {
+        debug_assert_eq!(self.n_causes, 1);
         let r = self.entries(leaf);
         let pos = self.event_idx[r.clone()].partition_point(|&k| self.grid_times[k as usize] <= t);
         if pos == 0 {

@@ -23,6 +23,7 @@ def _manual_oob_mortality(forest, X, ids, aggregate="hazard"):
             if group[r] in set(core.in_bag_ids(b)):
                 continue
             lt, cumhaz = core.leaf_profile(b, int(leaves[r, b]))
+            cumhaz = cumhaz[:, 0]  # one cause
             pos = np.searchsorted(lt, times, side="right")
             vals.append(np.where(pos > 0, np.r_[0.0, cumhaz][pos], 0.0))
         if vals:

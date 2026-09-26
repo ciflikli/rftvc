@@ -4,7 +4,7 @@ Source of truth: `cr-design.md` v2 (C1–C8; C2/C3 user-confirmed). Background: 
 Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) times, `T` requested times.
 
 ## Status
-- [ ] S11: Core — cause-coded `y`, engine cause dimension, composite criterion, per-cause leaves, `CompetingRisksForestTV` fit + per-row CIF (branch `feat/s11-cr-core`)
+- [x] S11: Core — cause-coded `y`, engine cause dimension, composite criterion, per-cause leaves, `CompetingRisksForestTV` fit + per-row CIF (branch `feat/s11-cr-core`)
 - [ ] S12: Paths, coarsening, `aggregate="cif"`, OOB + Wolbers C, Approach-B equivalence (branch `feat/s12-cr-paths`)
 - [ ] S13: Cause-specific metrics + landmark competing-risks workflow (branch `feat/s13-cr-landmark`)
 - [ ] S14: Bench (simulations, parity, bake-off) + docs + case study (branch `feat/s14-cr-bench`)
@@ -123,3 +123,11 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 4. "Pass `cause`" to CV still scored `1 − S` (high) → explicit CR branch in `_score_landmark`, `landmark_cross_validate`, `_select`; CIF output columns.
 5. The one-event-per-id check uses `event & not_last`, which misses label 2 (high) → `event != 0` in S11, tests for labels 1 and 2 incl. landmark input.
 6. C5 per-cause leaf diagnostics were dropped (medium) → per-leaf per-cause counts stored in S12, exposed and tested against brute force.
+
+**S11 done (2026-09-26). Deviations / notes** (slice plan and review logs: `s11-plan.md`):
+- `CompetingRisksForestTV` fits counting-process rows with cause labels. It predicts per-row CIF, cause-specific / all-cause hazard and event-free survival. `SurvivalForestTV` is bit-identical to `main` (`bench/s9_identity.py`); its pickle grows by 13 B (the `n_causes` key, format v3). v2 states load as J = 1.
+- `cause_events` is **cause-major** (`[j·K + k]`), not the time-major layout in `cr-design.md`. The first version (time-major, two allocations per candidate) fitted J = 2 in 2.9 × the J = 1 time. With a contiguous column per cause, the composite runs `LtrcLogRank`'s dense candidate loop per cause, skipping causes with no event in the node. `SingleCause` is that loop on one column, so it stays bit-identical to `LtrcLogRank`.
+- No `bins × K × J` histogram exists (one running `K × J` left-child buffer), so the root-histogram risk does not apply.
+- Fit at 100k rows, 100 trees (`bench/s11_cr_timing.py`): J = 1 is 1.0 ×, J = 2 1.32 × and J = 4 2.11 × the single-event time. The forest's leaf memory is 1.40 × at J = 2 and 2.21 × at J = 4.
+- `n_estimators` defaults to 500 (the plan's 100 was a typo). `leaf_profile` returns `(times, cumhaz (n_e, J))`. Event-free `S` is the Aalen–Johansen product limit, not `exp(−Λ)`.
+- `Grid::quantile` / `coarsen` stay bool until S12 (plan-review finding 5 was declined).

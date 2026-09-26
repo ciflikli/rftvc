@@ -12,7 +12,7 @@ Notation: `J` causes (internal codes 1..J, 0 = censored), `K` grid times, `T` re
    - New `SurvData::with_causes(start, stop, codes: &[u8], n_causes)` asserts every code is `<= n_causes`.
    - `Grid::exact(stop, codes: &[u8])` keeps every time with `code != 0`, so a time at which only cause 2 has events is a grid point.
    - `Grid::quantile` and `coarsen` keep bool events in S11 (they are internal; S12 widens them to codes when the estimator first coarsens J > 1 data). This supersedes `cr-plan.md`'s "accept codes" wording.
-2. **Profile.** `Profile` gains `cause_events: &[f64]` (time-major, `[k*J + j]`) and `n_causes`. For J = 1 it aliases `events`. `LtrcLogRank` and `LogRankNode` are not changed.
+2. **Profile.** `Profile` gains `cause_events: &[f64]` (cause-major, `[j*K + k]`; changed from time-major during implementation, see the S11 note in `cr-plan.md`) and `n_causes`. For J = 1 it aliases `events`. `LtrcLogRank` and `LogRankNode` are not changed.
 3. **Splitter.**
    - `LocalRow.event: bool` becomes `cause: u8` (same 24-byte row). Event tests become `cause != 0`.
    - `NodeProfile` adds `cause_events` (K × J, empty for J = 1), `n_causes` and per-cause event counts `n_cause_events` (used by S12's `min_events_leaf_cause`).
@@ -114,12 +114,12 @@ Notation: `J` causes (internal codes 1..J, 0 = censored), `K` grid times, `T` re
 - Fit time at 100k rows (`bench/perf_fit.synth`-like data, labels split at random into two causes): J = 2 ≤ 1.5 × J = 1. The J = 2 fit memory is reported. Both are recorded in the S11 note.
 
 ## Tasks
-- [ ] Baseline: `bench/s9_identity.py` dump on a `main` build
-- [ ] Rust: `SurvData` codes, `Grid::exact`, `Profile` / `NodeProfile` / splitter cause dimension, criteria + dispatch, leaves, `Forest::predict_cause_cumhaz` / `predict_cif`, flat v3; Rust unit tests
-- [ ] Binding: `fit_forest` codes / `n_causes` / `split_cause`, `predict_cause_cumhaz`, `predict_cif`, `n_causes`, `leaf_profile` 2-d, `cause_score`, v3 state
-- [ ] Python: validation helpers, `_BaseForestTV`, `CompetingRisksForestTV`, exports
-- [ ] Tests: `tests/ref/cr_ref.py`, AJ fixture, `tests/test_cr_core.py`, validation + structure tests, updated `leaf_profile` callers; test-quality audit
-- [ ] Identity bench + J = 2 timing; `plan.md` / `cr-plan.md` status + "S11 done" note
+- [x] Baseline: `bench/s9_identity.py` dump on a `main` build
+- [x] Rust: `SurvData` codes, `Grid::exact`, `Profile` / `NodeProfile` / splitter cause dimension, criteria + dispatch, leaves, `Forest::predict_cause_cumhaz` / `predict_cif`, flat v3; Rust unit tests
+- [x] Binding: `fit_forest` codes / `n_causes` / `split_cause`, `predict_cause_cumhaz`, `predict_cif`, `n_causes`, `leaf_profile` 2-d, `cause_score`, v3 state
+- [x] Python: validation helpers, `_BaseForestTV`, `CompetingRisksForestTV`, exports
+- [x] Tests: `tests/ref/cr_ref.py`, AJ fixture, `tests/test_cr_core.py`, validation + structure tests, updated `leaf_profile` callers; test-quality audit
+- [x] Identity bench + J = 2 timing; `plan.md` / `cr-plan.md` status + "S11 done" note
 - [ ] Codex diff review; fixes
 
 ## Plan review (Codex, 2026-09-26)
@@ -128,3 +128,8 @@ Notation: `J` causes (internal codes 1..J, 0 = censored), `K` grid times, `T` re
 3. There are 8 `leaf_profile` callers, not 6 (high) → all are listed. A J = 1 shape test was added.
 4. The existing future-version pickle test uses `format_version=3`, which is now valid (medium) → it moves to 4.
 5. The parent plan says quantile/coarsen "accept codes" in S11 (low) → **declined**. They are internal Rust functions, and widening them now means untested code paths. The slice plan now overrides the parent wording, and S12 widens them.
+
+## Test-quality audit (2026-09-26)
+- `test_split_cause_uses_that_causes_log_rank` only asserted that forests differ, so a label → code off-by-one would pass (weak). It was replaced by a feature-attribution test: cause 3 depends on x0 and cause 8 on x1, and the root split must follow `split_cause`.
+- `test_step_helper` tested an unused reference helper (slop) → both were removed.
+- Mutation checks: swapping the AJ update order fails 17 tests; summing only the first cause in the composite fails the hypothesis reference test.

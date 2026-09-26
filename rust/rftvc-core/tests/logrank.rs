@@ -7,6 +7,8 @@ fn child<'a>(parent: &'a NodeProfile, at_risk: &'a [f64], events: &'a [f64]) -> 
     Profile {
         at_risk,
         events,
+        cause_events: events,
+        n_causes: 1,
         times: &parent.times,
         exposure: 0.0,
         n_units: 0.0,

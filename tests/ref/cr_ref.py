@@ -48,10 +48,3 @@ def aalen_johansen_ref(start, stop, codes, n_causes):
         cumhaz[i], cif[i], surv[i] = h, f, s
     return times, cumhaz, cif, surv
 
-
-def step(times, values, t):
-    """Right-continuous step function through ``(times, values)`` (0 before the first time), at ``t``."""
-    idx = np.searchsorted(times, np.asarray(t, float), side="right")
-    values = np.asarray(values)
-    zero = np.zeros((1,) + values.shape[1:])
-    return np.concatenate([zero, values])[idx]

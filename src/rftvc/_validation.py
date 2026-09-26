@@ -1,12 +1,15 @@
 """Validation of the counting-process survival target."""
 
 import numbers
+import warnings
 from typing import NamedTuple
 
 import narwhals as nw
 import numpy as np
 
 SURV_DTYPE = np.dtype([("start", "f8"), ("stop", "f8"), ("event", "?")])
+CR_DTYPE = np.dtype([("start", "f8"), ("stop", "f8"), ("event", "i8")])
+MAX_CAUSES = 255
 
 
 def make_survival_y(stop, event, start=None):
@@ -19,6 +22,21 @@ def make_survival_y(stop, event, start=None):
     y["start"] = 0.0 if start is None else np.asarray(start, dtype=float)
     y["stop"] = stop
     y["event"] = _as_bool(np.asarray(event))
+    return y
+
+
+def make_competing_risks_y(stop, event, start=None):
+    """Build a structured competing-risks target with fields ``start``, ``stop``, ``event``.
+
+    ``event`` holds cause labels: 0 = censored, any positive integer = an event
+    of that cause (labels need not be contiguous). A boolean event maps to {0, 1}.
+    ``start`` defaults to 0 (no delayed entry).
+    """
+    stop = np.asarray(stop, dtype=float)
+    y = np.empty(stop.shape[0], dtype=CR_DTYPE)
+    y["start"] = 0.0 if start is None else np.asarray(start, dtype=float)
+    y["stop"] = stop
+    y["event"] = _as_labels(np.asarray(event))
     return y
 
 
@@ -49,7 +67,7 @@ def split_frame(X, ids=None):
     return df.select(nw.all().cast(nw.Float64)).to_numpy(), np.asarray(names, dtype=object), ids
 
 
-def _structured(y, required):
+def _structured(y, required, make=make_survival_y):
     """A DataFrame ``y`` with the ``required`` columns (``start`` optional) as a structured array."""
     df = _frame(y)
     if df is None:
@@ -63,7 +81,7 @@ def _structured(y, required):
         out = np.empty(stop.shape[0], dtype=[("start", "f8"), ("stop", "f8")])
         out["start"], out["stop"] = 0.0 if start is None else start, stop
         return out
-    return make_survival_y(stop, df["event"].to_numpy(), start=start)
+    return make(stop, df["event"].to_numpy(), start=start)
 
 
 def _as_bool(event):
@@ -71,7 +89,30 @@ def _as_bool(event):
         return event
     if np.issubdtype(event.dtype, np.integer) and np.isin(event, (0, 1)).all():
         return event.astype(bool)
-    raise TypeError("event must be boolean (or integers in {0, 1})")
+    raise TypeError(
+        "event must be boolean (or integers in {0, 1}); for cause labels (competing risks) "
+        "use rftvc.CompetingRisksForestTV with rftvc.make_competing_risks_y"
+    )
+
+
+def _as_labels(values, what="event"):
+    """Non-negative integer labels as int64 (bool maps to {0, 1}; integral floats are accepted)."""
+    values = np.asarray(values)
+    if values.dtype == bool:
+        return values.astype(np.int64)
+    if np.issubdtype(values.dtype, np.integer):
+        out = values.astype(np.int64)
+    elif np.issubdtype(values.dtype, np.floating):
+        if not (np.isfinite(values).all() and (values == np.round(values)).all()):
+            raise ValueError(f"{what} labels must be integers")
+        if (np.abs(values) >= 2.0**63).any():
+            raise ValueError(f"{what} labels are out of the int64 range")
+        out = values.astype(np.int64)
+    else:
+        raise TypeError(f"{what} must hold non-negative integer labels (0 = censored)")
+    if (out < 0).any():
+        raise ValueError(f"{what} labels must be non-negative (0 = censored)")
+    return out
 
 
 def _start_stop(y, required):
@@ -107,6 +148,59 @@ def check_survival_y(y, *, require_events=True):
     if require_events and not event.any():
         raise ValueError("y contains no events")
     return start, stop, event
+
+
+def _check_causes(causes):
+    """A cause vocabulary as sorted unique positive int64 labels."""
+    causes = np.asarray(causes)
+    if causes.ndim != 1 or causes.size == 0:
+        raise ValueError("causes must be a non-empty 1-d array of labels")
+    labels = _as_labels(causes, "causes")
+    if (labels == 0).any():
+        raise ValueError("causes must be positive labels (0 means censored)")
+    if np.unique(labels).size != labels.size:
+        raise ValueError("causes must not repeat a label")
+    if labels.size > MAX_CAUSES:
+        raise ValueError(f"at most {MAX_CAUSES} causes are supported, got {labels.size}")
+    return np.sort(labels)
+
+
+def check_competing_risks_y(y, causes=None, *, require_events=True):
+    """Validate a competing-risks target; return ``(start, stop, codes, causes_)``.
+
+    ``causes_`` is the sorted cause vocabulary: the observed non-zero labels,
+    or ``causes`` when given. ``codes`` (``uint8``) maps each label to its
+    1-based position in ``causes_`` (0 stays censored). With ``causes``, a label
+    outside it raises ``ValueError``, and a cause with no events gives a
+    ``UserWarning`` (its hazard is then zero). Raises ``ValueError`` for no
+    events unless ``require_events=False``.
+    """
+    y = _structured(y, ("start", "stop", "event"), make=make_competing_risks_y)
+    y, start, stop = _start_stop(y, ("start", "stop", "event"))
+    labels = _as_labels(np.asarray(y["event"]))
+    observed = np.unique(labels[labels != 0])
+    if require_events and observed.size == 0:
+        raise ValueError("y contains no events")
+    if causes is None:
+        causes_ = observed
+        if causes_.size > MAX_CAUSES:
+            raise ValueError(f"at most {MAX_CAUSES} causes are supported, got {causes_.size}")
+    else:
+        causes_ = _check_causes(causes)
+        outside = np.setdiff1d(observed, causes_)
+        if outside.size:
+            raise ValueError(f"event labels {outside.tolist()} are not in causes={causes_.tolist()}")
+        missing = np.setdiff1d(causes_, observed)
+        if missing.size:
+            warnings.warn(
+                f"causes {missing.tolist()} have no events in y; their hazard and incidence are zero",
+                UserWarning,
+                stacklevel=3,
+            )
+    codes = np.zeros(labels.shape[0], dtype=np.uint8)
+    nz = labels != 0
+    codes[nz] = np.searchsorted(causes_, labels[nz]) + 1
+    return start, stop, codes, causes_
 
 
 def check_intervals(intervals):
@@ -205,7 +299,7 @@ def check_counting_process(
     if overlap.any():
         raise ValueError(f"{overlap.sum()} overlapping rows within an id")
     if event is not None:
-        s_event = event[order]
+        s_event = np.asarray(event)[order] != 0  # any cause label, not only 1
         not_last = np.r_[same, False]
         if (s_event & not_last).any():
             raise ValueError("an event occurs on a row that is not the id's last row")

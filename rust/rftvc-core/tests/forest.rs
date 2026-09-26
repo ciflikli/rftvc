@@ -211,6 +211,7 @@ fn survival_aggregation_is_finite_for_large_hazards() {
         event_offsets: vec![0, k as u64, 2 * k as u64],
         event_idx: (0..k).chain(0..k).collect(),
         cumhaz: (1..=k).chain(1..=k).map(f64::from).collect(),
+        n_causes: 1,
         ..Default::default()
     };
     let forest = flat.to_forest().unwrap();
