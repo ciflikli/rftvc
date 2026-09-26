@@ -20,11 +20,12 @@ import polars as pl
 from sklearn.base import clone
 from sklearn.model_selection import GroupKFold
 
-from .landmark import _as_polars, make_landmark_data
+from ._validation import _as_labels
+from .landmark import LandmarkCompetingRisksForest, _as_polars, make_landmark_data
 from .metrics import (
     KaplanMeierCensoring,
     UndefinedMetricError,
-    _outcome_classes,
+    _classes,
     brier_landmark,
     cindex_dynamic,
     integrated_brier,
@@ -146,9 +147,14 @@ _SCORERS = {
 
 
 def _censor_at(df, cutoff, *, start, stop, event):
-    """Administrative censoring at ``cutoff``: the rows as seen at calendar ``cutoff``."""
+    """Administrative censoring at ``cutoff``: the rows as seen at calendar ``cutoff``.
+
+    An event (or cause label) after ``cutoff`` becomes censoring (0 / False);
+    the column keeps its dtype.
+    """
+    dtype = df.schema[event]
     return df.filter(pl.col(start) < cutoff).with_columns(
-        (pl.col(event).cast(pl.Boolean) & (pl.col(stop) <= cutoff)).alias(event),
+        pl.when(pl.col(stop) <= cutoff).then(pl.col(event)).otherwise(pl.lit(0).cast(dtype)).cast(dtype).alias(event),
         pl.min_horizontal(pl.col(stop).cast(pl.Float64), pl.lit(float(cutoff))).alias(stop),
     )
 
@@ -168,17 +174,23 @@ def _landmark_data(model, df, landmarks=None):
     )
 
 
-def _score_landmark(S, y, w, scoring, times, censoring_estimator, g_min):
-    """Scores of one landmark's test risk set from its predicted survival ``S`` at
-    ``times`` (last column at ``w``), with ``G_s`` fitted on its outcomes."""
-    _, stop, event = y["start"], y["stop"], y["event"]
-    need = any(not np.all(np.logical_or(*_outcome_classes(stop, event, t))) for t in times)
+def _score_landmark(curve, y, w, scoring, times, censoring_estimator, g_min, cause=None):
+    """Scores of one landmark's test risk set, with ``G_s`` fitted on its outcomes.
+
+    ``curve`` is the predicted survival ``S`` at ``times`` (last column at
+    ``w``), or with ``cause=k`` the cumulative incidence ``F_k`` at ``times``.
+    """
+    stop = y["stop"]
+    event = y["event"] if cause is None else _as_labels(y["event"])
+    need = any(not np.all(np.logical_or.reduce(_classes(stop, event, t, cause))) for t in times)
     cens = None
     if need:
         cens = KaplanMeierCensoring() if censoring_estimator is None else clone(censoring_estimator)
         cens = cens.fit(y)
-    risk = 1.0 - S[:, -1]
+    risk = 1.0 - curve[:, -1] if cause is None else curve[:, -1]
     kw = dict(censoring_estimator=cens, g_min=g_min)
+    if cause is not None:
+        kw["cause"] = cause
     out = {}
     brier, info = brier_landmark(y, risk, w, return_info=True, **kw)
     out.update(n=info["n"], n_cases=info["n_cases"], n_censored=info["n_censored"], n_clipped=info["n_clipped"])
@@ -187,7 +199,7 @@ def _score_landmark(S, y, w, scoring, times, censoring_estimator, g_min):
             if name == "brier":
                 out[name] = brier
             elif name == "integrated_brier":
-                out[name] = integrated_brier(y, S, times, **kw)
+                out[name] = integrated_brier(y, curve, times, **kw)
             elif name == "cindex_cumulative":
                 out[name] = cindex_dynamic(y, risk, w, kind="cumulative", **kw)
             elif name == "cindex_incident":
@@ -214,7 +226,7 @@ def landmark_cross_validate(
     refit="brier",
     return_predictions=False,
 ):
-    """Cross-validate a ``LandmarkSurvivalForest`` over its landmark grid.
+    """Cross-validate a ``LandmarkSurvivalForest`` or ``LandmarkCompetingRisksForest`` over its landmark grid.
 
     The splitter runs on the stacked landmark rows with the landmark ``s`` as
     the time (and ids as groups). For each fold:
@@ -235,6 +247,15 @@ def landmark_cross_validate(
     ``inner_cv``, each outer fold first runs this procedure on its own training
     frame for every candidate and refits the one with the best mean ``refit``
     score (nested CV).
+
+    **Competing risks** (a ``LandmarkCompetingRisksForest``): one cause
+    vocabulary (``model.causes``, else the labels in the whole data) and one
+    scored cause ``k`` (``model.score_cause``, else the first label) are fixed
+    before splitting and set on every fit, so each fold has the same outputs.
+    Scores use ``F_k`` with ``cause=k``: the cause-specific IPCW Brier,
+    integrated Brier (``integrated_brier`` of ``F_k``) and Wolbers C
+    (``cindex_incident``); ``cindex_cumulative`` (competing-risks AUC) is not
+    available. Custom scorers receive ``cause=k`` as a keyword.
 
     Parameters
     ----------
@@ -260,6 +281,8 @@ def landmark_cross_validate(
         ``time`` and ``event`` (the outcome on the reset clock, time since the
         landmark), ``risk`` (``1 - S(w)``), and ``survival``: a list of ``S`` at
         the ``n_times`` times ``w/n_times, ..., w`` (the ``integrated_brier`` grid).
+        For competing risks: ``cause``, ``risk`` (``F_k(w)``) and ``cif`` (a list
+        of ``F_k`` at those times) instead of ``survival``.
     """
     df = _as_polars(df)
     if model.horizon is None:
@@ -288,6 +311,15 @@ def landmark_cross_validate(
     times = np.linspace(0, w, n_times + 1)[1:]
     data = _landmark_data(model, df)
     ids = data.ids
+    cause = None
+    if isinstance(model, LandmarkCompetingRisksForest):
+        if "cindex_cumulative" in scoring:
+            raise ValueError("cindex_cumulative (competing-risks AUC) is not available for competing risks")
+        # One vocabulary and one scored cause for every (outer and inner) fit.
+        labels = _as_labels(data.y["event"])
+        causes = np.unique(labels[labels != 0]) if model.causes is None else np.asarray(model.causes)
+        cause = int(causes.min() if model.score_cause is None else model.score_cause)
+        model = clone(model).set_params(causes=[int(c) for c in np.sort(causes)], score_cause=cause)
     rows, preds = [], []
     for fold, (train_idx, test_idx) in enumerate(cv.split(data.s, groups=data.groups)):
         test_s = np.unique(data.s[test_idx])
@@ -308,18 +340,24 @@ def landmark_cross_validate(
         fitted = clone(model).set_params(landmarks=train_s, step=None, **(params or {})).fit(df_train)
         for s in test_s:
             m = test_idx[data.s[test_idx] == s]
-            S = fitted.forest_.predict_survival_function(data.X[m], times)
-            scores = _score_landmark(S, data.y[m], w, scoring, times, censoring_estimator, g_min)
+            if cause is None:
+                curve = fitted.forest_.predict_survival_function(data.X[m], times)
+            else:
+                curve = fitted.forest_.predict_cumulative_incidence(data.X[m], times, cause=cause)
+            scores = _score_landmark(curve, data.y[m], w, scoring, times, censoring_estimator, g_min, cause)
             if return_predictions:
-                preds.append(pl.DataFrame({
+                base = {
                     "fold": np.full(len(m), fold),
                     "landmark": np.full(len(m), float(s)),
                     "id": ids[m],
                     "time": data.y["stop"][m],
                     "event": data.y["event"][m],
-                    "risk": 1.0 - S[:, -1],
-                    "survival": list(S),
-                }))
+                }
+                if cause is None:
+                    base.update(risk=1.0 - curve[:, -1], survival=list(curve))
+                else:
+                    base.update(cause=np.full(len(m), cause), risk=curve[:, -1], cif=list(curve))
+                preds.append(pl.DataFrame(base))
             row = {"fold": fold, "landmark": float(s), **scores}
             if candidates is not None:
                 row["params"] = repr(params)

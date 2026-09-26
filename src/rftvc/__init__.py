@@ -2,7 +2,13 @@
 
 from ._competing import CompetingRisksForestTV
 from ._estimator import SurvivalForestTV
-from .landmark import LandmarkData, LandmarkSurvivalForest, landmark_features, make_landmark_data
+from .landmark import (
+    LandmarkCompetingRisksForest,
+    LandmarkData,
+    LandmarkSurvivalForest,
+    landmark_features,
+    make_landmark_data,
+)
 from . import metrics, model_selection
 from ._validation import (
     CR_DTYPE,
@@ -18,6 +24,7 @@ __all__ = [
     "CR_DTYPE",
     "SURV_DTYPE",
     "CompetingRisksForestTV",
+    "LandmarkCompetingRisksForest",
     "LandmarkData",
     "LandmarkSurvivalForest",
     "SurvivalForestTV",

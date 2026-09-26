@@ -85,15 +85,23 @@ Notation: `s` landmark, `w` horizon on the reset clock, `k` the cause of interes
 - The existing suite is green.
 
 ## Tasks
-- [ ] Baseline: identity dump on `main`
-- [ ] Metrics: classes, `brier_landmark` / `integrated_brier` / `cindex_dynamic` with `cause`; KM on labels; comprisk fixture script + JSON
-- [ ] Landmark: labels in `make_landmark_data`, `_LandmarkBase`, `LandmarkCompetingRisksForest`, exports
-- [ ] Model selection: CR branch, `_censor_at` labels
-- [ ] Tests + test-quality audit
-- [ ] Identity bench; docs (`api.rst`); `cr-plan.md` status + "S13 done" note
+- [x] Baseline: identity dump on `main`
+- [x] Metrics: classes, `brier_landmark` / `integrated_brier` / `cindex_dynamic` with `cause`; KM on labels; comprisk fixture script + JSON
+- [x] Landmark: labels in `make_landmark_data`, `_LandmarkBase`, `LandmarkCompetingRisksForest`, exports
+- [x] Model selection: CR branch, `_censor_at` labels
+- [x] Tests + test-quality audit
+- [x] Identity bench; docs (`api.rst`); `cr-plan.md` status + "S13 done" note
 - [ ] Codex diff review; fixes
 
 ## Plan review (Codex, 2026-09-26)
 1. The type-A weight `1/G(T_i−)²` contradicted the design's `1/(G(T_i−) G(T_i))` (high) → kept for exact J = 1 equality with the existing Uno C. It is recorded as a design amendment in `cr-design.md`, and a censoring-at-`T_i` fixture pins it. It is flagged for the user in the S13 summary.
 2. Per-fold `causes_[0]` could silently score a different cause in a fold missing cause 1 (high) → one vocabulary and score cause are resolved before splitting and pinned in every outer and inner fit. Test with folds lacking different causes.
 3. The comprisk oracle excludes times at `w` (medium) → hand-worked boundary fixtures for censoring, competing events and cases at `w`, plus the events-first KM tie.
+
+## Test-quality audit (2026-09-26)
+- Oracles are independent: the comprisk fixture (Brier, per-time IBS), hand-worked literal values (the boundary fixture 41/350, KM with events first, and the type-A tie 13/17), and a brute-force weighted Wolbers C (hypothesis).
+- The CV-vs-manual test mirrors the loop on purpose. It pins the plumbing (vocabulary and cause pinning, prediction columns); the metrics are checked by the oracles.
+- The time-split / nested CR test is a smoke test (weak by nature); the same plumbing is covered for survival by S5's tests.
+- Mutation check: treating competing events as censored (weight 0) fails the comprisk oracle for both causes, the boundary fixture and the brute-force C.
+- A real bug found while testing: `cause=0` was used as an internal "any labels" sentinel, so `brier_landmark(..., cause=0)` skipped validation → replaced by an explicit flag. Test added.
+- A pre-existing S10 flake (unseeded 5-tree block-OOB test, ~1.5% "no comparable pairs") failed `main` CI after the S12 merge → seeded (separate commit).
