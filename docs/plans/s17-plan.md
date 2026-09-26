@@ -122,7 +122,10 @@ Results:
   2. **§7.3 timing:** oracle windows = [0, 0, 0.218, 0.146, 0, 0] (exactly 0 outside (2, 4], as the closed form requires), O(inside) = 0.364, δ = 0.036. Forest window means = [−0.001, 0.001, 0.184, 0.119, 0.000, 0.001]. Holm-reject (one-sided > 0, 6 windows): windows 3 and 4 reject, no others — (a) passes. Outside upper 95 % bounds (Bonferroni/4) = [0.003, 0.004, 0.004, 0.004], all ≤ δ — (b) passes.
   3. **§7.4 CR:** oracle(cause 1) = 0.615, δ = 0.061. Forest mean ΔS₁ = 0.427, ΔS₂ = 0.002. Holm-reject [S1, S2] = [True, False] — (a) passes. Upper 95 % bound of mean ΔS₂ = 0.005 ≤ δ — (b) passes; the design's `mean ΔS₂ ≤ 0.1·mean ΔS₁` also holds.
   - 10-rep pilot MC-SE check: all outside-window / cause-2 MC-SEs already ≤ margin/7 at R = 10; the two inside timing windows (MC-SE 0.0087, 0.0083 at R = 10 vs. target 0.0053) project to adequate power at R = 50 (needing R ≈ 27, 25 respectively) via the `1/√R` scaling law, confirmed by the R = 50 result's clean Holm rejection.
-- **Timings** (held-out / OOB, 1000 ids × ~5 rows, p = 4, 200 trees): TIMING_PLACEHOLDER
+- **Timings** (held-out / OOB, 1000 ids × ~5 rows = 5000 rows, p = 4, 200 trees, `n_jobs=-1` on a 4-core container, default `n_repeats=5`):
+  - held-out, `n_bootstrap=0`: 3.70 s;
+  - held-out, `n_bootstrap=100`: 338.14 s (≈ 91×, matching the docstring's `p × n_bootstrap × n_repeats` extra-prediction cost — each "prediction" is a full 200-tree forest traversal over ~5000 rows, roughly 1 s per bootstrap replicate per feature; `n_bootstrap=0` is the fast path for exploratory use);
+  - OOB (no bootstrap SE): 1.62 s.
 
 Deviations: none (all three sim rules and the acceptance timings passed as declared).
 
