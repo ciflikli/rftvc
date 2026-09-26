@@ -1,7 +1,7 @@
 """S9 bit-identity check: dump predictions and pickle sizes of the current build.
 
     python -m bench.s9_identity OUT.npz            # on a main build, then on the S9 build
-    python -m bench.s9_identity --compare A.npz B.npz
+    python -m bench.s9_identity --compare A.npz B.npz [--pickle]   # --pickle: sizes must match too
 """
 
 import pickle
@@ -59,13 +59,17 @@ def main(out):
     print("wrote", out, len(res), "arrays")
 
 
-def compare(a, b):
+def compare(a, b, pickle_bytes=False):
+    """Arrays must be equal; with ``pickle_bytes``, pickle sizes must be equal too."""
     A, B = np.load(a), np.load(b)
     assert set(A.files) == set(B.files), set(A.files) ^ set(B.files)
     bad = 0
     for k in sorted(A.files):
         if k.endswith("_pickle_bytes"):
             print(f"{k}: {int(A[k]):,} -> {int(B[k]):,} ({1 - B[k] / A[k]:.0%} smaller)")
+            if pickle_bytes and int(A[k]) != int(B[k]):
+                bad += 1
+                print("DIFFERENT pickle size:", k)
         elif not np.array_equal(A[k], B[k], equal_nan=True):
             bad += 1
             print("DIFFERENT:", k)
@@ -75,5 +79,5 @@ def compare(a, b):
 
 if __name__ == "__main__":
     if sys.argv[1] == "--compare":
-        sys.exit(compare(sys.argv[2], sys.argv[3]) > 0)
+        sys.exit(compare(sys.argv[2], sys.argv[3], pickle_bytes="--pickle" in sys.argv[4:]) > 0)
     main(sys.argv[1])
