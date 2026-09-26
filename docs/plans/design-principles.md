@@ -66,7 +66,7 @@ Rules that hold in every setting:
   - Poisson (RF-SLAM)
   - a horizon-Brier criterion
 
-  Chosen empirically [S: research.md].
+  Chosen empirically [S: research.md]. **Outcome (S8):** log-rank is the only criterion. The candidates, run as `grouped_lik`, `poisson` and a KM-Gini stand-in for horizon-Brier, did not beat it and were removed; the internal `SplitCriterion` trait remains (`docs/bench/s8-bakeoff.md`).
 - Leaf estimator: Nelson–Aalen / KM with delayed entry. Aggregation (cumulative hazard vs survival averaging) is an explicit option, validated by calibration [S: research-review minor].
 
 ## G5. Explicitly out of scope for v1 (documented, not silently wrong)

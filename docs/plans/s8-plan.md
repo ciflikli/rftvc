@@ -153,5 +153,14 @@ Branch `feat/s8-bakeoff`. Parent: `plan.md` S8; design.md D6 (criterion), D11 (a
 
 Found sound: delayed-entry risk-set indexing for log-rank; log-rank bit-identity is feasible; C1/C2 gains are ≥ 0; nested CV already tunes nested forest params per arm.
 
-## Diff review (Codex)
-_pending_
+## Diff review (Codex, 2026-09-26)
+1. Stale planning text (low): `plan.md` still listed the S8 files as planned (numba, `docs/scratch/bakeoff.md`), and `design-principles.md` still presented the candidate criteria as available. Fix: both now carry outcome notes pointing to `docs/bench/s8-bakeoff.md` and `a49cf55`; the original planning text is kept.
+
+No problems found in:
+- exposure accumulation, parent/child unit counts (including straddling units) and snapped coarse durations;
+- log-rank arithmetic (the added argument is ignored);
+- `return_predictions` row alignment and its nested-CV path;
+- the write-up's tables and D11 text against the CSVs and `decisions.csv`;
+- stale API references in runtime code, tests and docstrings.
+
+Codex could not run `cargo test` (its sandbox is read-only for `rust/target`), so the bit-identity claim rests on its code reading plus the local prediction comparison (exact, coarse and bootstrap modes, re-run after task 7).

@@ -275,7 +275,7 @@ Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pyte
 - `person_period.py` (design.md) is deferred.
 
 ## S8: Bake-off (research slice)
-**Files:** `bench/criteria/` (numba prototypes: RHF-style hazard likelihood, Poisson, horizon-Brier); `docs/scratch/bakeoff.md`.
+**Files (as planned; superseded, see "S8 done"):** `bench/criteria/` (numba prototypes: RHF-style hazard likelihood, Poisson, horizon-Brier); `docs/scratch/bakeoff.md`. Delivered: Rust prototypes and `bench/criteria/` (removed after the decision; history `a49cf55`), write-up `docs/bench/s8-bakeoff.md`.
 
 **Scope:** criteria × aggregation (`hazard`/`survival`) × datasets, all under nested CV. Primary metric: landmark Brier score and calibration.
 
