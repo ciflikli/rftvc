@@ -58,11 +58,11 @@ Notation: `p` units, `R` = `n_repeats`, `B` = `n_bootstrap`, `M` windows, `J` ca
 10. **Public surface.** `rftvc.inspection` (exported from `rftvc/__init__.py`), `api.rst` section. The user guide page is S20.
 
 ## Tasks
-- [ ] T1 `_inspection/_units.py`, `_strata.py` (+ unit tests): unit resolution, binning, stratum labels, within-stratum shuffle.
-- [ ] T2 `_inspection/_score.py`: the core loop over units/repeats on a `predict` callable; decompositions; `share_of_gain`.
-- [ ] T3 `_inspection/_boot.py`: `_resample_ids`, replicate loop, SE.
-- [ ] T4 `inspection.py`: public function, estimator dispatch, held-out and OOB predict callables, validation, docstring (M1 warning text, cost note, estimand of the SE).
-- [ ] T5 Tests `tests/test_inspection_perm.py` (below); `/test-quality` audit.
+- [x] T1 `_inspection/_units.py`, `_strata.py` (+ unit tests): unit resolution, binning, stratum labels, within-stratum shuffle.
+- [x] T2 `_inspection/_score.py`: the core loop over units/repeats on a `predict` callable; decompositions; `share_of_gain`.
+- [x] T3 `_inspection/_boot.py`: `_resample_ids`, replicate loop, SE.
+- [x] T4 `inspection.py`: public function, estimator dispatch, held-out and OOB predict callables, validation, docstring (M1 warning text, cost note, estimand of the SE).
+- [ ] T5 Tests `tests/test_inspection_perm.py` (below; written, 47 pass); `/test-quality` audit (pending).
 - [ ] T6 Sims `bench/tvc_perm_sim.py` (§7.1 M2 part, §7.3, §7.4; R = 50 after a 10-rep pilot for the MC SE check) + `tests/test_tvc_sim_truth.py` (slow R ≈ 10, fast smoke R = 1). Results in the S17 note.
 - [ ] T7 Timings (held-out, OOB, bootstrap), `api.rst`, `__init__`, `tvc-plan.md` tick + "S17 done" note.
 
