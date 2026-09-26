@@ -106,7 +106,24 @@ Branch `feat/s8-bakeoff`. Parent: `plan.md` S8; design.md D6 (criterion), D11 (a
     - every fold/landmark `brier` and `integrated_brier` is reproduced from the returned rows alone;
     - under `GroupKFold`, every landmark row is predicted exactly once and each id falls in one fold;
     - the default return is unchanged, and nested CV also returns predictions.
-- [ ] `bench/criteria/`: protocols A and B, calibration summaries, cluster bootstrap, CSV output; smoke config runs in seconds
+- [x] `bench/criteria/`: protocols A and B, calibration summaries, cluster bootstrap, CSV output; smoke config runs in seconds
+  - Files: `common.py` (config, metrics, bootstrap), `protocol_a.py`, `protocol_b.py`, `run.py` (`--smoke`, `--datasets`, `--out`), `summarise.py` (applies the rule mechanically → `decisions.csv`). The smoke run takes about 4 s. Raw out-of-fold predictions go to `docs/bench/s8-bakeoff/raw/` (git-ignored).
+  - **Pre-registered details fixed in `common.py` before any full run:**
+    - arms: 4 criteria × 2 aggregations (A); 3 × 2 (B, no `km_gini`);
+    - 300 trees; grid `min_ids_leaf` ∈ {5, 15, 50} × `max_features` ∈ {sqrt, None};
+    - seed 0 for every arm (paired), IBS grid of 10 points, 10 calibration deciles, B = 500;
+    - A tunes by inner mean `integrated_brier`. PBC2: outer `GroupKFold(5)`, inner `GroupKFold(3)`, landmarks 1–4 y (no training landmark at 0, unlike the case study), `w = τ = 730.5` days. Panel: 2,000 units × 96 periods, landmarks every 3 periods, `w = τ = 6`; `RollingOriginSplit(5 outer / 3 inner, test_size=6, gap=6)`. The S5 12-period windows would leave the inner folds only landmarks 0–3 to train on;
+    - B tunes by inner `GroupKFold(3)` counting-process C;
+    - fit time = the median of 3 full-data fits at `min_ids_leaf=15`, `max_features="sqrt"`.
+  - **Consequence of the rule:** `km_gini` has no `sim.py` arm, so it cannot pass check (i). It can be reported as promising but cannot become the default under this rule.
+  - Row-level IPCW losses reuse each (fold, landmark) censoring fit. Their mean reproduces `landmark_cross_validate`'s scores exactly, and the bootstrap keeps those weights.
+  - Tests (`tests/test_bench_criteria.py`, 10):
+    - row losses reproduce the scores;
+    - ICI and slope on exact and constant predictions;
+    - bootstrap pairing (identical arms give 0, a constant shift is exact);
+    - `align` rejects mismatched rows;
+    - the decision rule on synthetic inputs (adopts, then fails each of the 4 checks in turn);
+    - a smoke end-to-end run.
 - [ ] Full runs; `docs/bench/s8-bakeoff.md`, with the recommendation and D11 verdict against the pre-registered rule
 - [ ] Apply the decision: defaults, removal of losing criteria, user-guide criterion section, design.md D6/D11 updated
 - [ ] plan.md tick + "S8 done" notes
