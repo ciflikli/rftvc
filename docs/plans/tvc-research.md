@@ -1,6 +1,6 @@
 # Research Findings: statistical foundation and importance for TVC forests
 
-Status: research stage (2026-09-26). No design decisions yet. Answers `tvc-questions.md`. Next: Codex research review, then `tvc-design.md`.
+Status: research stage (2026-09-26); Codex research review applied (see "Review log"). No design decisions yet. Answers `tvc-questions.md`. Next: Codex research review, then `tvc-design.md`.
 Tags: [S] = backed by a source fetched or searched this session; [S: title] = found, only title/abstract/snippet read; [K] = background knowledge or own derivation, verify before relying on it; [R] = from this repository's code or docs.
 
 ---
@@ -9,8 +9,8 @@ Tags: [S] = backed by a source fetched or searched this session; [S: title] = fo
 
 ### 1.1 The estimand
 - **Data model.** Each row carries covariates `x_r` in force on `(start_r, stop_r]`. The trees split on `x` only; time is never a split variable [R: `fit_forest` gets `X` only]. The split statistic is the LTRC log-rank, which compares the two children **at each event time among the rows at risk then** [R: `criterion.rs`]. Splitting is therefore time-matched: a covariate that trends with time but does not affect the hazard gives no split signal in expectation [K, derived].
-- **Leaf estimate.** Nelson–Aalen over the leaf's rows: `Λ_A(t) = Σ_{t_k ≤ t} d_A(t_k) / Y_A(t_k)`, with `Y_A(t_k)` the rows in cell `A` with `start < t_k ≤ stop` [R: `tree.rs`]. The leaf stores jumps only at its own event times (S9 layout), so **its hazard is 0 wherever it has no events, including where it has no rows at risk** [R].
-- **Target.** Assume the intensity model `P(dN(t) = 1 | F_{t−}) = Y(t) λ(t, X(t)) dt` with a predictable covariate state `X(t)`. Then a leaf estimates the at-risk-averaged hazard `λ_A(t) = E[λ(t, X(t)) | X(t) ∈ A, at risk at t]`. As cells shrink this tends to the **hazard map `(t, x) ↦ λ(t, x)`** [K, derived].
+- **Leaf estimate.** Nelson–Aalen over the leaf's rows: `Λ_A(t) = Σ_{t_k ≤ t} d_A(t_k) / Y_A(t_k)`, with `Y_A(t_k)` the rows in cell `A` with `start < t_k ≤ stop` [R: `tree.rs`]. The leaf stores jumps only at its own in-bag event times (S9 layout), so **its cumulative hazard is flat between those times**: the predicted increment over any window without a leaf event is 0, including where the leaf has no rows at risk. `cumhaz_at` carries the last value forward [R: `tree.rs`].
+- **Target.** Assume the intensity model `P(dN(t) = 1 | F_{t−}) = Y(t) λ(t, X(t)) dt` with a predictable covariate state `X(t)`. Then a leaf estimates the at-risk-averaged hazard `λ_A(t) = E[λ(t, X(t)) | X(t) ∈ A, at risk at t]`. **Heuristically**, cells that shrink tend to the **hazard map `(t, x) ↦ λ(t, x)`**. That needs positivity (rows at risk near every relevant `(t, x)`), local cells with enough at-risk observations, independent subjects, and the censoring/entry conditions of §1.2. The implementation guarantees none of these, and no consistency result exists (§1.4) [K, derived].
   - `randomForestRHF` states the same target explicitly: "Markovian in the predictable state but not necessarily in the full history", with a no-lookahead rule [S: Ishwaran, Hsich, Kogalur & Lee 2026, arXiv 2608.21597].
   - rftvc reaches the target with a partition in `x` and a nonparametric time curve per leaf. RHF uses a time-constant working model during splitting, then estimates on a time grid [S].
 - **Composition drift.** `λ_A(t)` depends on which rows of `A` are at risk at `t`. That set changes through selection (frailty) and through covariate movement. In coarse leaves (large `min_ids_leaf`), part of the leaf's hazard *shape* therefore reflects the population mix rather than time itself. This is an interpretation caveat, not a bias in the target [K].
@@ -27,7 +27,7 @@ Tags: [S] = backed by a source fetched or searched this session; [S: title] = fo
 | `predict_*` without `intervals` | `Λ(t \| x held fixed from 0)` | `x` is time-fixed, or as a named "fixed profile" scenario [R] |
 | `predict_*(intervals=…)` | `Λ(t \| path) − Λ(origin \| path)` = `∫ λ(u, x(u)) du` | the covariates are **external** and the path is observed or specified (Kalbfleisch–Prentice) [K; R: D4] |
 | `predict()` / `oob_prediction_` / `oob_score_` | mortality `Σ_k Λ(t_k \| x)` over the fixed profile | a ranking of covariate *states*, not of subjects [R] |
-| landmark `predict_risk(df, s, w)` | `P(T ≤ s + w \| T > s, H(s))` | always, for internal or external covariates, given the features at `s` [R] |
+| landmark `predict_risk(df, s, w)` | `P(T ≤ s + w \| T > s, H(s))` | for internal or external covariates, under censoring independent of the event given `H(s)` and `s` [R: `landmark.py`], adequate support, and a fitted model that transports to the prediction population |
 
 - For **internal** covariates, the hazard map is still estimable and interpretable, but a path-based survival curve is not a probability for any real subject. This is D4 again [R].
 - **Finding for the release pass:** `oob_score_` ranks each TVC row by its fixed-profile mortality. Under non-proportional leaf hazards, that ranking can disagree with the ranking by hazard at the row's own time. A time-local C (hazard in a window around the event time, compared within the risk set) matches the estimand better (§3) [K, derived].
@@ -45,9 +45,9 @@ Tags: [S] = backed by a source fetched or searched this session; [S: title] = fo
 
 ### 2.1 Why a naive row-level shuffle misleads
 Standard RSF VIMP is the increase in OOB error after permuting (or noising up) `x_j` [S: Ishwaran; DynForest]. On counting-process rows, three distinct problems arise:
-1. **Off-support (time, value) pairs: the main one.** A shuffle gives a row at time `t` a value typical of time `t'`. If `z` trends with time, the row lands in a leaf with no rows at risk near `t`. That leaf's hazard there is **exactly 0** (§1.1 [R]), so the prediction collapses and the error jumps. The measured "importance" is then extrapolation damage, not reliance on `z`. This is the Hooker, Mentch & Zhou (2021, Stat. Comput. 31:82) permute-and-predict failure, made acute by empty time regions in leaves [S; mechanism K, derived].
+1. **Off-support (time, value) pairs: the main one.** A shuffle gives a row at time `t` a value typical of time `t'`. If `z` trends with time, the row lands in a leaf with no events (often no rows at risk) near `t`. That leaf's cumulative hazard is flat there (§1.1 [R]), so the row gets no predicted hazard over that stretch: a prediction from a region with no local event support. The measured "importance" can then be extrapolation damage, not reliance on `z`. This is the Hooker, Mentch & Zhou (2021, Stat. Comput. 31:82) permute-and-predict failure, possibly made worse by event-free time regions in leaves [S; mechanism K, derived]. **Whether it materially inflates VIMP is unproven**: the §8.1 simulation must show it.
 2. **Dependence on other covariates** (the classic PFI bias). Correlated `x_{−j}` inflate marginal importance [S: Hooker et al.; Strobl et al. 2008 K; Molnar et al. 2023].
-3. **Trajectory breakage and derived features.** A row-level shuffle turns each subject's path into noise. For a current-state model and a row-additive loss this changes only the variance, not the expectation (each row's loss depends on its own `x`) [K, derived]. But if the user added derived columns (a lag, a running mean), permuting one column breaks the consistency between them. "Importance of the variable `z`" must then permute the raw series and **recompute every derived feature** [K].
+3. **Trajectory breakage and derived features.** A row-level shuffle turns each subject's path into noise. For a current-state model and a row-additive loss, the expected importance depends only on each row's donor-value distribution, not on the joint structure across rows. Two schemes that give every row the same donor distribution have the same expectation and differ only in variance [K, derived]. Schemes with different donor distributions (M2 vs M3 below) are different estimands. But if the user added derived columns (a lag, a running mean), permuting one column breaks the consistency between them. "Importance of the variable `z`" must then permute the raw series and **recompute every derived feature** [K].
 
 Prior art on this exact point: DynForest permutes "at the individual level when p is time-fixed and at the observation level when p is time-dependent", with no correction for time trends [S: Devaux et al., arXiv 2208.05801, §2.5].
 
@@ -57,7 +57,7 @@ Prior art on this exact point: DynForest permutes "at the individual level when 
 | M1 | Marginal row permutation (Breiman/Ishwaran VIMP) | reliance on `z`, contaminated by extrapolation | predict only | baseline, known biased; keep for comparison only |
 | M2 | **Time-conditional permutation**: permute `z` among rows at risk in the same time window (risk-set strata) | reliance on `z` beyond what time explains; stays on the `(t, z)` support | predict only | Strobl-style conditional PI with `t` as the conditioning variable [S: Debeer & Strobl 2020, `permimp`]; conditional-subgroup PFI (Molnar, König, Bischl & Casalicchio 2023) [S]; window width = the conditioning knob (≈ Debeer–Strobl threshold) [K] |
 | M2+ | M2 also conditional on `x_{−j}` (subgroups from the forest's own splits or a transformation tree) | partial importance given other covariates | predict only | `permimp`-style [S]; subgroup size limits power |
-| M3 | **Subject-level trajectory permutation**: give subject A subject B's `z(t)` looked up at A's times; recompute derived features | importance of the variable as a whole process, including its history features | predict only | needs B's `z` defined over A's follow-up. External covariates usually have that, internal ones do not. Equals M2 in expectation when there are no derived features [K] |
+| M3 | **Subject-level trajectory permutation**: give subject A subject B's `z(t)` looked up at A's times; recompute derived features | importance of the variable as a whole process, including its history features | predict only | needs B's `z` defined over A's follow-up. External covariates usually have that, internal ones do not: report undefined donor coverage. A **different estimand from M2** by default: donor values come from other subjects' paths at A's times, not from A's risk-set stratum. The two coincide only under synchronised external paths with exchangeable donors [K] |
 | M4 | **LOCO / condition-and-refit**: drop `z` (or its group), refit, compare held-out loss | predictive value of `z` for the population (model-agnostic) | one refit per variable/group | Hooker et al.'s "gold standard" [S]. Survival VIM with cross-fitting and doubly robust inference: Wolock, Gilbert, Simon & Carone 2025 (Biometrika 112, `survML`) [S], right-censored, time-fixed. rftvc fits are fast (Rust), so this is affordable [R] |
 | M5 | Rule-release / VarPro (`importance.rhf`) | time-localised local effect of releasing `z` from each leaf rule, on log integrated OOB hazard | no refit, no permutation | windows on the time grid; start–stop records that overlap the window [S]. Avoids extrapolation by construction [K] |
 | M6 | Minimal depth / split counts | how early and often the forest splits on `z` | free | cheap; blurred when `mtry` < p (DynForest recommends max `mtry`) [S]; biased toward many-valued features [K] |
@@ -66,7 +66,7 @@ Prior art on this exact point: DynForest permutes "at the individual level when 
 **Knockoffs** for time series are immature and are left out [K].
 
 ## 3. Scoring: what loss to measure a drop in
-- **Counting-process deviance (no IPCW needed).** The row-additive log-likelihood `Σ_r [∫ log λ̂ dN_r − ∫_{start_r}^{stop_r} λ̂(u, x_r) du]` is the natural proper loss for this data; RHF minimises exactly this risk [S].
+- **Counting-process deviance (no IPCW needed).** Worked out in `tvc-deviance.md`, which supersedes the bullets below where they differ. The row-additive log-likelihood `Σ_r [∫ log λ̂ dN_r − ∫_{start_r}^{stop_r} λ̂(u, x_r) du]` is the natural proper loss for this data; RHF minimises exactly this risk [S].
   - With Nelson–Aalen leaves the pointwise version fails: an OOB event time is usually not a jump of the OOB trees, so `log λ̂ = −∞` [K, derived from §1.1].
   - Workable form: a **binned Poisson deviance**. Per (row, window `W_m`), compare the observed events `N` with the expected `E = Λ̂(min(stop, w_m) | x) − Λ̂(max(start, w_{m−1}) | x)`, using `D = 2 Σ [N log(N/E) − (N − E)]` [K, proposal; needs a zero-`E` floor].
   - It is **time-resolvable by construction**: sum over windows = overall, per window = timing (§4.2).
@@ -144,9 +144,9 @@ Pass rules are declared in advance, as in S3/S14 [R].
 
 ## 9. Hypotheses revisited (from `tvc-questions.md`)
 - *"A single importance number is not enough."* **Supported.** The literature and §2–4 give at least three distinct questions: overall reliance (M2 or M4), variable vs feature level (M3 / grouped), and timing (windowed loss or rule-release), plus effect curves.
-- *"Naive permutation is biased for TVCs that correlate with time."* **Supported, with a sharper mechanism:** empty-risk-set regions of leaf hazards give exactly-zero hazard for off-support rows (§2.1). This still needs the simulation in §8.1 to confirm the size of the effect.
+- *"Naive permutation is biased for TVCs that correlate with time."* **Plausible, with a candidate mechanism:** off-support rows fall into event-free regions of leaf cumulative hazards and get no predicted hazard there (§2.1). This is unproven until the §8.1 simulation shows it.
 - **New:** history-given-level importance is a diagnostic of the forest's core assumption (§4.3).
-- **New:** a binned Poisson deviance is a candidate proper, IPCW-free, time-resolvable loss for counting-process rows (§3).
+- **New:** a binned piecewise-exponential (Poisson) score is a candidate IPCW-free, time-resolvable loss for counting-process rows. It is proper only in a qualified sense (`tvc-deviance.md`).
 
 ## 10. Open questions for the design stage
 1. **Scope of v1.** Which of M2 / M3 / M4 ship first? Is M5 (rule-release) worth porting, or does windowed M2 cover the timing question?
@@ -155,3 +155,10 @@ Pass rules are declared in advance, as in S3/S14 [R].
 4. **History features.** Add slope, time-since, time-above-threshold, EWMA and lag to `landmark.AGGREGATIONS`, and offer a helper that builds the same features on counting-process rows?
 5. **`oob_score_` / `score`.** Switch TVC rows to a time-local C or to deviance? This is a release-pass decision, flagged by §1.3.
 6. **TreeSHAP with vector leaves.** In scope, or deferred?
+
+## Review log
+- **2026-09-26, Codex research review (4 findings, all accepted):**
+  1. "Hazard exactly 0" misstated: leaves carry the cumulative hazard forward, so only window increments are 0. Reworded §1.1, §2.1 and §9, and the mechanism is marked unproven.
+  2. Floored deviance is not strictly proper: moved to `tvc-deviance.md` with a qualified propriety statement.
+  3. "Trajectory breakage changes only variance" and "M3 = M2 in expectation" were too broad: the condition (same per-row donor distribution) is now stated, and M2 and M3 are different estimands.
+  4. The hazard-map limit is heuristic, with its assumptions listed. Landmark validity is not "always": it needs conditional independent censoring, support and transportability.
