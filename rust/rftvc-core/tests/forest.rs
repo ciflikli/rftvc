@@ -19,6 +19,7 @@ fn params(bootstrap: bool) -> ForestParams {
             min_ids_leaf: 5,
             min_events_leaf: 2,
             max_features: 1,
+            ..Default::default()
         },
         n_trees: 20,
         n_draw: 60,

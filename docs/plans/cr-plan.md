@@ -5,7 +5,7 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 
 ## Status
 - [x] S11: Core — cause-coded `y`, engine cause dimension, composite criterion, per-cause leaves, `CompetingRisksForestTV` fit + per-row CIF (branch `feat/s11-cr-core`)
-- [ ] S12: Paths, coarsening, `aggregate="cif"`, OOB + Wolbers C, Approach-B equivalence (branch `feat/s12-cr-paths`)
+- [x] S12: Paths, coarsening, `aggregate="cif"`, OOB + Wolbers C, Approach-B equivalence (branch `feat/s12-cr-paths`)
 - [ ] S13: Cause-specific metrics + landmark competing-risks workflow (branch `feat/s13-cr-landmark`)
 - [ ] S14: Bench (simulations, parity, bake-off) + docs + case study (branch `feat/s14-cr-bench`)
 
@@ -131,3 +131,12 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 - Fit at 100k rows, 100 trees (`bench/s11_cr_timing.py`): J = 1 is 1.0 ×, J = 2 1.32 × and J = 4 2.11 × the single-event time. The forest's leaf memory is 1.40 × at J = 2 and 2.21 × at J = 4.
 - `n_estimators` defaults to 500 (the plan's 100 was a typo). `leaf_profile` returns `(times, cumhaz (n_e, J))`. Event-free `S` is the Aalen–Johansen product limit, not `exp(−Λ)`.
 - `Grid::quantile` / `coarsen` stay bool until S12 (plan-review finding 5 was declined).
+
+**S12 done (2026-09-26). Deviations / notes** (slice plan, plan/diff review logs and test audit: `s12-plan.md`):
+- One Rust Aalen–Johansen kernel serves per-row prediction, paths (origin, `extrapolate`) and OOB. A row is a one-row path covering all times, and S11 results are unchanged. `aggregate="cif"` runs the kernel per tree and averages `F`, `S` and the hazard.
+- `min_events_leaf_cause` (with `split_cause`) is in the pre-RNG gate and the child constraint. Approach-B equivalence holds bit-for-bit (seeds, node arrays, cause-k leaf hazards).
+- Per-leaf per-cause in-bag counts are stored only for `CompetingRisksForestTV`. Their pickle key is optional, so `SurvivalForestTV` pickles are byte-identical (the identity bench now checks pickle bytes with `--pickle`). The format stays v3.
+- `concordance_index_cr` (Wolbers) on counting-process rows: type A as in `concordance_index_cp`, type B = competing events at `T_j ≤ T_i`, ties included. It backs `score` and `oob_score_`. `oob_prediction_` is `(n, J)`.
+- Coarsening and block splitting carry cause codes. The coarsened OOB target keeps labels (`_oob_target` hook).
+- Block OOB is checked by equivalence (one block per id = id resampling), not by a separate manual reference.
+- Fit time at 100k rows: J = 2 is 1.43× the single-event time and J = 4 2.20×. The J = 2 forest is 1.47× the size, including the leaf counts (`bench/s11_cr_timing.py`).

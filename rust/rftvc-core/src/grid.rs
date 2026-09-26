@@ -42,12 +42,12 @@ impl Grid {
     /// the event times, with multiplicity, at levels `j / k` for `j = 1..=k`,
     /// deduplicated. At most `k` points; each is an observed event time and the
     /// last is the largest.
-    pub fn quantile(stop: &[f64], event: &[bool], k: usize) -> Grid {
+    pub fn quantile(stop: &[f64], codes: &[u8], k: usize) -> Grid {
         assert!(k >= 1, "k must be >= 1");
         let mut t: Vec<f64> = stop
             .iter()
-            .zip(event)
-            .filter(|(_, e)| **e)
+            .zip(codes)
+            .filter(|(_, c)| **c != 0)
             .map(|(s, _)| *s)
             .collect();
         t.sort_by(|a, b| a.partial_cmp(b).expect("NaN time"));
@@ -73,7 +73,8 @@ pub struct Coarsened {
     pub kept: Vec<u32>,
     pub start: Vec<f64>,
     pub stop: Vec<f64>,
-    pub event: Vec<bool>,
+    /// Cause codes (0 = censored).
+    pub event: Vec<u8>,
     /// Events whose chain had no kept row to carry them.
     pub lost_events: usize,
 }
@@ -85,12 +86,13 @@ pub struct Coarsened {
 /// the last event carry no further at-risk contribution, so the clamp leaves
 /// every risk set unchanged. Chain `c` owns rows `order[offsets[c]..offsets[c+1]]`,
 /// sorted by start and contiguous. A row with `g(start) == g(stop)` is dropped;
-/// its event moves to the chain's previous kept row (which ends at the same
-/// point by contiguity) or, if there is none, is lost and counted.
+/// its event, with its cause code, moves to the chain's previous kept row
+/// (which ends at the same point by contiguity) or, if there is none, is lost
+/// and counted.
 pub fn coarsen(
     start: &[f64],
     stop: &[f64],
-    event: &[bool],
+    event: &[u8],
     order: &[u32],
     offsets: &[usize],
     points: &[f64],
@@ -118,9 +120,9 @@ pub fn coarsen(
                 out.start.push(s);
                 out.stop.push(e);
                 out.event.push(event[r]);
-            } else if event[r] {
+            } else if event[r] != 0 {
                 if out.kept.len() > chain_first {
-                    *out.event.last_mut().unwrap() = true;
+                    *out.event.last_mut().unwrap() = event[r];
                 } else {
                     out.lost_events += 1;
                 }
@@ -137,7 +139,7 @@ mod tests {
     #[test]
     fn quantile_grid_uses_inverse_cdf_and_keeps_the_maximum() {
         let stop = [1.0, 2.0, 2.0, 3.0, 4.0, 5.0, 9.0];
-        let event = [true, true, true, true, false, true, true];
+        let event = [1, 1, 1, 1, 0, 1, 1];
         // Event times (n = 6): 1 2 2 3 5 9; k = 3 -> ranks ceil(2), ceil(4), ceil(6).
         let g = Grid::quantile(&stop, &event, 3);
         assert_eq!(*g.times, vec![2.0, 3.0, 9.0]);

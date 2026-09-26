@@ -74,9 +74,10 @@ class _BaseForestTV(BaseEstimator):
                 order, offsets = np.arange(n, dtype=np.uint32), np.arange(n + 1, dtype=np.uint64)
             else:
                 order, offsets = cp.order.astype(np.uint32), cp.offsets
-            kept, start, stop, event, grid, lost = _core.coarsen(
-                start, stop, event, order, offsets, int(self.ntime)
+            kept, start, stop, codes, grid, lost = _core.coarsen(
+                start, stop, _as_codes(event), order, offsets, int(self.ntime)
             )
+            event = codes.view(bool) if event.dtype == bool else codes
             if not event.any():
                 raise ValueError("coarsening left no events; use a larger ntime")
             X = np.ascontiguousarray(X[kept])
@@ -122,17 +123,50 @@ class _BaseForestTV(BaseEstimator):
         # Coarse mode: the chosen grid, even points whose events were all lost.
         self.event_times_ = np.unique(stop[event != 0]) if kept is None else grid
         if self.oob_score:
-            y_fit = y if kept is None else make_survival_y(stop, event, start=start)
+            y_fit = y if kept is None else self._oob_target(stop, event, start)
             if self.resample_unit == "id":
                 oob_set = (np.arange(len(groups) + 1, dtype=np.uint64), groups)
             pred = self._compute_oob(X, y_fit, groups, oob_set)
             if kept is not None:  # back to the original rows; dropped rows are NaN
-                self.oob_prediction_ = np.full(n, np.nan)
+                self.oob_prediction_ = np.full((n,) + pred.shape[1:], np.nan)
                 self.oob_prediction_[kept] = pred
                 n_trees = self.oob_n_trees_
                 self.oob_n_trees_ = np.zeros(n, dtype=n_trees.dtype)
                 self.oob_n_trees_[kept] = n_trees
         return self
+
+    def _oob_target(self, stop, event, start):
+        """The (coarsened) training target that OOB scoring compares against."""
+        return make_survival_y(stop, event, start=start)
+
+    def _path_args(self, X, intervals, ids, origin, extrapolate):
+        """Validated covariate-path inputs, rows ordered by (subject, start).
+
+        Returns ``(X, start, stop, offsets, origin)`` for the native path calls;
+        see ``SurvivalForestTV.predict_cumulative_hazard``.
+        """
+        if extrapolate not in ("none", "locf"):
+            raise ValueError(f"extrapolate must be 'none' or 'locf', got {extrapolate!r}")
+        start, stop = check_intervals(intervals)
+        if start.shape[0] != X.shape[0]:
+            raise ValueError(f"X has {X.shape[0]} rows but intervals has {start.shape[0]}")
+        cp = check_counting_process(start, stop, None, ids)
+        o = cp.order
+        first_start = start[o][cp.offsets[:-1].astype(np.int64)]
+        last_stop = stop[o][cp.offsets[1:].astype(np.int64) - 1]
+        if origin is None:
+            origin = first_start
+        origin = np.broadcast_to(np.asarray(origin, dtype=float), first_start.shape).copy()
+        bad = ~np.isfinite(origin) | (origin < first_start) | (origin > last_stop)
+        if bad.any():
+            raise ValueError("origin must lie within each subject's [first start, last stop]")
+        return (
+            np.ascontiguousarray(X[o]),
+            np.ascontiguousarray(start[o]),
+            np.ascontiguousarray(stop[o]),
+            cp.offsets,
+            origin,
+        )
 
     def _block_design(self, X, start, stop, event, groups, block_time):
         """Block-mode training rows, units and per-row OOB sets (see ``_blocks``)."""
@@ -474,27 +508,8 @@ class SurvivalForestTV(_BaseForestTV):
             if ids is not None or origin is not None or extrapolate != "none":
                 raise ValueError("ids, origin and extrapolate require intervals")
             return self.forest_.predict_cumhaz(X, times, self.aggregate, n_jobs)
-        if extrapolate not in ("none", "locf"):
-            raise ValueError(f"extrapolate must be 'none' or 'locf', got {extrapolate!r}")
-        start, stop = check_intervals(intervals)
-        if start.shape[0] != X.shape[0]:
-            raise ValueError(f"X has {X.shape[0]} rows but intervals has {start.shape[0]}")
-        cp = check_counting_process(start, stop, None, ids)
-        o = cp.order
-        first_start = start[o][cp.offsets[:-1].astype(np.int64)]
-        last_stop = stop[o][cp.offsets[1:].astype(np.int64) - 1]
-        if origin is None:
-            origin = first_start
-        origin = np.broadcast_to(np.asarray(origin, dtype=float), first_start.shape).copy()
-        bad = ~np.isfinite(origin) | (origin < first_start) | (origin > last_stop)
-        if bad.any():
-            raise ValueError("origin must lie within each subject's [first start, last stop]")
         return self.forest_.predict_paths(
-            np.ascontiguousarray(X[o]),
-            np.ascontiguousarray(start[o]),
-            np.ascontiguousarray(stop[o]),
-            cp.offsets,
-            origin,
+            *self._path_args(X, intervals, ids, origin, extrapolate),
             times,
             self.aggregate,
             extrapolate,

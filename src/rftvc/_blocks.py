@@ -57,7 +57,8 @@ def split_at_blocks(start, stop, event, length):
 
     Returns ``(row, block, start, stop, event)`` per piece: ``row`` indexes the
     original row, ``block`` is the piece's block index ``k`` (it lies in
-    ``(k * length, (k + 1) * length]``), and the event stays on the last piece.
+    ``(k * length, (k + 1) * length]``), and the event (bool or cause code)
+    stays on the last piece.
     Splitting leaves every risk set unchanged, since covariates are constant on a row.
     """
     k1, k2 = _cut_range(start, stop, length)
@@ -74,7 +75,8 @@ def split_at_blocks(start, stop, event, length):
     p_stop = np.where(last, stop[row], (block + 1) * length)
     if not np.all(p_start < p_stop):  # defensive: boundaries are exact below MAX_BLOCK_INDEX
         raise ValueError("block splitting produced an empty piece; rescale the times or use a larger block_length")
-    return row, block, p_start, p_stop, event[row] & last
+    # The event (a flag or a cause code) stays on the last piece.
+    return row, block, p_start, p_stop, np.where(last, event[row], np.zeros((), event.dtype))
 
 
 def block_units(id_index, block):

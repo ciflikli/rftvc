@@ -175,12 +175,14 @@ pub fn node_profile(surv: &SurvData, rows: &[u32]) -> NodeProfile {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SplitParams {
     /// Minimum distinct units (ids, or bootstrap copies of ids) per child.
     /// An id whose rows fall on both sides counts in both children.
     pub min_leaf: usize,
     pub min_events_leaf: usize,
+    /// `(cause, m)`: each child needs at least `m` events of `cause` (0-based).
+    pub cause_floor: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Debug)]
@@ -259,11 +261,14 @@ pub fn best_split_in(
         let col = binned.column(f);
         let mut counts = [0usize; 256];
         let mut ev_counts = [0usize; 256];
+        let mut cause_counts = [0usize; 256];
+        let floor_cause = params.cause_floor.map_or(u8::MAX, |(c, _)| c as u8 + 1);
         // One gather of the node's bins; the passes below read them sequentially.
         for ((b, row), &r) in bins.iter_mut().zip(local).zip(rows) {
             *b = col[r as usize];
             counts[*b as usize] += 1;
             ev_counts[*b as usize] += (row.cause != 0) as usize;
+            cause_counts[*b as usize] += (row.cause == floor_cause) as usize;
         }
         let used: Vec<usize> = (0..256).filter(|&b| counts[b] > 0).collect();
         let nb = used.len();
@@ -304,6 +309,7 @@ pub fn best_split_in(
         left_ev.iter_mut().for_each(|v| *v = 0.0);
         left_cev.iter_mut().for_each(|v| *v = 0.0);
         let (mut ids_left, mut max_le, mut e_left) = (0usize, 0usize, 0usize);
+        let mut c_left = 0usize;
         let mut left_exposure = 0.0;
         for c in 0..nb - 1 {
             for &i in &by_bin[offset[used[c]]..offset[used[c] + 1]] {
@@ -321,11 +327,16 @@ pub fn best_split_in(
             ids_left += min_hist[used[c]];
             max_le += max_hist[used[c]];
             e_left += ev_counts[used[c]];
+            c_left += cause_counts[used[c]];
             let (ids_right, e_right) = (n_units - max_le, n_events - e_left);
+            let cause_short = params
+                .cause_floor
+                .is_some_and(|(k, m)| c_left < m || profile.n_cause_events[k] - c_left < m);
             if ids_left < params.min_leaf
                 || ids_right < params.min_leaf
                 || e_left < params.min_events_leaf
                 || e_right < params.min_events_leaf
+                || cause_short
             {
                 continue;
             }
@@ -491,10 +502,7 @@ mod tests {
             let rows: Vec<u32> = (0..n as u32).filter(|_| rng.below(4) > 0).collect();
             let units: Vec<u32> = rows.iter().map(|&r| all_units[r as usize]).collect();
             let parent = node_profile(&surv, &rows);
-            let params = SplitParams {
-                min_leaf: 0,
-                min_events_leaf: 0,
-            };
+            let params = SplitParams::default();
             let spy = Spy::default();
             best_split_in(&binned, &parent, &rows, &units, &[0], &params, &spy);
             if parent.event_idx.is_empty() {
@@ -574,7 +582,7 @@ mod tests {
     fn coarse_exposure_uses_snapped_times() {
         let start = [0.0, 0.3, 1.2];
         let stop = [0.3, 1.7, 2.6];
-        let event = [false, true, true];
+        let event = [0, 1, 1];
         let c = coarsen(
             &start,
             &stop,
@@ -589,7 +597,7 @@ mod tests {
             (c.start.clone(), c.stop.clone()),
             (vec![0.0, 1.0, 2.0], vec![1.0, 2.0, 3.0])
         );
-        let surv = SurvData::new(&c.start, &c.stop, &c.event);
+        let surv = SurvData::with_causes(&c.start, &c.stop, &c.event, 1);
         assert_eq!(surv.duration, vec![1.0, 1.0, 1.0]);
         assert_eq!(node_profile(&surv, &[0, 1, 2]).exposure, 3.0);
     }

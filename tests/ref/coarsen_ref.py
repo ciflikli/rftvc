@@ -4,7 +4,8 @@ grid: sorted event-time quantiles; points = [earliest start] + grid.
 g(t) = smallest point >= t, clamped to the last point. Per chain (an id's rows
 sorted by start, or each row alone when stacked): drop rows with
 g(start) == g(stop); a dropped event moves to the chain's previous kept row,
-otherwise it is lost.
+otherwise it is lost. ``event`` may be bool or cause codes (0 = censored);
+a moved event keeps its code.
 """
 
 import math
@@ -13,7 +14,7 @@ import numpy as np
 
 
 def quantile_grid(stop, event, k):
-    t = sorted(float(s) for s, e in zip(stop, event) if e)
+    t = sorted(float(s) for s, e in zip(stop, event) if e != 0)
     n = len(t)
     pts = [t[math.ceil(j * n / k) - 1] for j in range(1, k + 1)]
     return sorted(set(pts))
@@ -46,11 +47,11 @@ def coarsen_ref(start, stop, event, ids, k, stacked=False):
                 kept.append(i)
                 s_out.append(s)
                 t_out.append(t)
-                e_out.append(bool(event[i]))
+                e_out.append(int(event[i]))
                 mine.append(len(e_out) - 1)
-            elif event[i]:
+            elif event[i] != 0:
                 if mine:
-                    e_out[mine[-1]] = True
+                    e_out[mine[-1]] = int(event[i])
                 else:
                     lost += 1
-    return np.array(kept), np.array(s_out), np.array(t_out), np.array(e_out, bool), np.array(grid), lost
+    return np.array(kept), np.array(s_out), np.array(t_out), np.array(e_out, np.int64), np.array(grid), lost

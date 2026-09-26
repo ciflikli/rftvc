@@ -35,6 +35,9 @@ pub struct FlatForest {
     /// Entry-major: `n_causes` values per entry of `event_idx`.
     pub cumhaz: Vec<f64>,
     pub n_causes: u64,
+    /// Per leaf (all trees) `n_causes` in-bag event counts; empty when the
+    /// forest did not store them (optional in the pickled state).
+    pub leaf_cause_events: Vec<u32>,
 }
 
 impl FlatForest {
@@ -85,6 +88,8 @@ impl FlatForest {
                 .extend(tree.leaf_offsets[1..].iter().map(|&o| base + o as u64));
             f.event_idx.extend_from_slice(&tree.event_idx);
             f.cumhaz.extend_from_slice(&tree.cumhaz);
+            f.leaf_cause_events
+                .extend_from_slice(&tree.leaf_cause_events);
             f.leaf_offsets.push(f.event_offsets.len() as u64 - 1);
         }
         f
@@ -128,6 +133,8 @@ impl FlatForest {
             .iter()
             .all(|&l| l == n_nodes)
             && Some(self.cumhaz.len()) == n_events.checked_mul(nc)
+            && (self.leaf_cause_events.is_empty()
+                || Some(self.leaf_cause_events.len()) == n_leaves.checked_mul(nc))
             && monotone(&self.node_offsets, n_nodes)
             && monotone(&self.leaf_offsets, n_leaves)
             && monotone(&self.event_offsets, n_events)
@@ -216,6 +223,11 @@ impl FlatForest {
                 event_idx: self.event_idx[e0..e1].to_vec(),
                 cumhaz: self.cumhaz[e0 * nc..e1 * nc].to_vec(),
                 n_causes: nc,
+                leaf_cause_events: if self.leaf_cause_events.is_empty() {
+                    Vec::new()
+                } else {
+                    self.leaf_cause_events[l0 * nc..l1 * nc].to_vec()
+                },
                 grid_times: Arc::clone(&grid),
             });
         }

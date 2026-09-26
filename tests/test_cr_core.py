@@ -94,7 +94,8 @@ def test_one_cause_is_the_survival_forest(seed, max_features, rule):
     y_cr = make_competing_risks_y(y["stop"], y["event"].astype(int), start=y["start"])
     cr = CompetingRisksForestTV(**kw, **rule).fit(X, y_cr, ids)
     a, b = _state(sf), _state(cr)
-    assert a.keys() == b.keys()
+    assert "leaf_cause_events" not in a  # SF pickles are unchanged; CR adds diagnostics
+    assert a.keys() == b.keys() - {"leaf_cause_events"}
     for k in a:  # node arrays, leaf arrays, seeds, grid: bit-identical
         np.testing.assert_array_equal(np.asarray(a[k]), np.asarray(b[k]), err_msg=k)
     H = sf.predict_cumulative_hazard(X)
@@ -263,39 +264,19 @@ def test_split_cause_splits_on_that_causes_signal(split_label, feature):
     assert _state(m)["node_feature"][0] == feature
 
 
-# --- unsupported until S12 ---------------------------------------------------
+# --- parameter validation ------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "params",
-    [
-        {"ntime": 10},
-        {"resample_unit": "block", "block_length": 1.0},
-        {"resample_unit": "block"},
-        {"block_length": 1.0},
-        {"oob_buffer": 0},
-        {"oob_score": True},
-        {"aggregate": "cif"},
-    ],
-)
-def test_s12_options_raise(params):
+def test_invalid_parameters_raise():
     X, y, ids = _cr_data(40, seed=1)
-    with pytest.raises(NotImplementedError, match="S12"):
-        CompetingRisksForestTV(n_estimators=2, **params).fit(X, y, ids)
-
-
-def test_s12_prediction_features_raise():
-    X, y, ids = _cr_data(40, seed=1)
-    m = CompetingRisksForestTV(n_estimators=2, min_ids_leaf=3, random_state=0).fit(X, y, ids)
-    iv = np.array(list(zip(y["start"], y["stop"])), dtype=[("start", float), ("stop", float)])
-    with pytest.raises(NotImplementedError, match="S12"):
-        m.predict_cumulative_incidence(X, intervals=iv, ids=ids)
-    with pytest.raises(NotImplementedError, match="S12"):
-        m.score(X, y, ids)
-    with pytest.raises(ValueError, match="criterion"):
-        CompetingRisksForestTV(criterion="gray").fit(X, y, ids)
-    with pytest.raises(ValueError, match="aggregate"):
-        CompetingRisksForestTV(aggregate="survival").fit(X, y, ids)
+    for kw, match in [
+        ({"criterion": "gray"}, "criterion"),
+        ({"aggregate": "survival"}, "aggregate"),
+        ({"min_events_leaf_cause": 2}, "requires split_cause"),
+        ({"min_events_leaf_cause": 0, "split_cause": 1}, "min_events_leaf_cause"),
+    ]:
+        with pytest.raises(ValueError, match=match):
+            CompetingRisksForestTV(n_estimators=2, **kw).fit(X, y, ids)
 
 
 # --- pickle ------------------------------------------------------------------

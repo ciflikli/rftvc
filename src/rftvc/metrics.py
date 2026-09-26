@@ -19,11 +19,13 @@ survival ``G(t) = P(C > t)``: a subject's status at ``t`` is observed iff
 all weights are 1 and no censoring model is used (the *exact path*).
 """
 
+import numbers
+
 import numpy as np
 import polars as pl
 from sklearn.base import BaseEstimator
 
-from ._validation import check_survival_y
+from ._validation import check_survival_y, competing_risks_labels
 
 __all__ = [
     "KaplanMeierCensoring",
@@ -32,6 +34,7 @@ __all__ = [
     "calibration_table",
     "cindex_dynamic",
     "concordance_index_cp",
+    "concordance_index_cr",
     "integrated_brier",
 ]
 
@@ -272,6 +275,16 @@ def _concordance(start, stop, event, risk, weights, groups=None, event_mask=None
     return num, den, n_pairs
 
 
+def _groups(ids, n):
+    """Group codes of ``ids`` (one per row), or ``None``."""
+    if ids is None:
+        return None
+    ids = np.asarray(ids)
+    if ids.shape != (n,):
+        raise ValueError(f"ids must be 1-d with {n} entries, got shape {ids.shape}")
+    return np.unique(ids, return_inverse=True)[1].ravel()
+
+
 def concordance_index_cp(y, risk, ids=None):
     """Concordance for counting-process data with time-varying risk scores.
 
@@ -285,11 +298,79 @@ def concordance_index_cp(y, risk, ids=None):
     """
     start, stop, event = check_survival_y(y, require_events=False)
     risk = _check_pred(risk, stop.size, "risk").ravel()
-    groups = None if ids is None else np.unique(np.asarray(ids), return_inverse=True)[1].ravel()
+    groups = _groups(ids, stop.size)
     num, den, _ = _concordance(start, stop, event, risk, np.ones(stop.size), groups)
     if den == 0:
         raise UndefinedMetricError("no comparable pairs")
     return num / den
+
+
+def _competing_pairs(stop, labels, cause, risk, groups):
+    """Type-B pairs of Wolbers' C: ``(numerator, denominator)``.
+
+    Each case (a ``cause`` event at ``T_i``) against every row with a competing
+    event (any other cause) at ``T_j <= T_i`` of another group, using that
+    row's risk; concordant when the case's risk is larger, ties ½.
+    """
+    cases = np.flatnonzero(labels == cause)
+    cases = cases[np.argsort(stop[cases], kind="stable")]
+    comp = np.flatnonzero((labels != 0) & (labels != cause))
+    comp = comp[np.argsort(stop[comp], kind="stable")]
+    if cases.size == 0 or comp.size == 0:
+        return 0.0, 0.0
+    ranks = np.unique(risk, return_inverse=True)[1].ravel()
+    bit = _Fenwick(int(ranks.max()) + 1)
+    num = den = 0.0
+    q = 0
+    for i in cases:
+        t = stop[i]
+        while q < comp.size and stop[comp[q]] <= t:
+            bit.add(ranks[comp[q]], 1)
+            q += 1
+        r = ranks[i]
+        less = bit.prefix(r)
+        equal = bit.prefix(r + 1) - less
+        total = q
+        if groups is not None:
+            same = comp[:q][groups[comp[:q]] == groups[i]]
+            less -= int((ranks[same] < r).sum())
+            equal -= int((ranks[same] == r).sum())
+            total -= same.size
+        num += less + 0.5 * equal
+        den += total
+    return num, den
+
+
+def concordance_index_cr(y, risk, cause, ids=None):
+    """Cause-specific concordance (Wolbers et al. 2014) on counting-process rows.
+
+    ``y`` holds cause labels (0 = censored; see ``make_competing_risks_y``) and
+    ``risk[r]`` is row ``r``'s risk of ``cause``, in force on its
+    ``(start, stop]``. Each case, a row with a ``cause`` event at ``T_i``, is
+    compared with
+
+    - (A) every row at risk at ``T_i`` (``start < T_i <= stop``), excluding
+      rows with an event of any cause at ``T_i``, as in ``concordance_index_cp``;
+    - (B) every row with a **competing** event at ``T_j <= T_i``, with that
+      row's risk: such a subject can no longer have a ``cause`` event. Ties
+      ``T_j = T_i`` are included (they are not type-A comparators).
+
+    Rows of the case's id are excluded when ``ids`` is given. Concordant when
+    the case's risk is larger; ties count ½. With a single cause there are no
+    type-B pairs and this equals ``concordance_index_cp``.
+    """
+    if not isinstance(cause, numbers.Integral) or isinstance(cause, (bool, np.bool_)) or cause <= 0:
+        raise ValueError(f"cause must be a positive integer label, got {cause!r}")
+    start, stop, labels = competing_risks_labels(y)
+    risk = _check_pred(risk, stop.size, "risk").ravel()
+    groups = _groups(ids, stop.size)
+    num_a, den_a, _ = _concordance(
+        start, stop, labels != 0, risk, np.ones(stop.size), groups, event_mask=labels == cause
+    )
+    num_b, den_b = _competing_pairs(stop, labels, cause, risk, groups)
+    if den_a + den_b == 0:
+        raise UndefinedMetricError("no comparable pairs")
+    return (num_a + num_b) / (den_a + den_b)
 
 
 def cindex_dynamic(

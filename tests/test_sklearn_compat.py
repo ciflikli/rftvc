@@ -20,7 +20,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.estimator_checks import parametrize_with_checks
 
-from rftvc import LandmarkSurvivalForest, SurvivalForestTV, make_survival_y
+from rftvc import CompetingRisksForestTV, LandmarkSurvivalForest, SurvivalForestTV, make_competing_risks_y, make_survival_y
 from tests.test_tvc import _cp_data
 
 Y_REASON = "y must be a structured survival target; covered by {}"
@@ -56,28 +56,50 @@ def _est(**kw):
     return SurvivalForestTV(n_estimators=8, min_ids_leaf=3, random_state=0, **kw)
 
 
+def _cr_est(**kw):
+    return CompetingRisksForestTV(n_estimators=8, min_ids_leaf=3, random_state=0, **kw)
+
+
 @parametrize_with_checks(
-    [_est(), _est(resample_unit="block", block_length=0.5)],
+    [
+        _est(),
+        _est(resample_unit="block", block_length=0.5),
+        _cr_est(),
+        _cr_est(resample_unit="block", block_length=0.5, aggregate="cif"),
+    ],
     expected_failed_checks=lambda est: {k: Y_REASON.format(v) for k, v in EXPECTED_FAILED.items()},
 )
 def test_sklearn_check_estimator(estimator, check):
     check(estimator)
 
 
-@pytest.fixture
-def data():
+class Case(tuple):
+    """``(X, y, ids)`` plus the estimator factory ``est`` of the class under test."""
+
+    def __new__(cls, X, y, ids, est):
+        case = super().__new__(cls, (X, y, ids))
+        case.est = est
+        return case
+
+
+@pytest.fixture(params=["survival", "competing"])
+def data(request):
     X, y, ids = _cp_data(60, seed=2)
-    return X, y, ids
+    if request.param == "survival":
+        return Case(X, y, ids, _est)
+    # Two causes: every other event is cause 2.
+    labels = np.where(y["event"], 1 + (np.cumsum(y["event"]) % 2), 0)
+    return Case(X, make_competing_risks_y(y["stop"], labels, start=y["start"]), ids, _cr_est)
 
 
 def _fitted(data, **kw):
     X, y, ids = data
-    return _est(**kw).fit(X, y, ids)
+    return data.est(**kw).fit(X, y, ids)
 
 
 def test_fit_returns_self_and_keeps_params(data):
     X, y, ids = data
-    est = _est(max_features=None)
+    est = data.est(max_features=None)
     before = est.get_params(deep=True)
     assert est.fit(X, y, ids) is est
     after = est.get_params(deep=True)
@@ -98,7 +120,7 @@ def test_predict_leaves_state_unchanged(data):
 
 def test_fit_is_idempotent(data):
     X, y, ids = data
-    est = _est()
+    est = data.est()
     a = est.fit(X, y, ids).predict(X)
     b = est.fit(X, y, ids).predict(X)
     np.testing.assert_array_equal(a, b)
@@ -115,13 +137,13 @@ def test_sample_order_and_subset_invariance(data):
 
 def test_object_and_integer_dtypes(data):
     X, y, ids = data
-    ref = _est().fit(X, y, ids).predict(X)
-    np.testing.assert_allclose(_est().fit(X.astype(object), y, ids).predict(X.astype(object)), ref)
+    ref = data.est().fit(X, y, ids).predict(X)
+    np.testing.assert_allclose(data.est().fit(X.astype(object), y, ids).predict(X.astype(object)), ref)
     Xi = np.round(X * 10).astype(np.int64)
-    assert np.isfinite(_est().fit(Xi, y, ids).predict(Xi)).all()
-    assert np.isfinite(_est().fit(-np.abs(X), y, ids).predict(X)).all()  # negative values are fine
+    assert np.isfinite(data.est().fit(Xi, y, ids).predict(Xi)).all()
+    assert np.isfinite(data.est().fit(-np.abs(X), y, ids).predict(X)).all()  # negative values are fine
     with pytest.raises((TypeError, ValueError)):
-        _est().fit(np.full(X.shape, "a", dtype=object), y, ids)
+        data.est().fit(np.full(X.shape, "a", dtype=object), y, ids)
 
 
 @pytest.mark.parametrize("bad", [np.nan, np.inf])
@@ -130,7 +152,7 @@ def test_nan_and_inf_are_rejected(data, bad):
     Xb = X.copy()
     Xb[0, 0] = bad
     with pytest.raises(ValueError):
-        _est().fit(Xb, y, ids)
+        data.est().fit(Xb, y, ids)
     with pytest.raises(ValueError):
         _fitted(data).predict(Xb)
 
@@ -145,48 +167,48 @@ def test_pickle_and_clone(data):
 
 def test_memory_layouts(data, tmp_path):
     X, y, ids = data
-    ref = _est().fit(X, y, ids).predict(X)
-    np.testing.assert_allclose(_est().fit(np.asfortranarray(X), y, ids).predict(np.asfortranarray(X)), ref)
+    ref = data.est().fit(X, y, ids).predict(X)
+    np.testing.assert_allclose(data.est().fit(np.asfortranarray(X), y, ids).predict(np.asfortranarray(X)), ref)
     mm = np.memmap(tmp_path / "x.dat", dtype=np.float64, mode="w+", shape=X.shape)
     mm[:] = X
     mm.flush()
     ro = np.memmap(tmp_path / "x.dat", dtype=np.float64, mode="r", shape=X.shape)
-    np.testing.assert_allclose(_est().fit(ro, y, ids).predict(ro), ref)
+    np.testing.assert_allclose(data.est().fit(ro, y, ids).predict(ro), ref)
 
 
 def test_degenerate_shapes(data):
     X, y, ids = data
-    one = _est().fit(X[:, :1], y, ids)
+    one = data.est().fit(X[:, :1], y, ids)
     assert one.n_features_in_ == 1 and one.predict(X[:, :1]).shape == (X.shape[0],)
     single = make_survival_y([2.0], [True])
-    assert _est().fit(X[:1], single).predict(X[:1]).shape == (1,)  # one subject: a single Nelson–Aalen leaf
+    assert data.est().fit(X[:1], single).predict(X[:1]).shape == (1,)  # one subject: a single Nelson–Aalen leaf
     with pytest.raises(ValueError, match="no events"):
-        _est().fit(X[:1], make_survival_y([2.0], [False]))
+        data.est().fit(X[:1], make_survival_y([2.0], [False]))
     with pytest.raises(ValueError):
         _fitted(data).predict(X[0])  # 1-d X
 
 
 def test_unfitted_raises(data):
     with pytest.raises(NotFittedError):
-        _est().predict(data[0])
+        data.est().predict(data[0])
 
 
 def test_requires_y(data):
-    assert _est().__sklearn_tags__().target_tags.required
+    assert data.est().__sklearn_tags__().target_tags.required
     with pytest.raises((TypeError, ValueError)):
-        _est().fit(data[0], None)
+        data.est().fit(data[0], None)
 
 
 def test_n_features_and_feature_names(data):
     X, y, ids = data
-    est = _est().fit(X, y, ids)
+    est = data.est().fit(X, y, ids)
     assert est.n_features_in_ == X.shape[1] and not hasattr(est, "feature_names_in_")
     with pytest.raises(ValueError, match="features"):
         est.predict(X[:, :1])
     for frame in (pd.DataFrame(X, columns=["z", "w"]), pl.DataFrame(X, schema=["z", "w"])):
-        est = _est().fit(frame, y, ids)
+        est = data.est().fit(frame, y, ids)
         assert list(est.feature_names_in_) == ["z", "w"]
-        np.testing.assert_allclose(est.predict(frame), _est().fit(X, y, ids).predict(X))
+        np.testing.assert_allclose(est.predict(frame), data.est().fit(X, y, ids).predict(X))
     with pytest.raises(ValueError, match="feature names"):
         est.predict(pl.DataFrame(X, schema=["w", "z"]))
     est.fit(X, y, ids)
@@ -195,10 +217,10 @@ def test_n_features_and_feature_names(data):
 
 def test_dataframe_ids_column_and_dataframe_y(data):
     X, y, ids = data
-    ref = _est().fit(X, y, ids)
+    ref = data.est().fit(X, y, ids)
     df = pd.DataFrame({"z": X[:, 0], "w": X[:, 1], "subject": ids})
     ydf = pl.DataFrame({"start": y["start"], "stop": y["stop"], "event": y["event"]})
-    est = _est().fit(df, ydf, ids="subject")
+    est = data.est().fit(df, ydf, ids="subject")
     assert list(est.feature_names_in_) == ["z", "w"] and est.ids_column_ == "subject"
     np.testing.assert_allclose(est.predict(df), ref.predict(X))  # the id column is dropped at predict
     iv = pd.DataFrame({"start": y["start"], "stop": y["stop"]})
@@ -222,26 +244,29 @@ def test_dataframe_ids_column_and_dataframe_y(data):
         est.predict(nullable)
 
 
-class _IdsSpy(SurvivalForestTV):
-    seen = []
+def _ids_spy(base):
+    """A subclass of ``base`` that records the ``ids`` each fit receives."""
 
     def fit(self, X, y, ids=None, **kw):
-        _IdsSpy.seen.append(np.asarray(ids).copy())
-        return super().fit(X, y, ids, **kw)
+        type(self).seen.append(np.asarray(ids).copy())
+        return base.fit(self, X, y, ids, **kw)
+
+    return type(f"_IdsSpy{base.__name__}", (base,), {"seen": [], "fit": fit})
 
 
 def test_pipeline_and_cross_validate_with_routed_ids(data):
     X, y, ids = data
-    pipe = make_pipeline(StandardScaler(), _est())
+    pipe = make_pipeline(StandardScaler(), data.est())
     pipe.fit(X, y)
     assert 0 <= pipe.score(X, y) <= 1 and pipe.predict(X).shape == (X.shape[0],)
-    _IdsSpy.seen = []
+    spy_cls = _ids_spy(type(data.est()))
     with sklearn.config_context(enable_metadata_routing=True):
-        spy = _IdsSpy(n_estimators=8, min_ids_leaf=3, random_state=0).set_fit_request(ids=True).set_score_request(ids=True)
+        spy = spy_cls(n_estimators=8, min_ids_leaf=3, random_state=0).set_fit_request(ids=True).set_score_request(ids=True)
         cv = GroupKFold(3)
         res = cross_validate(spy, X, y, cv=cv, params={"ids": ids, "groups": ids})
     assert np.all((res["test_score"] > 0) & (res["test_score"] < 1))
-    for seen, (train, _) in zip(_IdsSpy.seen, cv.split(X, y, groups=ids)):
+    assert len(spy_cls.seen) == 3
+    for seen, (train, _) in zip(spy_cls.seen, cv.split(X, y, groups=ids)):
         np.testing.assert_array_equal(seen, ids[train])  # ids reach fit, sliced to the fold
 
 
