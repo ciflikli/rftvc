@@ -44,6 +44,17 @@ Model selection
    GroupTimeSplit
    landmark_cross_validate
 
+Inspection
+----------
+
+.. currentmodule:: rftvc.inspection
+
+.. autosummary::
+   :toctree: generated/api
+   :nosignatures:
+
+   permutation_importance
+
 Metrics
 -------
 

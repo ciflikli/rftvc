@@ -63,7 +63,7 @@ Notation: `p` units, `R` = `n_repeats`, `B` = `n_bootstrap`, `M` windows, `J` ca
 - [x] T3 `_inspection/_boot.py`: `_resample_ids`, replicate loop, SE.
 - [x] T4 `inspection.py`: public function, estimator dispatch, held-out and OOB predict callables, validation, docstring (M1 warning text, cost note, estimand of the SE).
 - [x] T5 Tests `tests/test_inspection_perm.py` (below; written, 48 pass); test-quality audit applied (unknown-feature-name error, `_subset_csr` double-subset composition check — the OOB re-predict path subsets the CSR set twice and had no direct check that the composition is associative).
-- [ ] T6 Sims `bench/tvc_perm_sim.py` (§7.1 M2 part, §7.3, §7.4; R = 50 after a 10-rep pilot for the MC SE check) + `tests/test_tvc_sim_truth.py` (slow R ≈ 10, fast smoke R = 1). Results in the S17 note.
+- [x] T6 Sims `bench/tvc_perm_sim.py` (§7.1 M2 part, §7.3, §7.4; R = 50 after a 10-rep pilot for the MC SE check) + `tests/test_tvc_sim_truth.py` (slow R ≈ 10, fast smoke R = 1). Results in the S17 note. All three rules pass at R = 50, no deviation needed.
 - [ ] T7 Timings (held-out, OOB, bootstrap), `api.rst`, `__init__`, `tvc-plan.md` tick + "S17 done" note.
 
 ## Tests (`tests/test_inspection_perm.py`)
