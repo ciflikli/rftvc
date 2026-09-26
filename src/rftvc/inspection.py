@@ -1,4 +1,4 @@
-"""Model inspection for the survival forests: permutation importance."""
+"""Model inspection for the survival forests: permutation and drop-column (LOCO) importance."""
 
 import numbers
 import warnings
@@ -10,24 +10,24 @@ from sklearn.utils.validation import check_is_fitted
 
 from ._competing import CompetingRisksForestTV
 from ._estimator import _BaseForestTV
-from ._inspection import _score, _strata, _units
-from ._validation import check_survival_y, competing_risks_labels, make_competing_risks_y, make_survival_y
+from ._inspection import _loco, _score, _strata, _units
+from ._validation import check_survival_y, competing_risks_labels, make_competing_risks_y, make_survival_y, split_frame
 from .metrics import _baseline_at, _check_windows, event_windows
 
-__all__ = ["permutation_importance"]
+__all__ = ["drop_column_importance", "permutation_importance"]
 
 
-def _family(estimator):
+def _family(estimator, fn="permutation_importance", fitted=True):
     from .landmark import _LandmarkBase
 
     if isinstance(estimator, _LandmarkBase):
-        raise NotImplementedError("permutation_importance for landmark models is not implemented yet")
+        raise NotImplementedError(f"{fn} for landmark models is not implemented yet")
     if not isinstance(estimator, _BaseForestTV):
         raise TypeError(
-            "permutation_importance supports SurvivalForestTV and CompetingRisksForestTV, "
-            f"got {type(estimator).__name__}"
+            f"{fn} supports SurvivalForestTV and CompetingRisksForestTV, got {type(estimator).__name__}"
         )
-    check_is_fitted(estimator, "forest_")
+    if fitted:
+        check_is_fitted(estimator, "forest_")
     return isinstance(estimator, CompetingRisksForestTV)
 
 
@@ -326,6 +326,182 @@ def permutation_importance(
         n_truncated_events=intact.n_truncated_events,
         n_rows_excluded=int(excluded),
         n_unpermuted=n_unpermuted,
+        feature_names=np.array(unit_names, dtype=object),
+        units=units,
+    )
+
+
+def drop_column_importance(
+    estimator,
+    X,
+    y=None,
+    *,
+    ids=None,
+    cv=5,
+    features=None,
+    groups=None,
+    scoring="pe",
+    windows=8,
+    alpha=0.01,
+    cause=None,
+    n_seeds=1,
+    add_noise_control=False,
+    random_state=None,
+    n_jobs=None,
+):
+    """Cross-fitted drop-column (LOCO) importance, scored by the piecewise-exponential log score.
+
+    The importance of a unit (a feature, or a group of columns dropped jointly) is the
+    drop in held-out PE score (``metrics.piecewise_exponential_score``, per scored event)
+    between the estimator refitted with every feature and the estimator refitted without
+    the unit, cross-fitted over ``cv``. Unlike ``permutation_importance``, ``estimator`` is
+    a template: every fold clones it (``sklearn.base.clone``) and refits, so a fitted
+    estimator's forest is discarded. Correlated units can compensate for each other, so two
+    strongly correlated variables can both have low LOCO importance (Hooker et al. 2021;
+    Williamson-type VIM, survival version Wolock et al. 2025).
+
+    For each fold: a clone fitted on every feature gives the scoring windows
+    (``metrics.event_windows``) and the training null (``baseline_cumhaz_``); a clone per
+    dropped unit is fitted on the same training rows and scored on the test rows with that
+    windows/null. ``n_seeds > 1`` averages the full and dropped fits over seeds, since
+    refits differ by forest randomness even for a unit with no true effect;
+    ``add_noise_control=True`` appends a standard-normal column (drawn once, shared by every
+    fold) and reports it as unit ``"_noise"``, a noise floor for the other units.
+
+    Parameters
+    ----------
+    estimator : SurvivalForestTV or CompetingRisksForestTV
+        A template estimator (fitted or not); every fold clones and refits it.
+    X : array-like or DataFrame of shape (n_rows, n_features)
+        Counting-process rows.
+    y : survival or competing-risks target of the rows (``start``, ``stop``, ``event``).
+    ids : array-like of shape (n_rows,) or str, default=None
+        Subject of each row (or a column of a DataFrame ``X``). ``None`` makes every row its
+        own subject.
+    cv : int or a splitter, default=5
+        An int gives ``GroupKFold(cv)`` on ``ids`` (new-subject cross-fitting): the
+        documented, primary mode. A ``model_selection.RollingOriginSplit`` / ``GroupTimeSplit``
+        administratively censors the training rows of each fold at the earliest test row's
+        ``start`` (as ``model_selection.landmark_cross_validate`` does for landmark models);
+        any other splitter must keep ``ids`` disjoint between train and test. **A time
+        splitter is of limited practical use here**: administrative censoring clips every
+        training row's ``stop`` at the fold's cutoff, so a fold's own ``event_times_`` never
+        extends past it, while every test row's ``stop`` is at or after it by construction —
+        and a Nelson-Aalen-based forest's prediction and training null are both flat past
+        their own last observed event, so windows entirely beyond the cutoff score a real
+        event as ``-inf``, whatever ``alpha``. This is a structural property of the estimator
+        family, not fixable here; it does not affect ``cv=int`` (test ids' events share
+        training ids' time range) or S19's landmark LOCO (scored on the reset clock).
+    features : list of names or indices, default=None
+        One unit per feature (dropped alone); default all features.
+    groups : dict name -> list of columns, default=None
+        Units dropped jointly (e.g. a covariate with its lags); exclusive with ``features``.
+    scoring : "pe", default="pe"
+        The piecewise-exponential log score (``"brier"`` / ``"ibs"``: landmark models, S19).
+    windows : int or array-like, default=8
+        Number of scoring windows or their edges, resolved **per fold** from that fold's own
+        full-model fit (folds can have different training data, hence different
+        ``event_times_``); unlike ``permutation_importance`` this is not checked against any
+        single estimator's last event time, and an edge beyond a fold's own last training
+        event time extrapolates flatly. Under a time-based ``cv`` (above), an int raises
+        ``ValueError``: no single fold's own windows are valid for every fold, so edges must
+        be given explicitly (and, per the caveat above, still will not score test events
+        that lie beyond the training fold's own last event usefully).
+    alpha : float, default=0.01
+        Mixture weight of the training null in the scored rate.
+    cause : int, default=None
+        Competing risks: score one cause only; ``None`` sums causes and reports
+        ``importances_cause``.
+    n_seeds : int, default=1
+        Refits per fold per unit, averaged (fit-noise control).
+    add_noise_control : bool, default=False
+        Add a standard-normal column and report it as unit ``"_noise"``.
+    random_state : int, RandomState, Generator or None
+        Seeds the noise column and every fold/seed's fit, independently of ``n_jobs``.
+    n_jobs : int, default=None
+        Unlike ``permutation_importance`` (which parallelises only inside the engine's own
+        prediction call, since unit-level parallelism on top of engine threads would
+        oversubscribe), LOCO's cost is dominated by independent refits: ``n_jobs`` here
+        parallelises over the ``(p_units + 1) * n_folds * n_seeds`` fits themselves
+        (``joblib.Parallel(prefer="threads")``, since the Rust fit releases the GIL). Each
+        clone keeps its own ``n_jobs`` (inherited from ``estimator``); combining a large
+        ``n_jobs`` here with a multi-threaded template estimator oversubscribes.
+
+    Returns
+    -------
+    Bunch with, per unit (in score units per scored event, pooled over folds):
+
+    - ``importances (p, n_folds)`` (each fold's own per-event importance, seed-averaged;
+      not expected to average to ``importances_mean`` under unequal fold sizes),
+      ``importances_mean``, ``importances_se`` (id-cluster cross-fit SE,
+      ``sd(per-id drop) * sqrt(n_ids) / n_events``; ``NaN`` under a time-based ``cv``,
+      since test folds are not exchangeable over time);
+    - ``importances_window (p, M)`` (sums to ``importances_mean``) and ``window_edges``
+      (the first fold's; ``None`` when folds disagree on the number of windows, e.g. heavy
+      ties in a small fold);
+    - ``importances_cause (p, J)`` (competing risks, ``cause=None``; else ``None``);
+    - ``share_of_gain``: ``importances_mean / (baseline_score - null_score)``, an unbounded
+      ratio (``NaN`` when the model does not beat the training null on average);
+    - ``baseline_score``, ``null_score`` (pooled, per event), ``fold_scores`` (the full
+      model's own per-fold per-event PE score, a diagnostic independent of any unit),
+      ``n_events``, ``n_ids``, ``n_folds``, ``feature_names``, ``units`` (column indices
+      per unit, including the appended ``"_noise"`` column when requested).
+    """
+    competing = _family(estimator, fn="drop_column_importance", fitted=False)
+    if y is None:
+        raise ValueError("y is required for counting-process estimators")
+    if scoring != "pe":
+        raise ValueError(
+            f"scoring must be 'pe' for counting-process estimators (brier/ibs: landmark models), got {scoring!r}"
+        )
+    n_seeds = _strata.check_count(n_seeds, "n_seeds")
+    if isinstance(cv, numbers.Integral) and not isinstance(cv, (bool, np.bool_)):
+        if cv < 2:
+            raise ValueError(f"cv must be an integer >= 2 or a splitter, got {cv!r}")
+    elif not hasattr(cv, "split"):
+        raise ValueError(f"cv must be an integer >= 2 or a splitter with a split method, got {cv!r}")
+    if not (isinstance(windows, numbers.Integral) and not isinstance(windows, (bool, np.bool_))):
+        windows = _check_windows(windows)
+    ids_name = ids if isinstance(ids, str) else None
+    Xnum, names, ids_values = split_frame(X, ids)
+    ye, _ = _target(y, competing)
+    if ye.shape[0] != Xnum.shape[0]:
+        raise ValueError(f"X has {Xnum.shape[0]} rows but y has {ye.shape[0]}")
+    ids_values = np.arange(Xnum.shape[0]) if ids_values is None else np.asarray(ids_values)
+    if ids_values.shape != (Xnum.shape[0],):
+        raise ValueError(f"ids must have {Xnum.shape[0]} entries")
+    units, unit_names = _units.resolve_units(features, groups, names, Xnum.shape[1], ids_name)
+    entropy = _entropy(random_state)
+    if add_noise_control:
+        Xnum = np.c_[Xnum, _loco.noise_column(entropy, Xnum.shape[0])]
+        units = units + [np.array([Xnum.shape[1] - 1], dtype=np.intp)]
+        unit_names = unit_names + ["_noise"]
+    res = _loco.run(
+        estimator, Xnum, ye, ids_values, units, cv, windows, alpha, cause, competing, n_seeds, entropy, n_jobs
+    )
+    mean = res.importances_mean
+    gain = res.baseline_score - res.null_score
+    if gain > 1e-12 * max(1.0, abs(res.null_score)):
+        share = mean / gain
+    else:
+        warnings.warn(
+            "the model does not beat the training null on these data; share_of_gain is NaN", UserWarning, stacklevel=2
+        )
+        share = np.full(mean.shape, np.nan)
+    return Bunch(
+        importances=res.importances,
+        importances_mean=mean,
+        importances_se=res.importances_se,
+        importances_window=res.importances_window,
+        window_edges=res.window_edges,
+        importances_cause=res.importances_cause,
+        share_of_gain=share,
+        baseline_score=res.baseline_score,
+        null_score=res.null_score,
+        fold_scores=res.fold_scores,
+        n_events=res.n_events,
+        n_ids=res.n_ids,
+        n_folds=res.n_folds,
         feature_names=np.array(unit_names, dtype=object),
         units=units,
     )

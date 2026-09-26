@@ -20,7 +20,7 @@ import polars as pl
 from sklearn.base import clone
 from sklearn.model_selection import GroupKFold
 
-from ._validation import _as_labels, _check_causes
+from ._validation import _as_labels, _check_causes, make_competing_risks_y, make_survival_y
 from .landmark import LandmarkCompetingRisksForest, _as_polars, make_landmark_data
 from .metrics import (
     KaplanMeierCensoring,
@@ -32,6 +32,32 @@ from .metrics import (
 )
 
 __all__ = ["GroupTimeSplit", "RollingOriginSplit", "landmark_cross_validate"]
+
+
+def _split_checks(horizon, cv):
+    """``time_split``: whether ``cv`` administratively censors training rows at each fold's
+    test start, per ``RollingOriginSplit`` / ``GroupTimeSplit`` (``GroupTimeSplit`` is a
+    subclass, so ``isinstance`` covers both). With a ``horizon`` (landmark models),
+    ``cv.gap >= horizon`` is required, so training outcome windows ``(s, s + horizon]`` end
+    before every test landmark; estimators without a ``horizon`` (counting-process models)
+    have no such requirement, and the check is inert for them.
+    """
+    time_split = isinstance(cv, RollingOriginSplit)
+    if time_split and horizon is not None and cv.gap < horizon:
+        raise ValueError(
+            f"cv.gap={cv.gap} must be >= horizon={horizon}: otherwise training outcome "
+            "windows overlap the test landmarks"
+        )
+    return time_split
+
+
+def _disjoint_check(ids_train, ids_test):
+    """Any splitter that is not administratively censored must keep ``ids`` disjoint."""
+    if np.isin(ids_test, ids_train).any():
+        raise ValueError(
+            "cv must keep ids disjoint (e.g. GroupKFold with groups=ids) or be a "
+            "RollingOriginSplit/GroupTimeSplit"
+        )
 
 
 class RollingOriginSplit:
@@ -157,6 +183,42 @@ def _censor_at(df, cutoff, *, start, stop, event):
         pl.when(pl.col(stop) <= cutoff).then(pl.col(event)).otherwise(pl.lit(0).cast(dtype)).cast(dtype).alias(event),
         pl.min_horizontal(pl.col(stop).cast(pl.Float64), pl.lit(float(cutoff))).alias(stop),
     )
+
+
+def _cv_folds(estimator, X, y, ids, cv):
+    """Cross-fitting folds for counting-process rows ``(X, y, ids)`` (``inspection.drop_column_importance``).
+
+    ``cv`` an integer gives ``GroupKFold(cv)`` on ``ids``; a splitter is used as given, with
+    the same checks ``landmark_cross_validate`` applies to its own splits: a
+    ``RollingOriginSplit`` / ``GroupTimeSplit`` administratively censors the training rows at
+    the earliest test row's ``start`` (``_censor_at``, reused on a 3-column frame built from
+    ``y``), and requires ``cv.gap >= estimator.horizon`` when the estimator has one (landmark
+    LOCO); any other splitter must keep ``ids`` disjoint between train and test.
+
+    Yields ``(fold, train_idx, test_idx, y_train)``: ``train_idx`` indexes the training rows
+    kept after censoring (fewer than requested when a row's ``start`` is at or after the
+    cutoff), and ``y_train`` is the (possibly censored) structured target for exactly those
+    rows. ``test_idx`` and the target at those rows are never censored.
+    """
+    if isinstance(cv, numbers.Integral) and not isinstance(cv, (bool, np.bool_)):
+        if cv < 2:
+            raise ValueError(f"cv must be an integer >= 2 or a splitter, got {cv!r}")
+        cv = GroupKFold(cv)
+    ids = np.asarray(ids)
+    start, stop, event = y["start"], y["stop"], y["event"]
+    time_split = _split_checks(getattr(estimator, "horizon", None), cv)
+    make = make_survival_y if event.dtype == bool else make_competing_risks_y
+    for fold, (train_idx, test_idx) in enumerate(cv.split(start, groups=ids)):
+        if time_split:
+            cutoff = float(start[test_idx].min())
+            df = pl.DataFrame({"start": start[train_idx], "stop": stop[train_idx], "event": event[train_idx]})
+            df = _censor_at(df, cutoff, start="start", stop="stop", event="event")
+            train_idx = train_idx[start[train_idx] < cutoff]
+            y_train = make(df["stop"].to_numpy(), df["event"].to_numpy(), start=df["start"].to_numpy())
+        else:
+            _disjoint_check(ids[train_idx], ids[test_idx])
+            y_train = y[train_idx]
+        yield fold, train_idx, test_idx, y_train
 
 
 def _landmark_data(model, df, landmarks=None):
@@ -290,12 +352,7 @@ def landmark_cross_validate(
     w = model.horizon if horizon is None else horizon
     if not 0 < w <= model.horizon:
         raise ValueError(f"horizon must lie in (0, model.horizon={model.horizon}]")
-    time_split = isinstance(cv, RollingOriginSplit)
-    if time_split and cv.gap < model.horizon:
-        raise ValueError(
-            f"cv.gap={cv.gap} must be >= model.horizon={model.horizon}: otherwise training outcome "
-            "windows overlap the test landmarks"
-        )
+    time_split = _split_checks(model.horizon, cv)
     if isinstance(scoring, str):
         scoring = (scoring,)
     if not isinstance(scoring, dict):
@@ -330,11 +387,8 @@ def landmark_cross_validate(
         df_train = df.filter(pl.col(model.id).is_in(train_ids))
         if time_split:
             df_train = _censor_at(df_train, test_s.min(), start=model.start, stop=model.stop, event=model.event)
-        elif np.isin(ids[test_idx], train_ids).any():
-            raise ValueError(
-                "cv must keep ids disjoint (e.g. GroupKFold with groups=ids) or be a "
-                "RollingOriginSplit/GroupTimeSplit"
-            )
+        else:
+            _disjoint_check(train_ids, ids[test_idx])
         train_s = np.unique(data.s[train_idx])
         params = None
         if candidates is not None:
