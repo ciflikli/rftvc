@@ -1,6 +1,6 @@
 # TVC statistical foundation and importance: research questions (seed)
 
-Status: **seed for the research stage** (2026-09-26). Next: a research doc (`tvc-research.md`), then a Codex review, a design (`tvc-design.md`) and a plan, as in the competing-risks track (`cr-questions.md` → `cr-research.md` → `cr-design.md` → `cr-plan.md`). The release-readiness pass comes after this track (user decision), so the release covers the final API.
+Status: **seed; research done in `tvc-research.md`** (2026-09-26). Next: a research doc (`tvc-research.md`), then a Codex review, a design (`tvc-design.md`) and a plan, as in the competing-risks track (`cr-questions.md` → `cr-research.md` → `cr-design.md` → `cr-plan.md`). The release-readiness pass comes after this track (user decision), so the release covers the final API.
 
 ## User goal
 Outside users need a statistical foundation for rftvc's trees:
