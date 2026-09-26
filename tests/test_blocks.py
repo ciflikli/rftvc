@@ -208,7 +208,9 @@ def test_landmark_forest_warns_when_block_oob_would_leak():
     df = pl.DataFrame(rows, schema=["id", "start", "stop", "event", "z"], orient="row")
 
     def fit(length, buffer):
-        forest = _block(n_estimators=5, block_length=length, oob_buffer=buffer, oob_score=True, min_ids_leaf=2)
+        # Seeded: with 5 trees, ~1.5% of draws leave no comparable OOB pairs (a flaky CI failure).
+        forest = _block(n_estimators=5, block_length=length, oob_buffer=buffer, oob_score=True, min_ids_leaf=2,
+                        random_state=0)
         lm = LandmarkSurvivalForest(horizon=2.0, landmarks=[0.0, 1.0, 2.0, 3.0], history_features=["z"], forest=forest)
         return lm.fit(df)
 
