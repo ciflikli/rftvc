@@ -85,6 +85,10 @@ max_samples, bootstrap, n_jobs, random_state
     oob_n_trees_ : ndarray of shape (n_rows,)
     oob_score_ : float
         ``metrics.concordance_index_cr`` of the ``score_cause`` column.
+    baseline_cumhaz_ : ndarray of shape (n_causes, n_event_times)
+        Covariate-free (pooled Nelson–Aalen) cause-specific cumulative hazards
+        of the fitted rows at ``event_times_``, in ``causes_`` order: the
+        training null of ``metrics.piecewise_exponential_score``.
     n_ids_, n_units_, coarse_grid_, n_coarsen_dropped_rows_, n_coarsen_lost_events_, forest_
         As in ``SurvivalForestTV``.
     """

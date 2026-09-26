@@ -9,7 +9,7 @@ Source of truth: `tvc-design.md` v2 (T1–T10; T2/T3 user-confirmed). Background
 Notation: `M` windows, edges `w_0 = 0 < … < w_M = τ`; `S` = α-mixed piecewise-exponential (PE) score; units = features or groups that are permuted or dropped together.
 
 ## Status
-- [ ] S16: PE score metric, training null (`baseline_cumhaz_`), `_fit_design` refactor, Rust `oob_cumhaz` (branch `feat/s16-pe-score`)
+- [x] S16: PE score metric, training null (`baseline_cumhaz_`), `_fit_design` refactor, Rust `oob_cumhaz` (branch `feat/s16-pe-score`)
 - [ ] S17: `inspection.permutation_importance` for counting-process estimators (branch `feat/s17-perm-importance`)
 - [ ] S18: `inspection.drop_column_importance` (LOCO, cross-fitted) (branch `feat/s18-loco`)
 - [ ] S19: Landmark importance (raw-column units, landmark strata, Brier/IBS scoring) + `slope` / `std` history features (branch `feat/s19-landmark-importance`)

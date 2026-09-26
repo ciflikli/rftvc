@@ -65,14 +65,14 @@ Notation:
 9. **T9 guard:** `score` / `oob_score_` stay concordance.
 
 ## Tasks
-- [ ] T1 `_fit_design` + `_fit_options_` + fingerprint + `_rebuild_design` (Python), `_fit` via it.
-- [ ] T2 `baseline_cumhaz_` / `_event_counts_` (survival and CR).
-- [ ] T3 Rust `oob_row` kernel, `oob_cumhaz`, `oob_cause_cumhaz`, `oob_mortality` through the kernel; bindings; `cargo test`, clippy.
-- [ ] T4 `metrics.event_windows`, `piecewise_exponential_score`, `PEScore`.
-- [ ] T5 Tests (below).
-- [ ] T6 Identity: extend `bench/s9_identity.py` with CR (`CompetingRisksForestTV` cif/cumhaz/oob) and block-mode cases; baseline on a fresh `main` build, compare on this branch (arrays bit-identical; pickle sizes grow by `baseline_cumhaz_` + private attributes — reported, not gated).
-- [ ] T7 Deviance follow-up bench `bench/tvc_deviance_followup.py` + the `windows` default decision.
-- [ ] T8 Memory gate (1M rows, M = 64) and `oob_cumhaz` timing; docs (`api.rst`, estimator Attributes); `tvc-plan.md` tick + "S16 done" note.
+- [x] T1 `_fit_design` + `_fit_options_` + fingerprint + `_rebuild_design` (Python), `_fit` via it.
+- [x] T2 `baseline_cumhaz_` / `_event_counts_` (survival and CR).
+- [x] T3 Rust `oob_row` kernel, `oob_cumhaz`, `oob_cause_cumhaz`, `oob_mortality` through the kernel; bindings; `cargo test`, clippy.
+- [x] T4 `metrics.event_windows`, `piecewise_exponential_score`, `PEScore`.
+- [x] T5 Tests (below).
+- [x] T6 Identity: extend `bench/s9_identity.py` with CR (`CompetingRisksForestTV` cif/cumhaz/oob) and block-mode cases; baseline on a fresh `main` build, compare on this branch (arrays bit-identical; pickle sizes grow by `baseline_cumhaz_` + private attributes — reported, not gated).
+- [x] T7 Deviance follow-up bench `bench/tvc_deviance_followup.py` + the `windows` default decision.
+- [x] T8 Memory gate (1M rows, M = 64) and `oob_cumhaz` timing; docs (`api.rst`, estimator Attributes); `tvc-plan.md` tick + "S16 done" note.
 
 ## Tests
 `tests/test_pe_score.py`:
@@ -134,6 +134,37 @@ Notation:
 - `oob_cumhaz` (100k rows, 9 edges) ≤ 1.2× `oob_mortality` time.
 - PE scoring at 1M rows, M = 64: `tracemalloc` peak ≤ 2× the `(n, M + 1)` float64 prediction array.
 - T7 bench run, and the `windows` default decided by the `tvc-plan.md` rule; the result is recorded in the S16 note.
+
+## S16 done (2026-09-26)
+Results:
+- **Identity** (`bench/s16_identity.py`: the S9 cases + block + CR, 80 arrays): bit-identical to `main` after T1–T2 and after T3. Pickles grow 1–3 % (`baseline_cumhaz_`, `_event_counts_`, fingerprint).
+- **`oob_cumhaz`:** `np.cumsum(H)[:, -1]` equals `oob_prediction_` bit-for-bit in id, `aggregate="survival"`, coarse, block (buffer 0/1) and bootstrap modes.
+  - Timing (100k rows, 100 trees), on the same grid (all event times): `oob_cumhaz` 30.39 s vs `oob_mortality` 30.33 s, i.e. 1.00×.
+  - With 9 edges: 0.15 s.
+- **Memory:** PE scoring at 1M rows and M = 64 uses 97 MiB extra (0.20× the 496 MiB prediction array; gate ≤ 1×).
+- **Deviance follow-up** (`bench/tvc_deviance_followup.py`):
+  1. **Weibull baseline** (shapes 0.5 and 2; 5 replications; held-out score per event at M = 2/4/8/16):
+     - shape 0.5: −2.330 / −2.223 / **−2.203** / −2.254;
+     - shape 2: −1.403 / −1.318 / **−1.274** / −1.304.
+
+     Importances (x0, x1, z):
+     - shape 2, M = 4: 0.073 / 0.020 / 0.608;
+     - shape 2, M = 8: 0.097 / 0.030 / 0.625;
+     - shape 2, M = 16: 0.102 / 0.024 / 0.643.
+
+     Noise columns stay |·| ≤ 0.012.
+  2. **OOB vs held-out** (M = 8): mean Spearman ρ of importances = 0.98 (≥ 0.8), so OOB importance is a valid screen, not only a quick one.
+  3. **Zero-rate share of events:** 0 in every cell (n ∈ {200, 1000, 5000} ids × `min_events_leaf` ∈ {1, 3, 10} × M ∈ {4, 8, 16}).
+
+**Deviation (user-approved 2026-09-26): the `windows` default stays 8.**
+- The declared rule selected 4, because it measured drift against M = 4.
+- Under a steep time-varying baseline (shape 2), M = 4 *itself* attenuates importances (x0 0.073 vs 0.097 at M = 8). So the reference was biased, and the rule penalised finer windows exactly where they are needed.
+- M = 8 had the best held-out score in both scenarios. M = 8 and M = 16 importances agree within ~6 %, and no zero-rate cells appeared up to M = 16.
+
+Other deviations:
+- **Call order.** The plan's order listed `_validate_params` before `check_counting_process`, but the code (unchanged) runs `_check_y → check_counting_process → _validate_params → …`. The call-order test pins the code's order, the one the identity depends on.
+- **`_baseline_at(estimator, windows)`** (private, `metrics.py`) evaluates the step-function `baseline_cumhaz_` at arbitrary edges (linear interpolation would be wrong). S17 uses it.
+- **CR `oob_cause_cumhaz` is always tree-averaged** (like `predict_cause_cumhaz`); `aggregate="cif"` affects only the CIF.
 
 ## Review log
 Codex plan review (2026-09-26), all 5 findings accepted:

@@ -480,6 +480,10 @@ class SurvivalForestTV(_BaseForestTV):
     oob_n_trees_ : ndarray of shape (n_rows,)
         Trees in each row's OOB ensemble (0 for rows dropped by coarsening).
         Only with ``oob_score=True``.
+    baseline_cumhaz_ : ndarray of shape (n_event_times,)
+        Covariate-free (pooled Nelson–Aalen) cumulative hazard of the fitted
+        rows at ``event_times_``: the training null of
+        ``metrics.piecewise_exponential_score``.
     n_ids_ : int
         Ids (subjects) in the training data.
     n_units_ : int

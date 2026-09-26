@@ -676,10 +676,11 @@ def piecewise_exponential_score(
     """Piecewise-exponential log score of cumulative-hazard predictions on counting-process rows.
 
     For windows ``W_m = (w_{m-1}, w_m]`` and rows ``(start, stop]`` with
-    covariates fixed on the row, the score is
+    covariates fixed on the row, the score is::
 
-        S = sum_{r, m} [ N_rm log(rate_rm) - rate_rm * e_rm ],
-        rate_rm = (1 - alpha) (cumhaz[r, m] - cumhaz[r, m-1]) / |W_m| + alpha (null[m] - null[m-1]) / |W_m|,
+        S = sum_{r, m} [ N_rm log(rate_rm) - rate_rm * e_rm ]
+        rate_rm = ((1 - alpha) (cumhaz[r, m] - cumhaz[r, m-1])
+                   + alpha (null[m] - null[m-1])) / (w_m - w_{m-1})
 
     with ``e_rm`` the row's exposure in ``W_m`` and ``N_rm`` its event there.
     It is the log-likelihood of the piecewise-constant hazard ``rate``: proper
