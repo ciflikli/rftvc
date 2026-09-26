@@ -8,9 +8,9 @@ from hypothesis import strategies as st
 from sklearn.base import clone
 from sklearn.model_selection import GroupKFold, KFold
 
-from rftvc import LandmarkSurvivalForest, SurvivalForestTV, make_landmark_data
+from rftvc import LandmarkSurvivalForest, SurvivalForestTV, make_landmark_data, make_survival_y
 from rftvc.metrics import KaplanMeierCensoring
-from rftvc.model_selection import GroupTimeSplit, RollingOriginSplit, _censor_at, landmark_cross_validate
+from rftvc.model_selection import GroupTimeSplit, RollingOriginSplit, _censor_at, _cv_folds, landmark_cross_validate
 from tests.sim_panel import simulate_panel
 
 FEATURES = ["x", ("x", "mean"), "z"]
@@ -270,3 +270,65 @@ def test_default_return_is_unchanged_and_nested_cv_returns_predictions(panel):
     )
     assert "params" in scores.columns and len(preds) == int(scores["n"].sum())
     assert scores.drop("params").columns == plain.columns
+
+
+# --- S18: _cv_folds (shared with drop_column_importance) --------------------------------
+
+
+def _rows(n_ids, per_id=4):
+    ids = np.repeat(np.arange(n_ids), per_id)
+    start = np.tile(np.arange(per_id, dtype=float), n_ids)
+    stop = start + 1.0
+    rng = np.random.default_rng(0)
+    event = np.zeros(n_ids * per_id, dtype=bool)
+    event[per_id - 1 :: per_id] = rng.random(n_ids) < 0.5
+    return ids, make_survival_y(stop, event, start=start)
+
+
+def test_cv_folds_group_kfold_keeps_ids_disjoint():
+    ids, y = _rows(20)
+    seen_test = []
+    for fold, train_idx, test_idx, y_train in _cv_folds(SurvivalForestTV(), None, y, ids, 4):
+        assert not set(ids[train_idx]) & set(ids[test_idx])
+        assert y_train.shape == train_idx.shape
+        seen_test.append(ids[test_idx])
+    assert sorted(np.concatenate(seen_test).tolist()) == sorted(ids.tolist())
+
+
+def test_cv_folds_int_below_2_raises():
+    ids, y = _rows(20)
+    with pytest.raises(ValueError, match="cv must be"):
+        list(_cv_folds(SurvivalForestTV(), None, y, ids, 1))
+
+
+def test_cv_folds_time_split_censors_training_rows():
+    ids, y = _rows(30, per_id=4)
+    cv = RollingOriginSplit(n_splits=2, test_size=1.0, gap=0.0)
+    for fold, train_idx, test_idx, y_train in _cv_folds(SurvivalForestTV(), None, y, ids, cv):
+        cutoff = y["start"][test_idx].min()
+        assert (y["start"][train_idx] < cutoff).all()
+        assert y_train["stop"].max() <= cutoff
+        assert (y_train["start"] < cutoff).all()
+        # every kept training row's event beyond the cutoff is censored, not dropped as an event
+        assert not (y_train["event"] & (y_train["stop"] >= cutoff)).any()
+
+
+def test_cv_folds_gap_check_uses_estimator_horizon():
+    ids, y = _rows(30)
+    cv = RollingOriginSplit(n_splits=2, test_size=1.0, gap=0.0)
+
+    class _WithHorizon:
+        horizon = 5.0
+
+    with pytest.raises(ValueError, match="gap.*must be >= horizon"):
+        list(_cv_folds(_WithHorizon(), None, y, ids, cv))
+    # no horizon attribute (counting-process estimators): the check is inert
+    list(_cv_folds(SurvivalForestTV(), None, y, ids, cv))
+
+
+def test_cv_folds_non_disjoint_splitter_raises():
+    from sklearn.model_selection import KFold
+
+    ids, y = _rows(20)
+    with pytest.raises(ValueError, match="disjoint"):
+        list(_cv_folds(SurvivalForestTV(), None, y, ids, KFold(3)))
