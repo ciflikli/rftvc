@@ -27,3 +27,11 @@ def visits_to_counting_process(d):
 def pbcseq_counting_process():
     d = visits_to_counting_process(pl.read_csv(PBCSEQ))
     return d.with_columns(pl.col("bili").log().alias("log_bili"))
+
+
+def pbcseq_competing_risks():
+    """``pbcseq_counting_process`` with cause labels: transplant (1) and death (2) on the last row, else 0."""
+    d = pl.read_csv(PBCSEQ).filter(pl.col("day") < pl.col("futime")).sort(["id", "day"])
+    last = d.select(pl.col("day") == pl.col("day").max().over("id")).to_series()
+    cp = pbcseq_counting_process()
+    return cp.with_columns(pl.Series("event", (last & (d["status"] > 0)).to_numpy() * d["status"].to_numpy()))

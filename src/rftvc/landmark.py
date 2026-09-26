@@ -15,8 +15,9 @@ import polars as pl
 from sklearn.base import BaseEstimator, clone
 from sklearn.utils.validation import check_is_fitted
 
+from ._competing import CompetingRisksForestTV
 from ._estimator import SurvivalForestTV
-from ._validation import check_counting_process, make_survival_y
+from ._validation import CR_DTYPE, _as_labels, check_counting_process, make_competing_risks_y, make_survival_y
 
 AGGREGATIONS = ("last", "first", "mean", "min", "max", "sum", "count")
 
@@ -25,7 +26,8 @@ class LandmarkData(NamedTuple):
     """A stacked landmark dataset.
 
     ``X`` holds the history features plus the landmark ``s`` (last column);
-    ``y`` the outcome on the reset clock; ``ids`` the subject of each row;
+    ``y`` the outcome on the reset clock (``SURV_DTYPE`` for a boolean or {0, 1}
+    event column, ``CR_DTYPE`` with cause labels otherwise); ``ids`` the subject of each row;
     ``groups`` the CV grouping (subjects); ``s`` the landmark of each row.
     """
 
@@ -130,7 +132,9 @@ def make_landmark_data(
     1. Risk set: ids that have entered (first ``start <= s``) and are event-free
        and uncensored at ``s`` (``U > s``).
     2. Row: ``start = 0``, ``stop = min(U, s + horizon) - s``,
-       ``event = 1{event and U <= s + horizon}``.
+       ``event = 1{event and U <= s + horizon}``. With cause labels in the
+       event column (0 = censored), the row keeps the id's terminal label
+       when ``U <= s + horizon`` and is 0 otherwise.
     3. Features: ``history_features`` computed from the rows known at ``s``
        (``start <= s``; every subject in the risk set has at least one), plus
        ``s`` itself. ``measured_at``, if given, is validated to be ``<= start``.
@@ -158,7 +162,9 @@ def make_landmark_data(
 
     starts = df[start].cast(pl.Float64).to_numpy()
     stops = df[stop].cast(pl.Float64).to_numpy()
-    events = df[event].cast(pl.Boolean).to_numpy()
+    boolean = df[event].dtype == pl.Boolean
+    labels = _as_labels(df[event].to_numpy())  # bool -> {0, 1}; rejects negative / non-integer labels
+    events = labels != 0
     check_counting_process(
         starts, stops, events, df[id].to_numpy(),
         measured_at=None if measured_at is None else df[measured_at].cast(pl.Float64).to_numpy(),
@@ -166,7 +172,8 @@ def make_landmark_data(
     subjects = df.group_by(id, maintain_order=True).agg(
         pl.col(start).cast(pl.Float64).min().alias("_entry"),
         pl.col(stop).cast(pl.Float64).max().alias("_U"),
-        pl.col(event).cast(pl.Boolean).any().alias("_event"),
+        # Only an id's last row may carry an event (checked above), so max = the terminal label.
+        pl.col(event).cast(pl.Int64).max().alias("_label"),
     )
     grid = _landmark_grid(subjects["_entry"].to_numpy(), subjects["_U"].to_numpy(), landmarks, step)
 
@@ -179,7 +186,7 @@ def make_landmark_data(
         part = at_risk.join(feats, on=id, how="inner", maintain_order="left").with_columns(
             pl.lit(s).alias("landmark"),
             ((pl.min_horizontal("_U", pl.lit(s + horizon))) - s).alias("_stop"),
-            (pl.col("_event") & (pl.col("_U") <= s + horizon)).alias("_lm_event"),
+            pl.when(pl.col("_U") <= s + horizon).then(pl.col("_label")).otherwise(0).alias("_lm_event"),
         )
         parts.append(part)
     if not parts:
@@ -187,7 +194,11 @@ def make_landmark_data(
     stacked = pl.concat(parts)
     names = [name for name, _, _ in specs] + ["landmark"]
     X = stacked.select(names).to_numpy().astype(np.float64)
-    y = make_survival_y(stacked["_stop"].to_numpy(), stacked["_lm_event"].to_numpy())
+    lm_event = stacked["_lm_event"].to_numpy()
+    if boolean or labels.max(initial=0) <= 1:
+        y = make_survival_y(stacked["_stop"].to_numpy(), lm_event != 0)
+    else:
+        y = make_competing_risks_y(stacked["_stop"].to_numpy(), lm_event)
     ids = stacked[id].to_numpy()
     s_col = stacked["landmark"].to_numpy()
     return LandmarkData(np.ascontiguousarray(X), y, ids, ids.copy(), s_col, names)
@@ -221,7 +232,59 @@ def landmark_features(df, s, *, history_features, id="id", start="start", stop="
     return out[id].to_numpy(), np.ascontiguousarray(out.select(names).to_numpy().astype(np.float64))
 
 
-class LandmarkSurvivalForest(BaseEstimator):
+class _LandmarkBase(BaseEstimator):
+    """Shared stacking, fitting and feature plumbing of the landmark super-models."""
+
+    def _columns(self):
+        return dict(id=self.id, start=self.start, stop=self.stop, measured_at=self.measured_at)
+
+    def _landmark_data(self, df):
+        return make_landmark_data(
+            df,
+            horizon=self.horizon,
+            history_features=self.history_features,
+            landmarks=self.landmarks,
+            step=self.step,
+            event=self.event,
+            **self._columns(),
+        )
+
+    def _fit_forest(self, data, forest):
+        """Fit ``forest`` on stacked ``data`` (block resampling on the landmark time ``s``)."""
+        params = forest.get_params()
+        block_time = None
+        if params["resample_unit"] == "block":
+            block_time = data.s
+            reach = params["block_length"] * params["oob_buffer"]
+            if params["oob_score"] and reach < self.horizon:
+                warnings.warn(
+                    f"block OOB leaks: landmarks within horizon={self.horizon:g} share an outcome window, but "
+                    f"blocks are only excluded {reach:g} apart (block_length * oob_buffer); use "
+                    "block_length >= horizon with oob_buffer=1",
+                    UserWarning,
+                    stacklevel=3,
+                )
+        self.forest_ = forest.fit(data.X, data.y, ids=data.ids, layout="stacked", block_time=block_time)
+        self.feature_names_ = data.feature_names
+        self.landmarks_ = np.unique(data.s)
+        self.n_rows_ = data.X.shape[0]
+        return self
+
+    def _features(self, df, s):
+        check_is_fitted(self, "forest_")
+        event = self.event if self.event in _as_polars(df).columns else None
+        return landmark_features(
+            df, s, history_features=self.history_features, event=event, **self._columns()
+        )
+
+    def _check_times(self, times):
+        times = np.asarray(times, dtype=float).ravel()
+        if (times < 0).any() or (times > self.horizon).any():
+            raise ValueError(f"times must lie in [0, horizon={self.horizon}]")
+        return times
+
+
+class LandmarkSurvivalForest(_LandmarkBase):
     """Landmark super-model: a survival forest on stacked landmark data.
 
     Predicts ``P(T <= s + w | T > s, H(s))`` for ``w <= horizon`` from the
@@ -273,57 +336,24 @@ class LandmarkSurvivalForest(BaseEstimator):
         self.event = event
         self.measured_at = measured_at
 
-    def _columns(self):
-        return dict(id=self.id, start=self.start, stop=self.stop, measured_at=self.measured_at)
-
     def fit(self, df):
         if self.horizon is None:
             raise ValueError("horizon is required")
-        data = make_landmark_data(
-            df,
-            horizon=self.horizon,
-            history_features=self.history_features,
-            landmarks=self.landmarks,
-            step=self.step,
-            event=self.event,
-            **self._columns(),
-        )
+        data = self._landmark_data(df)
+        if data.y.dtype == CR_DTYPE:
+            raise ValueError(
+                "the event column holds cause labels > 1 (competing risks); use LandmarkCompetingRisksForest"
+            )
         forest = SurvivalForestTV() if self.forest is None else clone(self.forest)
         # Block resampling groups an id's landmarks into windows of the landmark time s.
-        params = forest.get_params()
-        block_time = None
-        if params["resample_unit"] == "block":
-            block_time = data.s
-            reach = params["block_length"] * params["oob_buffer"]
-            if params["oob_score"] and reach < self.horizon:
-                warnings.warn(
-                    f"block OOB leaks: landmarks within horizon={self.horizon:g} share an outcome window, but "
-                    f"blocks are only excluded {reach:g} apart (block_length * oob_buffer); use "
-                    "block_length >= horizon with oob_buffer=1",
-                    UserWarning,
-                    stacklevel=2,
-                )
-        self.forest_ = forest.fit(data.X, data.y, ids=data.ids, layout="stacked", block_time=block_time)
-        self.feature_names_ = data.feature_names
-        self.landmarks_ = np.unique(data.s)
-        self.n_rows_ = data.X.shape[0]
-        return self
-
-    def _features(self, df, s):
-        check_is_fitted(self, "forest_")
-        event = self.event if self.event in _as_polars(df).columns else None
-        return landmark_features(
-            df, s, history_features=self.history_features, event=event, **self._columns()
-        )
+        return self._fit_forest(data, forest)
 
     def predict_survival_function(self, df, s, times):
         """``P(T > s + t | T > s, H(s))`` for ``t`` in ``times`` (reset clock, ``<= horizon``).
 
         Returns ``(ids, S)`` with one row of ``S`` per subject at risk at ``s``.
         """
-        times = np.asarray(times, dtype=float).ravel()
-        if (times < 0).any() or (times > self.horizon).any():
-            raise ValueError(f"times must lie in [0, horizon={self.horizon}]")
+        times = self._check_times(times)
         ids, X = self._features(df, s)
         return ids, self.forest_.predict_survival_function(X, times)
 
@@ -335,3 +365,107 @@ class LandmarkSurvivalForest(BaseEstimator):
         w = self.horizon if horizon is None else horizon
         ids, S = self.predict_survival_function(df, s, [w])
         return pl.DataFrame({self.id: ids, "landmark": np.full(len(ids), float(s)), "risk": 1.0 - S[:, 0]})
+
+
+class LandmarkCompetingRisksForest(_LandmarkBase):
+    """Landmark super-model for competing risks: a ``CompetingRisksForestTV`` on stacked landmark data.
+
+    Predicts the cumulative incidence ``F_k(s + w | s, H(s)) = P(T <= s + w,
+    cause k | T > s, H(s))`` for ``w <= horizon`` from the history up to the
+    landmark ``s``. The clock is reset at ``s``, so the Aalen–Johansen estimate
+    in each leaf is a direct estimate of this target. The event column holds
+    cause labels (0 = censored).
+
+    Parameters
+    ----------
+    horizon, history_features, landmarks, step, id, start, stop, event, measured_at
+        As in ``LandmarkSurvivalForest``.
+    forest : CompetingRisksForestTV or None
+        Unfitted forest to clone; defaults to ``CompetingRisksForestTV()``.
+    causes : array-like of int or None
+        Cause label vocabulary, set on the forest (keeps the cause axis fixed
+        when a training set lacks a cause, e.g. in cross-validation).
+    score_cause : int or None
+        Default cause of ``predict_risk``, set on the forest; ``None`` is the
+        first label of the fitted ``causes_``.
+    """
+
+    def __init__(
+        self,
+        horizon=None,
+        history_features=(),
+        landmarks=None,
+        step=None,
+        forest=None,
+        id="id",
+        start="start",
+        stop="stop",
+        event="event",
+        measured_at=None,
+        causes=None,
+        score_cause=None,
+    ):
+        self.horizon = horizon
+        self.history_features = history_features
+        self.landmarks = landmarks
+        self.step = step
+        self.forest = forest
+        self.id = id
+        self.start = start
+        self.stop = stop
+        self.event = event
+        self.measured_at = measured_at
+        self.causes = causes
+        self.score_cause = score_cause
+
+    def fit(self, df):
+        if self.horizon is None:
+            raise ValueError("horizon is required")
+        forest = CompetingRisksForestTV() if self.forest is None else clone(self.forest)
+        if not isinstance(forest, CompetingRisksForestTV):
+            raise TypeError(f"forest must be a CompetingRisksForestTV, got {type(forest).__name__}")
+        overrides = {k: v for k, v in (("causes", self.causes), ("score_cause", self.score_cause)) if v is not None}
+        forest.set_params(**overrides)
+        return self._fit_forest(self._landmark_data(df), forest)
+
+    @property
+    def causes_(self):
+        return self.forest_.causes_
+
+    def _cause(self, cause):
+        """The cause label to predict: ``cause``, else the forest's ``score_cause``, else the first label."""
+        if cause is not None:
+            return cause
+        score = self.forest_.score_cause
+        return int(self.forest_.causes_[0]) if score is None else score
+
+    def predict_cumulative_incidence(self, df, s, times, cause=None):
+        """``F_k(s + t | s, H(s))`` for ``t`` in ``times`` (reset clock, ``<= horizon``).
+
+        Returns ``(ids, F)``: ``F`` has shape ``(n, n_causes, n_times)``
+        (causes in ``causes_`` order), or ``(n, n_times)`` for one ``cause`` label.
+        """
+        times = self._check_times(times)
+        ids, X = self._features(df, s)
+        return ids, self.forest_.predict_cumulative_incidence(X, times, cause=cause)
+
+    def predict_survival_function(self, df, s, times):
+        """Event-free survival ``P(T > s + t | T > s, H(s))``; returns ``(ids, S)``."""
+        times = self._check_times(times)
+        ids, X = self._features(df, s)
+        return ids, self.forest_.predict_survival_function(X, times)
+
+    def predict_risk(self, df, s, horizon=None, cause=None):
+        """``F_k(s + w | s, H(s))`` with ``w = horizon`` (default: the fitted horizon).
+
+        ``cause`` defaults to ``score_cause`` (else the first label). Returns a
+        polars DataFrame with the id column, ``landmark``, ``cause`` and ``risk``.
+        """
+        check_is_fitted(self, "forest_")
+        w = self.horizon if horizon is None else horizon
+        k = self._cause(cause)
+        ids, F = self.predict_cumulative_incidence(df, s, [w], cause=k)
+        n = len(ids)
+        return pl.DataFrame(
+            {self.id: ids, "landmark": np.full(n, float(s)), "cause": np.full(n, int(k)), "risk": F[:, 0]}
+        )

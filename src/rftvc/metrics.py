@@ -54,7 +54,9 @@ class KaplanMeierCensoring(BaseEstimator):
     """
 
     def fit(self, y):
-        _, stop, event = _check_right_censored(y, "y")
+        """Fit on right-censored outcomes; cause labels are accepted (any label != 0 is an event)."""
+        stop, labels = _landmark_outcomes(y, "y", any_labels=True)
+        event = labels != 0
         times = np.unique(stop)
         at_risk = stop.size - np.searchsorted(np.sort(stop), times, side="left")
         d = np.bincount(np.searchsorted(times, stop[event]), minlength=times.size)
@@ -78,10 +80,47 @@ def _check_right_censored(y, name):
     return start, stop, event
 
 
+def _check_cause(cause):
+    if not isinstance(cause, numbers.Integral) or isinstance(cause, (bool, np.bool_)) or cause <= 0:
+        raise ValueError(f"cause must be a positive integer label, got {cause!r}")
+
+
+def _landmark_outcomes(y, name, cause=None, any_labels=False):
+    """``(stop, event)`` of right-censored outcomes: bool events for ``cause=None``,
+    int64 cause labels with a ``cause`` (or with ``any_labels``, no cause check)."""
+    if cause is None and not any_labels:
+        _, stop, event = _check_right_censored(y, name)
+        return stop, event
+    if not any_labels:
+        _check_cause(cause)
+    start, stop, labels = competing_risks_labels(y)
+    if np.any(start != 0):
+        raise ValueError(f"{name} must be right-censored outcomes on the reset clock (start == 0)")
+    return stop, labels
+
+
 def _outcome_classes(stop, event, w):
     case = event & (stop <= w)
     control = (stop >= w) & ~case
     return case, control
+
+
+def _classes(stop, event, w, cause=None):
+    """``(case, competing, control)`` at horizon ``w``.
+
+    Without ``cause``: ``event`` is boolean and ``competing`` is empty. With
+    ``cause=k``: ``event`` holds labels; a case is a cause-``k`` event by ``w``,
+    a competing event by ``w`` is an observed non-case, and a control is
+    event-free through ``w`` (``stop >= w``, no event by ``w``).
+    """
+    if cause is None:
+        case, control = _outcome_classes(stop, event, w)
+        return case, np.zeros(stop.size, dtype=bool), control
+    by_w = (event != 0) & (stop <= w)
+    case = by_w & (event == cause)
+    competing = by_w & ~case
+    control = (stop >= w) & ~by_w
+    return case, competing, control
 
 
 def _censoring(y_censor, censoring_estimator):
@@ -94,13 +133,20 @@ def _censoring(y_censor, censoring_estimator):
     return KaplanMeierCensoring().fit(y_censor)
 
 
-def _ipcw(stop, event, w, y_censor, censoring_estimator, g_min):
-    """Per-subject weights at horizon ``w`` and the diagnostic info."""
+def _ipcw(stop, event, w, y_censor, censoring_estimator, g_min, cause=None):
+    """Per-subject weights at horizon ``w`` and the diagnostic info.
+
+    Cases and competing events (``cause`` given) are weighted ``1/G(stop-)``,
+    controls ``1/G(w-)``, subjects censored before ``w`` 0.
+    """
     if not 0 < g_min <= 1:
         raise ValueError("g_min must lie in (0, 1]")
-    case, control = _outcome_classes(stop, event, w)
-    exact = bool(np.all(case | control))
+    case, competing, control = _classes(stop, event, w, cause)
+    observed_event = case | competing
+    exact = bool(np.all(observed_event | control))
     info = {"exact": exact, "n": int(stop.size), "n_cases": int(case.sum()), "n_controls": int(control.sum())}
+    if cause is not None:
+        info["n_competing"] = int(competing.sum())
     if exact:
         if y_censor is not None and censoring_estimator is not None:
             raise ValueError("pass at most one of y_censor or censoring_estimator")
@@ -108,9 +154,9 @@ def _ipcw(stop, event, w, y_censor, censoring_estimator, g_min):
         return case, control, np.ones(stop.size), info
     cens = _censoring(y_censor, censoring_estimator)
     g = np.ones(stop.size)
-    g[case] = cens.predict(stop[case], left=True)
+    g[observed_event] = cens.predict(stop[observed_event], left=True)
     g[control] = cens.predict(np.array([w]), left=True)[0]
-    weighted = case | control
+    weighted = observed_event | control
     clipped = weighted & (g < g_min)
     g = np.maximum(g, g_min)
     weights = np.where(weighted, 1.0 / g, 0.0)
@@ -128,13 +174,18 @@ def _check_pred(values, n, name):
 
 
 def brier_landmark(
-    y_test, risk, w, *, y_censor=None, censoring_estimator=None, g_min=0.05, return_info=False
+    y_test, risk, w, *, cause=None, y_censor=None, censoring_estimator=None, g_min=0.05, return_info=False
 ):
     """IPCW Brier score of ``risk = P(T <= w)`` at horizon ``w``.
 
     ``mean_i weight_i * (1{case_i} - risk_i)^2`` with weights ``1/G(stop_i-)``
     for cases, ``1/G(w-)`` for controls and 0 for subjects censored before
     ``w`` (Graf et al. 1999). ``G`` is clipped below at ``g_min``.
+
+    With ``cause=k`` (competing risks), ``y_test`` holds cause labels and
+    ``risk = F_k(w) = P(T <= w, cause k)``. A case is a cause-``k`` event by
+    ``w``; a competing event by ``w`` is an observed outcome 0, weighted
+    ``1/G(stop-)`` (it can never become a case); event-free subjects are controls.
 
     Parameters
     ----------
@@ -154,17 +205,17 @@ def brier_landmark(
         Also return a dict: ``exact`` (no IPCW needed), counts of cases,
         controls, censored-before-``w`` and clipped weights.
     """
-    _, stop, event = _check_right_censored(y_test, "y_test")
+    stop, event = _landmark_outcomes(y_test, "y_test", cause)
     risk = _check_pred(risk, stop.size, "risk").ravel()
     if not w > 0:
         raise ValueError("w must be positive")
-    case, _, weights, info = _ipcw(stop, event, w, y_censor, censoring_estimator, g_min)
+    case, _, weights, info = _ipcw(stop, event, w, y_censor, censoring_estimator, g_min, cause)
     score = float(np.mean(weights * np.square(case - risk)))
     return (score, info) if return_info else score
 
 
 def integrated_brier(
-    y_test, surv, times, *, y_censor=None, censoring_estimator=None, g_min=0.05, return_info=False
+    y_test, surv, times, *, cause=None, y_censor=None, censoring_estimator=None, g_min=0.05, return_info=False
 ):
     """Integrated IPCW Brier score of survival curves over ``times``.
 
@@ -172,20 +223,25 @@ def integrated_brier(
     ``brier_landmark``) is integrated by the trapezoid rule and divided by
     ``times[-1] - times[0]`` (the scikit-survival convention). ``info`` holds the
     per-time scores and the largest clipped count.
+
+    With ``cause=k``, the second argument holds the **cumulative incidence**
+    ``F_k(times[j])`` (a risk, not a survival probability) and ``y_test`` holds
+    cause labels; each time is scored as in ``brier_landmark(..., cause=k)``.
     """
-    _, stop, event = _check_right_censored(y_test, "y_test")
+    stop, event = _landmark_outcomes(y_test, "y_test", cause)
     times = np.asarray(times, dtype=float).ravel()
     if times.size < 2 or np.any(np.diff(times) <= 0) or times[0] <= 0:
         raise ValueError("times must be at least two strictly increasing positive values")
     surv = _check_pred(surv, stop.size, "surv")
     if surv.shape != (stop.size, times.size):
         raise ValueError(f"surv must have shape (n, {times.size})")
-    complete = [np.all(np.logical_or(*_outcome_classes(stop, event, t))) for t in times]
+    complete = [np.all(np.logical_or.reduce(_classes(stop, event, t, cause))) for t in times]
     cens = None if all(complete) else _censoring(y_censor, censoring_estimator)
     scores, clipped = np.empty(times.size), 0
     for j, t in enumerate(times):
-        case, _, weights, info = _ipcw(stop, event, t, None, cens, g_min)
-        scores[j] = np.mean(weights * np.square(case - (1.0 - surv[:, j])))
+        case, _, weights, info = _ipcw(stop, event, t, None, cens, g_min, cause)
+        risk = surv[:, j] if cause is not None else 1.0 - surv[:, j]
+        scores[j] = np.mean(weights * np.square(case - risk))
         clipped = max(clipped, info["n_clipped"])
     exact = all(complete)
     score = float(np.trapezoid(scores, times) / (times[-1] - times[0]))
@@ -196,8 +252,8 @@ def integrated_brier(
 class _Fenwick:
     """Counts over ranks ``0..n-1``: point updates, prefix sums."""
 
-    def __init__(self, n):
-        self.tree = np.zeros(n + 1, dtype=np.int64)
+    def __init__(self, n, dtype=np.int64):
+        self.tree = np.zeros(n + 1, dtype=dtype)
 
     def add(self, i, v):
         i += 1
@@ -305,39 +361,45 @@ def concordance_index_cp(y, risk, ids=None):
     return num / den
 
 
-def _competing_pairs(stop, labels, cause, risk, groups):
+def _competing_pairs(stop, labels, cause, risk, groups, case_mask=None, weights=None):
     """Type-B pairs of Wolbers' C: ``(numerator, denominator)``.
 
-    Each case (a ``cause`` event at ``T_i``) against every row with a competing
-    event (any other cause) at ``T_j <= T_i`` of another group, using that
-    row's risk; concordant when the case's risk is larger, ties ½.
+    Each case (a ``cause`` event at ``T_i``, restricted to ``case_mask``)
+    against every row with a competing event (any other cause) at
+    ``T_j <= T_i`` of another group, using that row's risk; concordant when the
+    case's risk is larger, ties ½. With ``weights``, a pair counts
+    ``weights[i] * weights[j]`` (IPCW); otherwise 1.
     """
-    cases = np.flatnonzero(labels == cause)
+    is_case = labels == cause if case_mask is None else case_mask
+    cases = np.flatnonzero(is_case)
     cases = cases[np.argsort(stop[cases], kind="stable")]
     comp = np.flatnonzero((labels != 0) & (labels != cause))
     comp = comp[np.argsort(stop[comp], kind="stable")]
     if cases.size == 0 or comp.size == 0:
         return 0.0, 0.0
+    wt = np.ones(stop.size) if weights is None else weights
     ranks = np.unique(risk, return_inverse=True)[1].ravel()
-    bit = _Fenwick(int(ranks.max()) + 1)
+    bit = _Fenwick(int(ranks.max()) + 1, dtype=np.float64)
     num = den = 0.0
     q = 0
+    added = 0.0
     for i in cases:
         t = stop[i]
         while q < comp.size and stop[comp[q]] <= t:
-            bit.add(ranks[comp[q]], 1)
+            bit.add(ranks[comp[q]], wt[comp[q]])
+            added += wt[comp[q]]
             q += 1
         r = ranks[i]
         less = bit.prefix(r)
         equal = bit.prefix(r + 1) - less
-        total = q
+        total = added
         if groups is not None:
             same = comp[:q][groups[comp[:q]] == groups[i]]
-            less -= int((ranks[same] < r).sum())
-            equal -= int((ranks[same] == r).sum())
-            total -= same.size
-        num += less + 0.5 * equal
-        den += total
+            less -= wt[same][ranks[same] < r].sum()
+            equal -= wt[same][ranks[same] == r].sum()
+            total -= wt[same].sum()
+        num += wt[i] * (less + 0.5 * equal)
+        den += wt[i] * total
     return num, den
 
 
@@ -359,8 +421,7 @@ def concordance_index_cr(y, risk, cause, ids=None):
     the case's risk is larger; ties count ½. With a single cause there are no
     type-B pairs and this equals ``concordance_index_cp``.
     """
-    if not isinstance(cause, numbers.Integral) or isinstance(cause, (bool, np.bool_)) or cause <= 0:
-        raise ValueError(f"cause must be a positive integer label, got {cause!r}")
+    _check_cause(cause)
     start, stop, labels = competing_risks_labels(y)
     risk = _check_pred(risk, stop.size, "risk").ravel()
     groups = _groups(ids, stop.size)
@@ -374,7 +435,7 @@ def concordance_index_cr(y, risk, cause, ids=None):
 
 
 def cindex_dynamic(
-    y_test, risk, w, *, kind="cumulative", y_censor=None, censoring_estimator=None, g_min=0.05,
+    y_test, risk, w, *, kind="cumulative", cause=None, y_censor=None, censoring_estimator=None, g_min=0.05,
     return_info=False,
 ):
     """Time-dependent discrimination of ``risk`` at horizon ``w``.
@@ -389,12 +450,22 @@ def cindex_dynamic(
       a single time.
 
     Weights are 1 under complete follow-up to ``w`` (exact path).
+
+    With ``cause=k`` (competing risks; ``y_test`` holds cause labels, ``risk``
+    is ``F_k(w)``), only ``kind="incident"`` is available: the IPCW Wolbers C
+    truncated at ``w``. Each cause-``k`` event by ``w`` is compared with (A) the
+    subjects still at risk at its time, weight ``1/G(T_i-)^2`` as above, and
+    (B) the subjects with a competing event at ``T_j <= T_i``, weight
+    ``1/(G(T_i-) G(T_j-))``. With one cause this is the incident C above.
+    Competing-risks AUC (``kind="cumulative"``) is not implemented.
     """
-    _, stop, event = _check_right_censored(y_test, "y_test")
+    stop, event = _landmark_outcomes(y_test, "y_test", cause)
     risk = _check_pred(risk, stop.size, "risk").ravel()
     if kind not in ("cumulative", "incident"):
         raise ValueError(f"kind must be 'cumulative' or 'incident', got {kind!r}")
-    case, control, weights, info = _ipcw(stop, event, w, y_censor, censoring_estimator, g_min)
+    if cause is not None and kind == "cumulative":
+        raise NotImplementedError("competing-risks AUC (kind='cumulative' with cause) is not implemented")
+    case, control, weights, info = _ipcw(stop, event, w, y_censor, censoring_estimator, g_min, cause)
     if kind == "cumulative":
         if not case.any() or not control.any():
             raise UndefinedMetricError("need at least one case and one control at w")
@@ -405,7 +476,10 @@ def cindex_dynamic(
         wc = weights[case]
         score = float(np.sum(wc * (less + 0.5 * equal)) / (wc.sum() * ctrl.size))
     else:
-        num, den, _ = _concordance(np.zeros(stop.size), stop, event, risk, np.square(weights), event_mask=case)
+        num, den, _ = _concordance(np.zeros(stop.size), stop, event != 0, risk, np.square(weights), event_mask=case)
+        if cause is not None:
+            num_b, den_b = _competing_pairs(stop, event, cause, risk, None, case_mask=case, weights=weights)
+            num, den = num + num_b, den + den_b
         if den == 0:
             raise UndefinedMetricError("no comparable pairs before w")
         score = num / den

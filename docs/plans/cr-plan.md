@@ -6,7 +6,7 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 ## Status
 - [x] S11: Core — cause-coded `y`, engine cause dimension, composite criterion, per-cause leaves, `CompetingRisksForestTV` fit + per-row CIF (branch `feat/s11-cr-core`)
 - [x] S12: Paths, coarsening, `aggregate="cif"`, OOB + Wolbers C, Approach-B equivalence (branch `feat/s12-cr-paths`)
-- [ ] S13: Cause-specific metrics + landmark competing-risks workflow (branch `feat/s13-cr-landmark`)
+- [x] S13: Cause-specific metrics + landmark competing-risks workflow (branch `feat/s13-cr-landmark`)
 - [ ] S14: Bench (simulations, parity, bake-off) + docs + case study (branch `feat/s14-cr-bench`)
 
 ## Plan-level decisions (defaults; the slice plan reviews may change them)
@@ -140,3 +140,11 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 - Coarsening and block splitting carry cause codes. The coarsened OOB target keeps labels (`_oob_target` hook).
 - Block OOB is checked by equivalence (one block per id = id resampling), not by a separate manual reference.
 - Fit time at 100k rows: J = 2 is 1.43× the single-event time and J = 4 2.20×. The J = 2 forest is 1.47× the size, including the leaf counts (`bench/s11_cr_timing.py`).
+
+**S13 done (2026-09-26). Deviations / notes** (slice plan, review logs and test audit: `s13-plan.md`):
+- `brier_landmark`, `integrated_brier` and `cindex_dynamic(kind="incident")` take a keyword `cause`. With `cause=k`, competing events by `w` are observed outcomes weighted `1/G(T−)`, and `integrated_brier` takes `F_k`. Competing-risks AUC (`kind="cumulative"`) raises, as designed.
+- **Design amendment:** the dynamic Wolbers type-A weight is `1/G(T_i−)²` (Uno), not `1/(G(T_i−) G(T_i))`, so `cause=1` on one-cause data equals the survival C exactly. The two differ only when censoring ties a case time; a test pins the chosen form.
+- `make_landmark_data` keeps terminal cause labels: `SURV_DTYPE` for bool / {0, 1} columns (bit-identical stacks), `CR_DTYPE` otherwise.
+- `_LandmarkBase` is shared. `LandmarkCompetingRisksForest` adds `causes`, `score_cause`, `predict_risk(cause=)` and `predict_cumulative_incidence`. `LandmarkSurvivalForest` rejects labels > 1.
+- `landmark_cross_validate` has a CR branch: one vocabulary and scored cause are pinned before splitting and in every inner fit, and `cif` / `cause` prediction columns replace `survival`. `_censor_at` keeps labels.
+- The Brier oracle is a committed comprisk 0.8.0 fixture generated from a scratch install; no new dependency.

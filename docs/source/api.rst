@@ -13,6 +13,7 @@ Estimators
    SurvivalForestTV
    CompetingRisksForestTV
    LandmarkSurvivalForest
+   LandmarkCompetingRisksForest
 
 Data
 ----
