@@ -11,17 +11,35 @@ pub struct NodeProfile {
     pub event_idx: Vec<u32>,
     pub at_risk: Vec<f64>,
     pub events: Vec<f64>,
+    /// Grid times of `event_idx`.
+    pub times: Vec<f64>,
+    /// Person-time of the node's rows.
+    pub exposure: f64,
     pub n_events: usize,
     /// Local at-risk range of each row, in the order of the node's `rows`.
     local: Vec<LocalRow>,
 }
 
-/// Local `[la, lb)` at-risk range and event flag for each row of a node.
+impl NodeProfile {
+    /// The criterion view of this node, given its distinct-unit count.
+    pub fn view(&self, n_units: f64) -> Profile<'_> {
+        Profile {
+            at_risk: &self.at_risk,
+            events: &self.events,
+            times: &self.times,
+            exposure: self.exposure,
+            n_units,
+        }
+    }
+}
+
+/// Local `[la, lb)` at-risk range, event flag and duration for each row of a node.
 #[derive(Clone, Debug)]
 struct LocalRow {
     la: u32,
     lb: u32,
     event: bool,
+    dur: f64,
 }
 
 /// Grid sizes up to this multiple of the node's row count use O(1) lookup
@@ -57,6 +75,7 @@ fn node_event_idx_and_local(surv: &SurvData, rows: &[u32]) -> (Vec<u32>, Vec<Loc
                     la: pos[surv.a[r] as usize],
                     lb: pos[surv.b[r] as usize],
                     event: surv.event[r],
+                    dur: surv.duration[r],
                 }
             })
             .collect();
@@ -81,6 +100,7 @@ fn local_rows(surv: &SurvData, rows: &[u32], event_idx: &[u32]) -> Vec<LocalRow>
                 la: event_idx.partition_point(|&k| k < surv.a[r]) as u32,
                 lb: event_idx.partition_point(|&k| k < surv.b[r]) as u32,
                 event: surv.event[r],
+                dur: surv.duration[r],
             }
         })
         .collect()
@@ -109,10 +129,17 @@ pub fn node_profile(surv: &SurvData, rows: &[u32]) -> NodeProfile {
     let (event_idx, local) = node_event_idx_and_local(surv, rows);
     let (at_risk, events) = profile_from_local(&local, event_idx.len());
     let n_events = local.iter().filter(|r| r.event).count();
+    let times = event_idx
+        .iter()
+        .map(|&k| surv.grid.times[k as usize])
+        .collect();
+    let exposure = local.iter().map(|r| r.dur).sum();
     NodeProfile {
         event_idx,
         at_risk,
         events,
+        times,
+        exposure,
         n_events,
         local,
     }
@@ -185,11 +212,8 @@ pub fn best_split_in(
     }
     let local = &profile.local;
     debug_assert_eq!(rows.len(), local.len());
-    let scorer = criterion.node_scorer(Profile {
-        at_risk: &profile.at_risk,
-        events: &profile.events,
-    });
     debug_assert_eq!(rows.len(), units.len());
+    let scorer = criterion.node_scorer(profile.view(count_units(units) as f64));
     let n_events = profile.n_events;
     let mut bins = vec![0u8; rows.len()];
 
@@ -247,9 +271,11 @@ pub fn best_split_in(
         diff.iter_mut().for_each(|v| *v = 0.0);
         left_ev.iter_mut().for_each(|v| *v = 0.0);
         let (mut ids_left, mut max_le, mut e_left) = (0usize, 0usize, 0usize);
+        let mut left_exposure = 0.0;
         for c in 0..nb - 1 {
             for &i in &by_bin[offset[used[c]]..offset[used[c] + 1]] {
                 let row = &local[i as usize];
+                left_exposure += row.dur;
                 diff[row.la as usize] += 1.0;
                 diff[row.lb as usize] -= 1.0;
                 if row.event {
@@ -276,8 +302,11 @@ pub fn best_split_in(
             let left = Profile {
                 at_risk: &left_at,
                 events: &left_ev,
+                times: &profile.times,
+                exposure: left_exposure,
+                n_units: ids_left as f64,
             };
-            let score = scorer.score(&left);
+            let score = scorer.score(&left, ids_right as f64);
             if score > 0.0 && best.as_ref().is_none_or(|b| score > b.score) {
                 let bin = used[c] as u8;
                 best = Some(SplitCandidate {
@@ -294,6 +323,11 @@ pub fn best_split_in(
     best
 }
 
+/// Person-time of `rows`.
+pub fn exposure_of(surv: &SurvData, rows: &[u32]) -> f64 {
+    rows.iter().map(|&r| surv.duration[r as usize]).sum()
+}
+
 /// Profile of `rows` evaluated on a given (e.g. parent's) event-time index set.
 pub fn profile_on(surv: &SurvData, rows: &[u32], event_idx: &[u32]) -> (Vec<f64>, Vec<f64>) {
     let local = local_rows(surv, rows, event_idx);
@@ -303,7 +337,166 @@ pub fn profile_on(surv: &SurvData, rows: &[u32], event_idx: &[u32]) -> (Vec<f64>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::criterion::NodeScorer;
+    use crate::grid::coarsen;
     use crate::rng::Rng;
+    use std::sync::Mutex;
+
+    /// What the splitter handed to a criterion for one candidate.
+    #[derive(Debug)]
+    struct Seen {
+        at_risk: Vec<f64>,
+        events: Vec<f64>,
+        times: Vec<f64>,
+        exposure: f64,
+        n_units: f64,
+        n_units_right: f64,
+    }
+
+    /// Records the parent view and every scored left child, in order.
+    #[derive(Default)]
+    struct Spy {
+        parent: Mutex<Option<Seen>>,
+        children: Mutex<Vec<Seen>>,
+    }
+
+    fn seen(p: &Profile, n_units_right: f64) -> Seen {
+        Seen {
+            at_risk: p.at_risk.to_vec(),
+            events: p.events.to_vec(),
+            times: p.times.to_vec(),
+            exposure: p.exposure,
+            n_units: p.n_units,
+            n_units_right,
+        }
+    }
+
+    impl SplitCriterion for Spy {
+        fn score(&self, _: &Profile, _: &Profile, _: f64) -> f64 {
+            unreachable!("the splitter scores through node_scorer")
+        }
+        fn node_scorer<'a>(&'a self, parent: Profile<'a>) -> Box<dyn NodeScorer + 'a> {
+            *self.parent.lock().unwrap() = Some(seen(&parent, f64::NAN));
+            Box::new(SpyNode(self))
+        }
+    }
+
+    struct SpyNode<'a>(&'a Spy);
+
+    impl NodeScorer for SpyNode<'_> {
+        fn score(&self, left: &Profile, n_units_right: f64) -> f64 {
+            self.0
+                .children
+                .lock()
+                .unwrap()
+                .push(seen(left, n_units_right));
+            0.0
+        }
+    }
+
+    fn distinct(units: impl Iterator<Item = u32>) -> f64 {
+        units.collect::<std::collections::HashSet<_>>().len() as f64
+    }
+
+    /// Every candidate's child summaries equal a brute-force recomputation:
+    /// exposure (with delayed entry), at-risk/event counts, the parent's times,
+    /// and distinct units on each side, including units whose rows straddle
+    /// the threshold and children with no events.
+    #[test]
+    fn child_summaries_match_brute_force() {
+        let mut rng = Rng::new(23);
+        let mut straddled = 0;
+        let mut eventless = 0;
+        for _ in 0..300 {
+            let n = 2 + rng.below(50);
+            let start: Vec<f64> = (0..n).map(|_| rng.below(6) as f64 * 0.5).collect();
+            let stop: Vec<f64> = start
+                .iter()
+                .map(|s| s + 0.25 + rng.below(8) as f64 * 0.75)
+                .collect();
+            let event: Vec<bool> = (0..n).map(|_| rng.below(3) == 0).collect();
+            let x: Vec<f64> = (0..n).map(|_| rng.below(5) as f64).collect();
+            // Sorted unit labels keep each unit's rows contiguous.
+            let mut all_units: Vec<u32> = (0..n).map(|_| rng.below(n / 2 + 1) as u32).collect();
+            all_units.sort_unstable();
+            let surv = SurvData::new(&start, &stop, &event);
+            let binned = Binned::fit(&x, n, 1, 256);
+            let rows: Vec<u32> = (0..n as u32).filter(|_| rng.below(4) > 0).collect();
+            let units: Vec<u32> = rows.iter().map(|&r| all_units[r as usize]).collect();
+            let parent = node_profile(&surv, &rows);
+            let params = SplitParams {
+                min_leaf: 0,
+                min_events_leaf: 0,
+            };
+            let spy = Spy::default();
+            best_split_in(&binned, &parent, &rows, &units, &[0], &params, &spy);
+            if parent.event_idx.is_empty() {
+                continue;
+            }
+
+            let p = spy.parent.lock().unwrap().take().unwrap();
+            assert_eq!(p.exposure, exposure_of(&surv, &rows));
+            assert_eq!(p.n_units, distinct(units.iter().copied()));
+            let times: Vec<f64> = parent
+                .event_idx
+                .iter()
+                .map(|&k| surv.grid.times[k as usize])
+                .collect();
+            assert_eq!(p.times, times);
+
+            let col = binned.column(0);
+            let mut used: Vec<u8> = rows.iter().map(|&r| col[r as usize]).collect();
+            used.sort_unstable();
+            used.dedup();
+            let children = spy.children.lock().unwrap();
+            assert_eq!(children.len(), used.len().saturating_sub(1));
+            for (c, &b) in children.iter().zip(&used) {
+                let (left, right): (Vec<usize>, Vec<usize>) =
+                    (0..rows.len()).partition(|&i| col[rows[i] as usize] <= b);
+                let left_rows: Vec<u32> = left.iter().map(|&i| rows[i]).collect();
+                let (at, ev) = profile_on(&surv, &left_rows, &parent.event_idx);
+                assert_eq!(c.at_risk, at);
+                assert_eq!(c.events, ev);
+                assert_eq!(c.times, times);
+                let want = exposure_of(&surv, &left_rows);
+                assert!((c.exposure - want).abs() <= 1e-12 * want.max(1.0));
+                let (ul, ur) = (
+                    distinct(left.iter().map(|&i| units[i])),
+                    distinct(right.iter().map(|&i| units[i])),
+                );
+                assert_eq!((c.n_units, c.n_units_right), (ul, ur));
+                straddled += (ul + ur > p.n_units) as usize;
+                eventless += (ev.iter().sum::<f64>() == 0.0) as usize;
+            }
+        }
+        assert!(straddled > 0 && eventless > 0, "{straddled} {eventless}");
+    }
+
+    /// In coarse mode the durations (and so exposure) are those of the
+    /// snapped rows, not the original ones.
+    #[test]
+    fn coarse_exposure_uses_snapped_times() {
+        let start = [0.0, 0.3, 1.2];
+        let stop = [0.3, 1.7, 2.6];
+        let event = [false, true, true];
+        let c = coarsen(
+            &start,
+            &stop,
+            &event,
+            &[0, 1, 2],
+            &[0, 3],
+            &[0.0, 1.0, 2.0, 3.0],
+        );
+        // Rows snap to (0, 1], (1, 2], (2, 3]; the original first row (0, 0.3]
+        // becomes (0, 1], so the coarse total differs from the original 2.6.
+        assert_eq!(
+            (c.start.clone(), c.stop.clone()),
+            (vec![0.0, 1.0, 2.0], vec![1.0, 2.0, 3.0])
+        );
+        let surv = SurvData::new(&c.start, &c.stop, &c.event);
+        assert_eq!(surv.duration, vec![1.0, 1.0, 1.0]);
+        assert_eq!(node_profile(&surv, &[0, 1, 2]).exposure, 3.0);
+    }
 
     /// The lookup-table path (small grids) equals sort + binary search on
     /// random delayed-entry data and random row subsets of any size.

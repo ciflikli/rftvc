@@ -10,7 +10,7 @@ use pyo3::types::PyDict;
 use rftvc_core::{
     Aggregate, Binned, Extrapolate, FlatForest, Forest, ForestParams, Grid, Groups, LtrcLogRank,
     Profile, SplitCriterion, SplitParams, SurvData, TreeParams, best_split as core_best_split,
-    coarsen, fit_forest, node_profile, profile_on,
+    coarsen, exposure_of, fit_forest, node_profile, profile_on,
 };
 
 /// Contiguous 1-d input as a Vec. Strided views (e.g. a field of a structured
@@ -510,15 +510,18 @@ fn logrank_score(
         .map(|(i, _)| i as u32)
         .collect();
     let (l_at, l_ev) = profile_on(&surv, &left_rows, &parent.event_idx);
+    // One unit per row.
+    let (n, n_left) = (surv.n_rows() as f64, left_rows.len() as f64);
     Ok(LtrcLogRank.score(
         &Profile {
             at_risk: &l_at,
             events: &l_ev,
+            times: &parent.times,
+            exposure: exposure_of(&surv, &left_rows),
+            n_units: n_left,
         },
-        &Profile {
-            at_risk: &parent.at_risk,
-            events: &parent.events,
-        },
+        &parent.view(n),
+        n - n_left,
     ))
 }
 
