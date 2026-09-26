@@ -230,3 +230,10 @@ def test_censor_at_keeps_cause_labels():
     assert out["event"].to_list() == [0, 0, 1, 0] and out["stop"].to_list() == [1.0, 2.5, 2.0, 2.5]
     b = _censor_at(df.with_columns(pl.col("event") > 0), 2.5, start="start", stop="stop", event="event")
     assert b["event"].dtype == pl.Boolean and b["event"].to_list() == [False, False, True, False]
+
+
+@pytest.mark.parametrize("kw, match", [({"score_cause": 1.5}, "score_cause"), ({"score_cause": 3}, "score_cause"),
+                                        ({"causes": [1.5, 2]}, "integers")])
+def test_cv_rejects_invalid_cause_labels(pbc, kw, match):
+    with pytest.raises(ValueError, match=match):
+        landmark_cross_validate(_model(**kw), pbc, GroupKFold(2), ("brier",))
