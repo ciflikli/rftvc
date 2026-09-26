@@ -184,7 +184,7 @@ It is not a sklearn `Pipeline`, and the docs say so.
    - `ntime=100`: 100k rows < 3 s; 1M rows < 35 s; peak RSS < 3.5 GB at 1M rows.
    - Exact grid: 100k rows (K ≈ 64k) < 12 s; 1M rows < 180 s.
    - Coarse mode keeps exact-mode test C within 0.005 on the benchmark data.
-   - Peak memory is dominated by stored leaves (`docs/scratch/perf.md`); trimming leaf storage is the next memory lever.
+   - Stored leaves dominated peak memory; S9 cut forest memory by ~60% and peak RSS at 1M rows to ~1.5 GB (`docs/bench/s9-leaf.md`).
 
 ## Risks & mitigations
 | Risk | Mitigation |

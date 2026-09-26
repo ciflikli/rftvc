@@ -47,7 +47,7 @@ def _one_tree(**kw):
 def test_root_leaf_matches_delayed_entry_nelson_aalen():
     X, y, ids = _cp_data(200, seed=1)
     model = _one_tree(max_depth=0).fit(X, y, ids=ids)
-    times, _, _, cumhaz = map(np.asarray, model.forest_.leaf_profile(0, 0))
+    times, cumhaz = map(np.asarray, model.forest_.leaf_profile(0, 0))
     naf = NelsonAalenFitter(nelson_aalen_smoothing=False).fit(y["stop"], y["event"], entry=y["start"], timeline=times)
     np.testing.assert_allclose(cumhaz, naf.cumulative_hazard_.to_numpy().ravel(), atol=1e-10)
     ref_t, ref_c = nelson_aalen_ref(y["start"], y["stop"], y["event"])
@@ -62,10 +62,11 @@ def test_boundary_entry_and_exit_on_event_times():
     event = np.array([True, True, False, True, False])
     y = make_survival_y(stop, event, start=start)
     model = _one_tree(max_depth=0).fit(np.zeros((5, 1)), y)
-    times, d, at_risk, cumhaz = map(np.asarray, model.forest_.leaf_profile(0, 0))
+    times, cumhaz = map(np.asarray, model.forest_.leaf_profile(0, 0))
     ref_t, ref_c = nelson_aalen_ref(start, stop, event)
     np.testing.assert_array_equal(times, [1.0, 2.0, 3.0])
-    np.testing.assert_array_equal(at_risk, [2.0, 3.0, 2.0])
+    # One event at each time, with 2, 3 and 2 at risk.
+    np.testing.assert_allclose(np.diff(cumhaz, prepend=0.0), [1 / 2, 1 / 3, 1 / 2], atol=1e-15)
     np.testing.assert_allclose(cumhaz, ref_c, atol=1e-12)
 
 

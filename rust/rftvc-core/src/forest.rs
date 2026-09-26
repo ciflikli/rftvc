@@ -289,6 +289,15 @@ impl Forest {
         out
     }
 
+    /// Allocated bytes of all trees' node and leaf arrays, plus one copy of the grid.
+    pub fn nbytes(&self) -> usize {
+        self.trees.iter().map(Tree::nbytes).sum::<usize>()
+            + self
+                .trees
+                .first()
+                .map_or(0, |t| t.grid_times.capacity() * std::mem::size_of::<f64>())
+    }
+
     /// Leaf index per (row, tree), row-major.
     pub fn apply(&self, x: &[f64], n_features: usize) -> Vec<u32> {
         let k = self.trees.len();

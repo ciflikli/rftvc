@@ -18,16 +18,6 @@ pub enum Node {
     },
 }
 
-/// Leaf risk-set counts at the leaf's own event times, plus the
-/// Nelson–Aalen cumulative hazard (right-continuous) at those times.
-#[derive(Clone, Debug)]
-pub struct Leaf {
-    pub event_idx: Vec<u32>,
-    pub d: Vec<f64>,
-    pub y: Vec<f64>,
-    pub cumhaz: Vec<f64>,
-}
-
 #[derive(Clone, Debug)]
 pub struct TreeParams {
     /// `None` = unlimited; `Some(0)` = a single root leaf.
@@ -39,9 +29,14 @@ pub struct TreeParams {
 }
 
 #[derive(Clone, Debug)]
+/// Leaves are stored flat: leaf `l` owns entries `leaf_offsets[l]..leaf_offsets[l + 1]`
+/// of `event_idx` (its event times, as sorted grid indices) and `cumhaz` (the
+/// Nelson–Aalen cumulative hazard, right-continuous, at those times).
 pub struct Tree {
     pub nodes: Vec<Node>,
-    pub leaves: Vec<Leaf>,
+    pub leaf_offsets: Vec<u32>,
+    pub event_idx: Vec<u32>,
+    pub cumhaz: Vec<f64>,
     pub grid_times: Arc<Vec<f64>>,
 }
 
@@ -62,7 +57,7 @@ pub fn build_tree(
         min_events_leaf: params.min_events_leaf,
     };
     let mut nodes = vec![Node::Leaf { leaf: 0 }];
-    let mut leaves = Vec::new();
+    let (mut leaf_offsets, mut event_idx, mut cumhaz) = (vec![0u32], Vec::new(), Vec::new());
     let mut stack = vec![(0usize, rows, units, 0usize)];
 
     while let Some((node_id, rows, units, depth)) = stack.pop() {
@@ -113,30 +108,28 @@ pub fn build_tree(
             }
             None => {
                 let mut cum = 0.0;
-                let cumhaz = profile
-                    .events
-                    .iter()
-                    .zip(&profile.at_risk)
-                    .map(|(d, y)| {
-                        cum += d / y;
-                        cum
-                    })
-                    .collect();
+                cumhaz.extend(profile.events.iter().zip(&profile.at_risk).map(|(d, y)| {
+                    cum += d / y;
+                    cum
+                }));
+                event_idx.extend_from_slice(&profile.event_idx);
                 nodes[node_id] = Node::Leaf {
-                    leaf: leaves.len() as u32,
+                    leaf: leaf_offsets.len() as u32 - 1,
                 };
-                leaves.push(Leaf {
-                    event_idx: profile.event_idx,
-                    d: profile.events,
-                    y: profile.at_risk,
-                    cumhaz,
-                });
+                leaf_offsets.push(u32::try_from(event_idx.len()).expect("leaf entries exceed u32"));
             }
         }
     }
+    // Growth by doubling leaves up to half of each array unused.
+    nodes.shrink_to_fit();
+    leaf_offsets.shrink_to_fit();
+    event_idx.shrink_to_fit();
+    cumhaz.shrink_to_fit();
     Tree {
         nodes,
-        leaves,
+        leaf_offsets,
+        event_idx,
+        cumhaz,
         grid_times: Arc::clone(&surv.grid.times),
     }
 }
@@ -164,18 +157,42 @@ impl Tree {
         }
     }
 
-    /// Nelson–Aalen hazard increments `d_k / Y_k` at the leaf's event times.
-    pub fn leaf_hazard(&self, leaf: usize) -> Vec<f64> {
-        let l = &self.leaves[leaf];
-        l.d.iter().zip(&l.y).map(|(d, y)| d / y).collect()
+    pub fn n_leaves(&self) -> usize {
+        self.leaf_offsets.len() - 1
+    }
+
+    fn entries(&self, leaf: usize) -> std::ops::Range<usize> {
+        self.leaf_offsets[leaf] as usize..self.leaf_offsets[leaf + 1] as usize
+    }
+
+    /// Grid indices of the leaf's event times (strictly increasing).
+    pub fn leaf_event_idx(&self, leaf: usize) -> &[u32] {
+        &self.event_idx[self.entries(leaf)]
+    }
+
+    /// Leaf cumulative hazard at its event times.
+    pub fn leaf_cumhaz(&self, leaf: usize) -> &[f64] {
+        &self.cumhaz[self.entries(leaf)]
     }
 
     /// Leaf cumulative hazard at time `t` (right-continuous step function).
     pub fn cumhaz_at(&self, leaf: usize, t: f64) -> f64 {
-        let l = &self.leaves[leaf];
-        let pos = l
-            .event_idx
-            .partition_point(|&k| self.grid_times[k as usize] <= t);
-        if pos == 0 { 0.0 } else { l.cumhaz[pos - 1] }
+        let r = self.entries(leaf);
+        let pos = self.event_idx[r.clone()].partition_point(|&k| self.grid_times[k as usize] <= t);
+        if pos == 0 {
+            0.0
+        } else {
+            self.cumhaz[r.start + pos - 1]
+        }
+    }
+
+    /// Allocated bytes of the nodes and leaf arrays (capacity, not length;
+    /// the shared grid is not counted).
+    pub fn nbytes(&self) -> usize {
+        use std::mem::size_of;
+        self.nodes.capacity() * size_of::<Node>()
+            + self.leaf_offsets.capacity() * size_of::<u32>()
+            + self.event_idx.capacity() * size_of::<u32>()
+            + self.cumhaz.capacity() * size_of::<f64>()
     }
 }

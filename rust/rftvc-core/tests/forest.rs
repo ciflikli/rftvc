@@ -1,6 +1,6 @@
 use rftvc_core::{
-    Aggregate, Binned, FlatForest, ForestParams, Groups, LtrcLogRank, SurvData, TreeParams,
-    draw_ids, fit_forest,
+    Aggregate, Binned, FORMAT_VERSION, FlatForest, ForestParams, Groups, LtrcLogRank, SurvData,
+    TreeParams, draw_ids, fit_forest,
 };
 
 fn toy(n: usize) -> (Vec<f64>, SurvData) {
@@ -86,9 +86,37 @@ fn corrupt_flat_state_errors() {
     let mut bad = flat.clone();
     bad.event_idx.push(0);
     assert!(bad.to_forest().is_err());
-    let mut bad = flat;
+    let mut bad = flat.clone();
     bad.tree_seeds.pop();
     assert!(bad.to_forest().is_err());
+    assert!(flat.to_forest().is_ok());
+}
+
+#[test]
+fn impossible_scalars_and_bad_grids_error() {
+    let flat = valid_flat();
+    type Edit = (&'static str, fn(&mut FlatForest));
+    let edits: [Edit; 7] = [
+        ("no features", |f| f.n_features = 0),
+        ("no groups", |f| f.n_groups = 0),
+        ("no draws", |f| f.n_draw = 0),
+        ("subsample larger than the ids", |f| {
+            f.n_draw = f.n_groups + 1
+        }),
+        ("unsorted grid", |f| f.grid.swap(0, 1)),
+        ("tied grid", |f| f.grid[1] = f.grid[0]),
+        ("NaN in grid", |f| f.grid[0] = f64::NAN),
+    ];
+    for (why, edit) in edits {
+        let mut bad = flat.clone();
+        edit(&mut bad);
+        assert!(bad.to_forest().is_err(), "{why}");
+    }
+    // Bootstrap may draw more ids than exist.
+    let mut ok = flat;
+    ok.bootstrap = true;
+    ok.n_draw = ok.n_groups + 1;
+    assert!(ok.to_forest().is_ok());
 }
 
 fn valid_flat() -> FlatForest {
@@ -109,6 +137,7 @@ fn valid_flat() -> FlatForest {
 fn structurally_consistent_but_invalid_states_error() {
     // An empty tree: offsets agree with each other but there is no root.
     let empty = FlatForest {
+        format_version: FORMAT_VERSION,
         grid: vec![1.0],
         tree_seeds: vec![0],
         n_features: 1,
@@ -122,6 +151,7 @@ fn structurally_consistent_but_invalid_states_error() {
     assert!(empty.to_forest().is_err());
     // No trees at all.
     let none = FlatForest {
+        format_version: FORMAT_VERSION,
         node_offsets: vec![0],
         leaf_offsets: vec![0],
         event_offsets: vec![0],
@@ -142,12 +172,23 @@ fn structurally_consistent_but_invalid_states_error() {
     let mut bad = flat.clone();
     bad.event_idx.swap(e0, e0 + 1);
     assert!(bad.to_forest().is_err(), "unsorted event times");
+    for (value, why) in [
+        (f64::NAN, "NaN cumhaz"),
+        (f64::INFINITY, "infinite cumhaz"),
+        (-1e-9, "negative cumhaz"),
+        (flat.cumhaz[e0 + 1] + 1.0, "decreasing cumhaz"),
+    ] {
+        let mut bad = flat.clone();
+        bad.cumhaz[e0] = value;
+        assert!(bad.to_forest().is_err(), "{why}");
+    }
     let mut bad = flat.clone();
-    bad.d[e0] = bad.y[e0] + 1.0;
-    assert!(bad.to_forest().is_err(), "d > y");
-    let mut bad = flat;
-    bad.y[e0] = 0.0;
-    assert!(bad.to_forest().is_err(), "y = 0");
+    bad.cumhaz.pop();
+    assert!(bad.to_forest().is_err(), "cumhaz shorter than event_idx");
+    let mut old = flat;
+    old.format_version = 1;
+    let err = old.to_forest().unwrap_err();
+    assert!(err.contains("format version 1"), "{err}");
 }
 
 #[test]
@@ -155,6 +196,7 @@ fn survival_aggregation_is_finite_for_large_hazards() {
     // Two single-leaf trees whose cumulative hazard reaches 1000 (1000 events, d = y = 1).
     let k = 1000u32;
     let flat = FlatForest {
+        format_version: FORMAT_VERSION,
         grid: (0..k).map(|t| t as f64 + 1.0).collect(),
         tree_seeds: vec![1, 2],
         n_features: 1,
@@ -168,8 +210,7 @@ fn survival_aggregation_is_finite_for_large_hazards() {
         leaf_offsets: vec![0, 1, 2],
         event_offsets: vec![0, k as u64, 2 * k as u64],
         event_idx: (0..k).chain(0..k).collect(),
-        d: vec![1.0; 2 * k as usize],
-        y: vec![1.0; 2 * k as usize],
+        cumhaz: (1..=k).chain(1..=k).map(f64::from).collect(),
         ..Default::default()
     };
     let forest = flat.to_forest().unwrap();

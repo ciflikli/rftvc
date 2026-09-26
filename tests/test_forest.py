@@ -63,7 +63,7 @@ def test_hazard_aggregation_is_mean_of_tree_hazards():
         leaves = forest.apply(X)[:, b]
         h = np.empty((len(X), len(times)))
         for i, leaf in enumerate(leaves):
-            lt, *_, cum = map(np.asarray, forest.forest_.leaf_profile(b, int(leaf)))
+            lt, cum = map(np.asarray, forest.forest_.leaf_profile(b, int(leaf)))
             h[i] = np.r_[0.0, cum][np.searchsorted(lt, times, side="right")]
         per_tree.append(h)
     np.testing.assert_allclose(forest.predict_cumulative_hazard(X), np.mean(per_tree, axis=0), atol=1e-12)
@@ -96,6 +96,55 @@ def test_pickle_roundtrip_and_clone():
     np.testing.assert_array_equal(model.predict_cumulative_hazard(X), restored.predict_cumulative_hazard(X))
     np.testing.assert_array_equal(model.forest_.in_bag_ids(3), restored.forest_.in_bag_ids(3))
     assert clone(model).get_params() == model.get_params()
+
+
+def _state(model):
+    return dict(model.forest_.__reduce__()[1][0])
+
+
+def test_pre_s9_state_is_rejected():
+    X, y = _data()
+    model = SurvivalForestTV(n_estimators=3, random_state=0).fit(X, y)
+    state = _state(model)
+    type(model.forest_)._from_state(state)  # the current state loads
+    old = {k: v for k, v in state.items() if k not in ("format_version", "cumhaz")}
+    n = len(state["event_idx"])
+    old.update(d=np.ones(n), y=np.full(n, 2.0))
+    with pytest.raises(ValueError, match="older rftvc build"):
+        type(model.forest_)._from_state(old)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        lambda s: s.update(format_version=3),
+        lambda s: s.update(n_features=0),
+        lambda s: s.update(grid=s["grid"][::-1].copy()),
+        lambda s: s.update(cumhaz=-s["cumhaz"]),
+    ],
+    ids=["future version", "no features", "unsorted grid", "negative cumhaz"],
+)
+def test_corrupt_state_raises_value_error(edit):
+    X, y = _data()
+    model = SurvivalForestTV(n_estimators=3, random_state=0).fit(X, y)
+    state = _state(model)
+    edit(state)
+    with pytest.raises(ValueError):
+        type(model.forest_)._from_state(state)
+
+
+def test_nbytes_counts_only_hazards_and_event_indices():
+    # Per leaf entry: a u32 grid index and an f64 cumulative hazard (no d / y);
+    # per leaf a u32 offset; per node a 24-byte enum; one copy of the grid. The
+    # arrays are shrunk to fit, so allocated capacity equals this count.
+    X, y = _data()
+    model = SurvivalForestTV(n_estimators=5, random_state=0).fit(X, y)
+    s = _state(model)
+    n_trees, n_nodes = len(s["tree_seeds"]), len(s["node_feature"])
+    n_leaves, n_entries = len(s["event_offsets"]) - 1, len(s["event_idx"])
+    expected = 24 * n_nodes + 4 * (n_leaves + n_trees) + 12 * n_entries + 8 * len(s["grid"])
+    assert n_entries > n_leaves > n_trees
+    assert model.forest_.nbytes == expected
 
 
 def test_predict_risk_matches_survival():

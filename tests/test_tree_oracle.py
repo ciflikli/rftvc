@@ -33,7 +33,7 @@ def test_root_leaf_matches_nelson_aalen(ties):
     X, t, e = _data(300, 3, seed=1, ties=ties)
     model = _tree(max_depth=0).fit(X, make_survival_y(t, e))
     assert model.forest_.n_leaves(0) == 1
-    times, d, y, cumhaz = model.forest_.leaf_profile(0, 0)
+    times, cumhaz = model.forest_.leaf_profile(0, 0)
     naf = NelsonAalenFitter(nelson_aalen_smoothing=False).fit(t, e, timeline=times)
     np.testing.assert_allclose(cumhaz, naf.cumulative_hazard_.to_numpy().ravel(), rtol=0, atol=1e-10)
     np.testing.assert_allclose(model.predict_cumulative_hazard(X[:5], times), np.tile(cumhaz, (5, 1)), atol=1e-10)
@@ -42,7 +42,7 @@ def test_root_leaf_matches_nelson_aalen(ties):
 def test_cumulative_hazard_is_right_continuous_step():
     X, t, e = _data(100, 1, seed=2)
     model = _tree(max_depth=0).fit(X, make_survival_y(t, e))
-    times, *_, cumhaz = map(np.asarray, model.forest_.leaf_profile(0, 0))
+    times, cumhaz = map(np.asarray, model.forest_.leaf_profile(0, 0))
     before = model.predict_cumulative_hazard(X[:1], times - 1e-9)[0]
     at = model.predict_cumulative_hazard(X[:1], times)[0]
     np.testing.assert_allclose(at, cumhaz, atol=1e-12)

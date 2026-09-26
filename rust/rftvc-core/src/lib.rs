@@ -14,7 +14,7 @@ pub mod tree;
 
 pub use criterion::{LtrcLogRank, NodeScorer, Profile, SplitCriterion};
 pub use data::{Binned, SurvData};
-pub use flat::FlatForest;
+pub use flat::{FORMAT_VERSION, FlatForest};
 pub use forest::{Aggregate, Extrapolate, Forest, ForestParams, Groups, draw_ids, fit_forest};
 pub use grid::{Coarsened, Grid, coarsen};
 pub use rng::Rng;
