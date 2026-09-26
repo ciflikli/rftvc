@@ -110,3 +110,118 @@ impl NodeScorer for LogRankNode<'_> {
         if var > 0.0 { num * num / var } else { 0.0 }
     }
 }
+
+/// `x ln x` with `0 ln 0 = 0`.
+fn xlogx(x: f64) -> f64 {
+    if x > 0.0 { x * x.ln() } else { 0.0 }
+}
+
+/// Saturated grouped-time binomial log-likelihood of one event time:
+/// `d ln q + (y - d) ln(1 - q)` with `q = d / y`, and `0 ln 0 = 0`.
+fn binomial_ll(y: f64, d: f64) -> f64 {
+    xlogx(d) + xlogx(y - d) - xlogx(y)
+}
+
+/// Grouped-time binomial likelihood gain (S8 candidate C1).
+///
+/// At each of the parent's event times the failures form one binomial group
+/// with event probability `q = d / y` (the KM decrement), estimated separately
+/// in each node. The score is `ll_left + ll_right - ll_parent >= 0`. Event-free
+/// times contribute nothing, so the parent's event grid loses no information.
+pub struct GroupedLik;
+
+impl SplitCriterion for GroupedLik {
+    fn score(&self, l: &Profile, p: &Profile, _n_units_right: f64) -> f64 {
+        let mut gain = 0.0;
+        for k in 0..p.at_risk.len() {
+            let (y, d, yl, dl) = (p.at_risk[k], p.events[k], l.at_risk[k], l.events[k]);
+            gain += binomial_ll(yl, dl) + binomial_ll(y - yl, d - dl) - binomial_ll(y, d);
+        }
+        gain
+    }
+}
+
+/// `D ln(D / E)`: the constant-hazard Poisson log-likelihood without its `-D`
+/// term, which cancels between parent and children.
+fn poisson_ll(d: f64, e: f64) -> f64 {
+    if d > 0.0 && e > 0.0 {
+        d * (d / e).ln()
+    } else {
+        0.0
+    }
+}
+
+/// Constant-hazard Poisson (exposure) likelihood gain (S8 candidate C2).
+///
+/// Each node has one hazard `D / E`: events over person-time. The score is
+/// `ll_left + ll_right - ll_parent >= 0`, with `ll = D ln(D / E) - D`.
+pub struct PoissonExposure;
+
+impl SplitCriterion for PoissonExposure {
+    fn score(&self, l: &Profile, p: &Profile, _n_units_right: f64) -> f64 {
+        let d: f64 = p.events.iter().sum();
+        let dl: f64 = l.events.iter().sum();
+        poisson_ll(dl, l.exposure) + poisson_ll(d - dl, p.exposure - l.exposure)
+            - poisson_ll(d, p.exposure)
+    }
+}
+
+/// KM Gini impurity decrease at a horizon (S8 candidate C3; a heuristic, not a
+/// Brier objective).
+///
+/// Node impurity is `n_units * S(tau) (1 - S(tau))`, with `S` the delayed-entry
+/// Kaplan–Meier over the node's events at `t <= tau` (`S = 1` before the first).
+/// `tau` is on the time axis of the rows (the reset clock for landmark data).
+pub struct KmGini {
+    pub horizon: f64,
+}
+
+impl KmGini {
+    fn impurity(n: f64, s: f64) -> f64 {
+        n * s * (1.0 - s)
+    }
+}
+
+impl SplitCriterion for KmGini {
+    fn score(&self, l: &Profile, p: &Profile, n_units_right: f64) -> f64 {
+        let (mut s, mut sl, mut sr) = (1.0, 1.0, 1.0);
+        for k in 0..p.at_risk.len() {
+            if p.times[k] > self.horizon {
+                break;
+            }
+            let (y, d, yl, dl) = (p.at_risk[k], p.events[k], l.at_risk[k], l.events[k]);
+            let (yr, dr) = (y - yl, d - dl);
+            if y > 0.0 {
+                s *= 1.0 - d / y;
+            }
+            if yl > 0.0 {
+                sl *= 1.0 - dl / yl;
+            }
+            if yr > 0.0 {
+                sr *= 1.0 - dr / yr;
+            }
+        }
+        Self::impurity(p.n_units, s)
+            - Self::impurity(l.n_units, sl)
+            - Self::impurity(n_units_right, sr)
+    }
+}
+
+/// A split criterion by name: `"logrank"`, `"grouped_lik"`, `"poisson"` or
+/// `"km_gini"`. `horizon` is required for `"km_gini"` and rejected otherwise.
+pub fn criterion(name: &str, horizon: Option<f64>) -> Result<Box<dyn SplitCriterion>, String> {
+    match (name, horizon) {
+        ("km_gini", Some(h)) if h.is_finite() && h > 0.0 => Ok(Box::new(KmGini { horizon: h })),
+        ("km_gini", Some(h)) => Err(format!("criterion_horizon must be finite and > 0, got {h}")),
+        ("km_gini", None) => Err("split_criterion='km_gini' requires criterion_horizon".into()),
+        ("logrank" | "grouped_lik" | "poisson", Some(_)) => Err(format!(
+            "criterion_horizon is only used by split_criterion='km_gini', not {name:?}"
+        )),
+        ("logrank", None) => Ok(Box::new(LtrcLogRank)),
+        ("grouped_lik", None) => Ok(Box::new(GroupedLik)),
+        ("poisson", None) => Ok(Box::new(PoissonExposure)),
+        _ => Err(format!(
+            "split_criterion must be 'logrank', 'grouped_lik', 'poisson' or 'km_gini', got {name:?}"
+        )),
+    }
+}

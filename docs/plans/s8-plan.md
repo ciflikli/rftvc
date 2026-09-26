@@ -85,10 +85,12 @@ Branch `feat/s8-bakeoff`. Parent: `plan.md` S8; design.md D6 (criterion), D11 (a
   - Deviation: the right child's unit count cannot be derived from the parent and left (units may straddle), so `SplitCriterion::score` and `NodeScorer::score` take `n_units_right`.
   - Tests: a spy criterion checks every candidate's at-risk/events/times/exposure/units against brute force (300 random delayed-entry nodes, with straddling units and event-free children asserted to occur; a mutation of the exposure sum fails it); coarse exposure uses snapped times.
   - Log-rank predictions are bit-identical to `main` (exact, `ntime=20`, bootstrap). Fit time at 100k rows × 100 trees: +3% exact (2.66 vs 2.58 s), +4% coarse (0.94 vs 0.90 s), medians of 5.
-- [ ] `tests/ref/criteria_ref.py`: naive references for C1–C3, and a `_core.criterion_score` binding. Parity cases:
+- [x] `tests/ref/criteria_ref.py`: naive references for C1–C3, and a `_core.criterion_score` binding. Parity cases:
   - delayed entry, all-event and tied-event nodes;
   - C3 with τ before the first event, at a tie and after the last event;
   - invariants: L/R swap symmetry, zero gain for identical children, gain ≥ 0 for C1/C2, `0·log 0`.
+  - Done: `GroupedLik`, `PoissonExposure`, `KmGini` in `criterion.rs`, plus `criterion(name, horizon)` (validates the horizon: required and finite > 0 for `km_gini`, rejected otherwise). Rust hand-computed tests (`tests/criteria.rs`: C1 gain = 4 ln 2, C3 at τ inside/at/after the tie). `tests/test_criteria.py` (15 tests, hypothesis parity incl. log-rank) plus a lifelines check of the delayed-entry KM reference. Three mutants (τ exclusive, wrong right exposure, no straddling) each fail 2–5 tests.
+  - Note: the `km_gini` gain can be negative (straddling units count twice), so non-negativity is asserted only for C1/C2. The splitter already ignores scores ≤ 0.
 - [ ] `split_criterion` / `criterion_horizon` on `SurvivalForestTV` → `fit_forest_py`. Tests cover validation (`km_gini` without a horizon raises), `clone`, `get_params(deep=True)` via `forest__…`, nested-CV tuning of `forest__split_criterion`, and a fitted pickle round-trip. Re-run the compatibility matrix.
 - [ ] `landmark_cross_validate(return_predictions=True)` + tests
 - [ ] `bench/criteria/`: protocols A and B, calibration summaries, cluster bootstrap, CSV output; smoke config runs in seconds
