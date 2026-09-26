@@ -11,6 +11,10 @@ from ._estimator import _BaseForestTV
 from ._validation import check_competing_risks_y, competing_risks_labels, make_competing_risks_y
 
 
+# "quadratic", "ishwaran" and "logrank_all" are S14 bake-off challengers (experimental).
+_CRITERIA = ("composite", "quadratic", "ishwaran", "logrank_all")
+
+
 class CompetingRisksForestTV(_BaseForestTV):
     """Random forest for competing risks on counting-process data.
 
@@ -164,12 +168,13 @@ max_samples, bootstrap, n_jobs, random_state
             "split_cause": self._split_code,
             "min_events_leaf_cause": self.min_events_leaf_cause,
             "leaf_events": True,
+            "criterion": self.criterion,
         }
 
     def _validate_params(self):
         super()._validate_params()
-        if self.criterion != "composite":
-            raise ValueError(f"criterion must be 'composite', got {self.criterion!r}")
+        if self.criterion not in _CRITERIA:
+            raise ValueError(f"criterion must be one of {_CRITERIA}, got {self.criterion!r}")
         if self.min_events_leaf_cause is not None:
             self._check_int("min_events_leaf_cause", minimum=1)
             if self.split_cause is None:

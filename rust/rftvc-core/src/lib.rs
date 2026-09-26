@@ -13,7 +13,8 @@ pub mod splitter;
 pub mod tree;
 
 pub use criterion::{
-    CompositeCauseLogRank, LtrcLogRank, NodeScorer, Profile, SingleCause, SplitCriterion,
+    CompositeCauseLogRank, IshwaranComposite, LtrcLogRank, NodeScorer, Profile,
+    QuadraticCauseLogRank, SingleCause, SplitCriterion, pinv_quadratic_form,
 };
 pub use data::{Binned, SurvData};
 pub use flat::{FORMAT_VERSION, FlatForest};

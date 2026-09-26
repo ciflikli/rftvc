@@ -8,3 +8,4 @@ User guide
    time_grid
    prediction
    evaluation
+   competing_risks

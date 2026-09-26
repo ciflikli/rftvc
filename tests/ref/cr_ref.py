@@ -48,3 +48,34 @@ def aalen_johansen_ref(start, stop, codes, n_causes):
         cumhaz[i], cif[i], surv[i] = h, f, s
     return times, cumhaz, cif, surv
 
+
+
+def cause_moments_ref(start, stop, codes, left, n_causes):
+    """Numerators ``U_j`` and the multivariate hypergeometric covariance ``V`` over times with ``y >= 2``."""
+    start, stop = np.asarray(start, float), np.asarray(stop, float)
+    codes, left = np.asarray(codes), np.asarray(left, bool)
+    U, V = np.zeros(n_causes), np.zeros((n_causes, n_causes))
+    for t in np.unique(stop[codes != 0]):
+        at_risk = (start < t) & (t <= stop)
+        y, yl = at_risk.sum(), (at_risk & left).sum()
+        if y < 2:
+            continue
+        f = yl / y
+        d = np.array([((codes == j) & (stop == t)).sum() for j in range(1, n_causes + 1)], float)
+        dl = np.array([((codes == j) & (stop == t) & left).sum() for j in range(1, n_causes + 1)], float)
+        U += dl - d * f
+        V += f * (1 - f) / (y - 1) * (np.diag(d * y) - np.outer(d, d))
+    return U, V
+
+
+def quadratic_ref(start, stop, codes, left, n_causes):
+    U, V = cause_moments_ref(start, stop, codes, left, n_causes)
+    if not V.any():
+        return 0.0
+    return float(U @ np.linalg.pinv(V, rcond=1e-10, hermitian=True) @ U)
+
+
+def ishwaran_ref(start, stop, codes, left, n_causes):
+    U, V = cause_moments_ref(start, stop, codes, left, n_causes)
+    var = np.trace(V)
+    return float(U.sum() ** 2 / var) if var > 0 else 0.0

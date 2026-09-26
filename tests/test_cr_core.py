@@ -366,3 +366,47 @@ def test_core_rejects_malformed_inputs_without_panicking():
         _core.fit_forest(X, np.zeros(2), np.ones(2), np.array([0, 2], np.uint8), groups, 2, **kw)
     with pytest.raises(ValueError, match="split_cause"):
         _core.fit_forest(X, np.zeros(2), np.ones(2), ev, groups, 2, **{**kw, "split_cause": 2})
+
+
+# --- S14 bake-off challengers ---------------------------------------------------------
+
+
+@settings(max_examples=300, deadline=None)
+@given(_split_data())
+def test_challenger_scores_match_references(data):
+    from tests.ref.cr_ref import ishwaran_ref, quadratic_ref
+
+    start, stop, codes, left, n_causes = data
+    q = _core.cause_score(start, stop, codes, left, n_causes, criterion="quadratic")
+    assert q == pytest.approx(quadratic_ref(start, stop, codes, left, n_causes), rel=1e-7, abs=1e-9)
+    i = _core.cause_score(start, stop, codes, left, n_causes, criterion="ishwaran")
+    assert i == pytest.approx(ishwaran_ref(start, stop, codes, left, n_causes), rel=1e-9, abs=1e-12)
+    a = _core.cause_score(start, stop, codes, left, n_causes, criterion="logrank_all")
+    assert a == pytest.approx(logrank_ref(start, stop, codes != 0, left), rel=1e-9, abs=1e-12)
+
+
+def test_quadratic_handles_a_singular_covariance():
+    # Every subject at risk at t = 1 fails (two causes): d_1 + d_2 = y, so V is singular there.
+    start = np.zeros(6)
+    stop = np.array([1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
+    codes = np.array([1, 2, 1, 2, 2, 1], np.uint8)
+    left = np.array([True, False, True, False, True, False])
+    from tests.ref.cr_ref import cause_moments_ref, quadratic_ref
+
+    _, V = cause_moments_ref(start[:2], stop[:2], codes[:2], left[:2], 2)
+    assert np.linalg.matrix_rank(V) == 1
+    got = _core.cause_score(start[:2], stop[:2], codes[:2], left[:2], 2, criterion="quadratic")
+    assert np.isfinite(got) and got == pytest.approx(quadratic_ref(start[:2], stop[:2], codes[:2], left[:2], 2))
+    got = _core.cause_score(start, stop, codes, left, 2, criterion="quadratic")
+    assert got == pytest.approx(quadratic_ref(start, stop, codes, left, 2), rel=1e-9)
+
+
+def test_one_cause_challengers_are_the_survival_forest():
+    X, y, ids = _cp_data(80, 0)
+    y_cr = make_competing_risks_y(y["stop"], y["event"].astype(int), start=y["start"])
+    kw = dict(n_estimators=4, min_ids_leaf=3, random_state=0)
+    ref = _state(SurvivalForestTV(**kw).fit(X, y, ids))
+    for crit in ["quadratic", "ishwaran", "logrank_all"]:
+        got = _state(CompetingRisksForestTV(criterion=crit, **kw).fit(X, y_cr, ids))
+        for k in ref:
+            np.testing.assert_array_equal(np.asarray(ref[k]), np.asarray(got[k]), err_msg=f"{crit} {k}")
