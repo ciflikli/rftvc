@@ -110,8 +110,11 @@ Evaluation
   - ``cindex_dynamic(kind="incident")``: the IPCW Wolbers C. Pairs with subjects
     still at risk are weighted ``1/G(T_i-)^2``, as in the survival version;
     pairs with competing events ``1/(G(T_i-) G(T_j-))``.
-
-  Competing-risks AUC is not implemented.
+  - ``cindex_dynamic(kind="cumulative")``: the competing-risks AUC at the
+    horizon (Blanche et al. 2013, definition 2). Cause-*k* cases are compared
+    with every observed non-case: subjects event-free through the horizon, and
+    subjects with a competing event before it. A subject censored exactly at the
+    horizon counts as event-free, as in the Brier score.
 - ``landmark_cross_validate`` accepts a ``LandmarkCompetingRisksForest``. It fixes
   one cause vocabulary and one scored cause before splitting, so every fold
   scores the same cause.

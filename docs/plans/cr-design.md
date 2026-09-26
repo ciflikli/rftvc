@@ -114,7 +114,7 @@ Per id and along its path, each row routes to its own leaf per tree, exactly as 
   - Concordant if `r_i > r_j`, ½ for ties in `r`.
   - Dynamic version at `(s, w)`, `τ = s+w`, on the landmark risk set, with IPCW: type A weight `1/G(T_i−)²` (amended in S13 from `1/(G(T_i−) G(T_i))`: Uno's convention, so one cause equals the existing incident C exactly; the two differ only when censoring ties a case time), type B `1/(G(T_i−) G(T_j−))`, `G` as in the Brier score.
   - New `concordance_index_cr(y, risk, cause, ids=None)` (no IPCW, whole follow-up, `τ` = last event time) backs `score()` and OOB; `cindex_dynamic(…, cause=k)` is the IPCW version. The existing Boolean `_concordance` is not reused for type-B pairs. Validated against a hand-worked fixture.
-- Time-dependent AUC for competing risks (Blanche 2013): deferred.
+- Time-dependent AUC for competing risks (Blanche 2013, definition 2): added in S15 (`cindex_dynamic(kind="cumulative", cause=k)`; `s15-plan.md`).
 - **OOB:** the native call returns an `n_rows × J` row-major array of `F_j` at the last event time from each row's OOB trees, plus `oob_n_trees_` per row (unchanged meaning). Public `oob_prediction_` is `(n, J)` with columns in `causes_` order; rows dropped by coarsening are restored as all-NaN rows. `oob_score_` = `concordance_index_cr` on the `score_cause` column.
 - References in tests: `comprisk` metrics on right-censored data (dev dependency, optional); hand-computed small fixtures.
 
@@ -141,7 +141,7 @@ Per id and along its path, each row routes to its own leaf per tree, exactly as 
 | API sprawl (two estimators, two landmark wrappers) | shared private bases; one user-guide page |
 
 ## Out of scope
-Subdistribution (Fine–Gray) targets and Gray splitting (C6); multi-state transition probabilities and recurrent events (C8 keeps the door open: cause codes → transition codes, rows grouped by from-state); competing-risks AUC; weighted criteria.
+Subdistribution (Fine–Gray) targets and Gray splitting (C6); multi-state transition probabilities and recurrent events (C8 keeps the door open: cause codes → transition codes, rows grouped by from-state); weighted criteria. (Competing-risks AUC was out of scope here and was added in S15.)
 
 ## Review log (Codex, 2026-09-26)
 1. Approach-B equivalence broke on RNG use: `can_split` is decided before features are drawn (high) → cause-k floor enters the pre-RNG gate; test node arrays, not only hazards.

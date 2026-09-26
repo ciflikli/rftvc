@@ -42,10 +42,10 @@ Notation: `w` horizon (landmark reset clock), `k` cause of interest, `G` censori
 - Docs build with `-W`.
 
 ## Tasks
-- [ ] Fixture: extend `make_cr_metric_fixtures.py` with the AUC and regenerate
-- [ ] `cindex_dynamic` cumulative with `cause`; CV branch; docs
-- [ ] Tests + test-quality audit (mutation)
-- [ ] Identity bench; `cr-plan.md` note
+- [x] Fixture: extend `make_cr_metric_fixtures.py` with the AUC and regenerate
+- [x] `cindex_dynamic` cumulative with `cause`; CV branch; docs
+- [x] Tests + test-quality audit (mutation)
+- [x] Identity bench; `cr-plan.md` note
 - [ ] Codex diff review; fixes
 
 ## Plan review (Codex, 2026-09-26)
@@ -53,3 +53,7 @@ Notation: `w` horizon (landmark reset clock), `k` cause of interest, `G` censori
 2. `_ipcw` drops the competing mask that the AUC needs (high) → a `_ipcw_classes` helper, plus a literal test with only competing controls.
 3. "Bit-for-bit" with one cause was not guaranteed by the weighted formula (medium) → a fast path through the existing code when there are no competing controls.
 4. The parent docs would contradict S15 (low) → the explicit doc edits are listed.
+
+## Test-quality audit (2026-09-26)
+- Oracles: comprisk AUC (non-boundary), hand-worked literals pinning the tie convention (63/88 ours vs 73/88 comprisk's), an only-competing-controls case, and a weighted brute force (hypothesis). The one-cause equality is exact via the fast path.
+- Mutation: restricting controls to event-free (definition 1) fails 5 tests (the oracle for both causes, the boundary literal, the only-competing case and the brute force).

@@ -153,11 +153,13 @@ def _manual_group_cv(model, df, n_splits, w, n_times):
             F = fitted.forest_.predict_cumulative_incidence(data.X[m], times, cause=k)
             y = data.y[m]
             brier = brier_landmark(y, F[:, -1], w, cause=k, y_censor=y)
-            try:
-                c = cindex_dynamic(y, F[:, -1], w, kind="incident", cause=k, y_censor=y)
-            except UndefinedMetricError:
-                c = np.nan
-            out.append((fold, float(s), brier, c))
+            c = {}
+            for kind in ("incident", "cumulative"):
+                try:
+                    c[kind] = cindex_dynamic(y, F[:, -1], w, kind=kind, cause=k, y_censor=y)
+                except UndefinedMetricError:
+                    c[kind] = np.nan
+            out.append((fold, float(s), brier, c["incident"], c["cumulative"]))
     return out
 
 
@@ -165,15 +167,18 @@ def test_cv_equals_the_manual_loop(pbc):
     model = _model()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
-        res, preds = landmark_cross_validate(model, pbc, GroupKFold(3), ("brier", "cindex_incident"),
+        res, preds = landmark_cross_validate(model, pbc, GroupKFold(3),
+                                             ("brier", "cindex_incident", "cindex_cumulative"),
                                              n_times=4, return_predictions=True)
         manual = _manual_group_cv(model, pbc, 3, H, 4)
-    got = list(zip(res["fold"], res["landmark"], res["brier"], res["cindex_incident"]))
+    got = list(zip(res["fold"], res["landmark"], res["brier"], res["cindex_incident"], res["cindex_cumulative"]))
     assert len(got) == len(manual)
     for g, m in zip(got, manual):
         assert g[:2] == m[:2]
         assert g[2] == pytest.approx(m[2], abs=1e-15)
-        assert (np.isnan(g[3]) and np.isnan(m[3])) or g[3] == pytest.approx(m[3], abs=1e-15)
+        for a, b in zip(g[3:], m[3:]):
+            assert (np.isnan(a) and np.isnan(b)) or a == pytest.approx(b, abs=1e-15)
+    assert np.isfinite(res["cindex_cumulative"].to_numpy()).any()
     assert set(preds.columns) >= {"cause", "risk", "cif"} and "survival" not in preds.columns
     assert preds["cause"].unique().to_list() == [1]
     assert all(len(v) == 4 for v in preds["cif"].to_list())
@@ -218,8 +223,6 @@ def test_time_split_and_nested_selection_run(pbc):
                                          param_grid={"forest__max_depth": [1, None]}, inner_cv=GroupKFold(2))
     assert res.height >= 1 and np.isfinite(res["brier"].to_numpy()).all()
     assert nested["params"].str.contains("max_depth").all()
-    with pytest.raises(ValueError, match="cindex_cumulative"):
-        landmark_cross_validate(model, pbc, GroupKFold(2), ("cindex_cumulative",))
 
 
 def test_censor_at_keeps_cause_labels():

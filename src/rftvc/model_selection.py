@@ -253,9 +253,9 @@ def landmark_cross_validate(
     scored cause ``k`` (``model.score_cause``, else the first label) are fixed
     before splitting and set on every fit, so each fold has the same outputs.
     Scores use ``F_k`` with ``cause=k``: the cause-specific IPCW Brier,
-    integrated Brier (``integrated_brier`` of ``F_k``) and Wolbers C
-    (``cindex_incident``); ``cindex_cumulative`` (competing-risks AUC) is not
-    available. Custom scorers receive ``cause=k`` as a keyword.
+    integrated Brier (``integrated_brier`` of ``F_k``), Wolbers C
+    (``cindex_incident``) and the competing-risks AUC (``cindex_cumulative``,
+    Blanche definition 2). Custom scorers receive ``cause=k`` as a keyword.
 
     Parameters
     ----------
@@ -313,8 +313,6 @@ def landmark_cross_validate(
     ids = data.ids
     cause = None
     if isinstance(model, LandmarkCompetingRisksForest):
-        if "cindex_cumulative" in scoring:
-            raise ValueError("cindex_cumulative (competing-risks AUC) is not available for competing risks")
         # One vocabulary and one scored cause for every (outer and inner) fit.
         labels = _as_labels(data.y["event"])
         causes = np.unique(labels[labels != 0]) if model.causes is None else _check_causes(model.causes)
