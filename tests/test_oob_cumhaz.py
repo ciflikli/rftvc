@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from bench.perf_fit import synth
-from rftvc import CompetingRisksForestTV, SurvivalForestTV, make_competing_risks_y
+from rftvc import CompetingRisksForestTV, SurvivalForestTV, make_competing_risks_y, make_survival_y
 
 X, Y, IDS = synth(1200, rows_per_id=4, seed=1)
 
@@ -29,6 +29,30 @@ def test_row_sum_equals_oob_mortality_bitwise(mode):
     assert np.array_equal(np.cumsum(H, axis=1)[:, -1], ref, equal_nan=True)
     np.testing.assert_array_equal(n_trees, ref_n)
     np.testing.assert_array_equal(np.isnan(H).all(axis=1), n_trees == 0)
+
+
+def test_each_column_is_its_own_time():
+    """Row sums cannot see values moved between time columns; single-time calls can."""
+    m = SurvivalForestTV(n_estimators=25, random_state=0).fit(X, Y, IDS)
+    d = m._rebuild_design(X, Y, IDS)
+    times = m.event_times_[[0, 5, 40, -1]]
+    H, _ = m.forest_.oob_cumhaz(d.X, *d.oob_set, times, m.aggregate, 1)
+    for j, t in enumerate(times):
+        mort, _ = m.forest_.oob_mortality(d.X, *d.oob_set, np.array([t]), m.aggregate, 1)
+        assert np.array_equal(H[:, j], mort, equal_nan=True)
+    ok = np.isfinite(H).all(axis=1)
+    assert (np.diff(H[ok], axis=1) >= 0).all()  # a cumulative hazard does not decrease
+
+
+def test_stacked_coarse_block_rebuild_matches_the_fit():
+    """The rebuilt design reproduces the fit's OOB predictions bit-for-bit (independent of _fit_design)."""
+    y = make_survival_y(Y["stop"] - Y["start"], Y["event"], start=np.zeros(len(Y)))
+    bt = Y["start"].copy()
+    m = SurvivalForestTV(n_estimators=25, ntime=20, resample_unit="block", block_length=2.0, oob_score=True,
+                         random_state=0).fit(X, y, IDS, layout="stacked", block_time=bt)
+    d = m._rebuild_design(X, y, IDS, block_time=bt)
+    H, _ = m.forest_.oob_cumhaz(d.X, *d.oob_set, m.event_times_, m.aggregate, 1)
+    assert np.array_equal(np.cumsum(H, axis=1)[:, -1], m.oob_prediction_[d.kept], equal_nan=True)
 
 
 def test_rows_without_an_oob_tree_are_nan():

@@ -54,14 +54,13 @@ def test_zero_exposure_zero_rate_cells_are_not_nan():
     y = make_survival_y(np.array([1.0, 2.0]), np.array([True, False]), start=np.array([0.0, 1.0]))
     H = np.array([[0.0, A, A], [0.0, A, A]])  # zero rate in window 2, where row 2 is censored
     r = pe(y, H, alpha=0.0, reduce="sum")
-    assert np.isfinite(r.total)
-    assert r.by_window[1] == 0.0
+    np.testing.assert_allclose(r.by_window, [np.log(A) - A, 0.0], rtol=1e-14)  # row 1 only; row 2 adds -0 * 1
 
 
 def test_empty_window_scores_zero():
     y = make_survival_y(np.array([1.0]), np.array([True]))
     r = pe(y, np.array([[0.0, A, A + B, A + B + 1]]), w=np.array([0.0, 1.0, 2.0, 3.0]), alpha=0.0, reduce="sum")
-    np.testing.assert_allclose(r.by_window[1:], 0.0)
+    np.testing.assert_allclose(r.by_window, [np.log(A) - A, 0.0, 0.0], rtol=1e-14)
 
 
 def test_matches_reference_and_decomposes():
@@ -161,6 +160,11 @@ def test_competing_risks_labels_and_causes():
         assert sel.total == pytest.approx(single.total, rel=1e-12)
         assert sel.by_cause is None
     np.testing.assert_allclose(r.by_cause_window.sum(axis=1), r.by_cause, rtol=1e-12)
+    for c in (2, 5):  # per-event normalisation with one cause divides by that cause's events
+        sel = pe(y, H, null=null, causes=[2, 5], cause=c, alpha=0.1)
+        sel_sum = pe(y, H, null=null, causes=[2, 5], cause=c, alpha=0.1, reduce="sum")
+        assert sel.n_events == int(np.sum(labels == c))
+        assert sel.total == pytest.approx(sel_sum.total / np.sum(labels == c), rel=1e-12)
     assert r.by_cause.sum() == pytest.approx(r.total, rel=1e-12)
     # a fitted cause absent from y is scored by its compensator only
     no5 = make_competing_risks_y(stop, np.where(labels == 5, 0, labels))

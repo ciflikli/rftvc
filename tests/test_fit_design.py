@@ -149,6 +149,19 @@ def test_fingerprint_block_time_and_split_id():
     assert d.fingerprint == mg._fit_fingerprint_
 
 
+def test_rebuild_with_an_ids_column_in_a_dataframe():
+    pd = pytest.importorskip("pandas")
+    df = pd.DataFrame(X, columns=[f"x{j}" for j in range(X.shape[1])]).assign(id=IDS)
+    m = SurvivalForestTV(n_estimators=10, oob_score=True, random_state=0).fit(df, Y, ids="id")
+    d = m._rebuild_design(df, Y)  # ids default to the fit-time column
+    assert d.fingerprint == m._fit_fingerprint_
+    np.testing.assert_array_equal(d.X, X)  # the id column is not a feature
+    H, _ = m.forest_.oob_cumhaz(d.X, *d.oob_set, m.event_times_, m.aggregate, 1)
+    assert np.array_equal(np.cumsum(H, axis=1)[:, -1], m.oob_prediction_, equal_nan=True)
+    with pytest.raises(ValueError, match="do not match"):
+        m._rebuild_design(df.assign(id=IDS + 1), Y)
+
+
 def test_competing_baseline_per_cause():
     y = _cr_y(Y)
     m = CompetingRisksForestTV(n_estimators=3, random_state=0).fit(X, y, IDS)
