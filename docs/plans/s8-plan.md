@@ -100,7 +100,12 @@ Branch `feat/s8-bakeoff`. Parent: `plan.md` S8; design.md D6 (criterion), D11 (a
     - clone / pickle / `forest__` nested params;
     - nested `landmark_cross_validate` tuning `forest__split_criterion`, including `km_gini` + horizon.
   - Compatibility matrix unchanged (33 passed, 24 xfailed). Default predictions are still bit-identical to `main`. `sphinx-build -W` is clean.
-- [ ] `landmark_cross_validate(return_predictions=True)` + tests
+- [x] `landmark_cross_validate(return_predictions=True)` + tests
+  - Returns `(scores, predictions)`. Predictions hold one row per scored test row: `fold, landmark, id, time, event` (reset clock), `risk = 1 − S(w)`, and `survival` (a list over the `n_times` IBS grid). The default return is unchanged. `_score_landmark` now takes the predicted `S`, so each fold/landmark is predicted once.
+  - Tests (3):
+    - every fold/landmark `brier` and `integrated_brier` is reproduced from the returned rows alone;
+    - under `GroupKFold`, every landmark row is predicted exactly once and each id falls in one fold;
+    - the default return is unchanged, and nested CV also returns predictions.
 - [ ] `bench/criteria/`: protocols A and B, calibration summaries, cluster bootstrap, CSV output; smoke config runs in seconds
 - [ ] Full runs; `docs/bench/s8-bakeoff.md`, with the recommendation and D11 verdict against the pre-registered rule
 - [ ] Apply the decision: defaults, removal of losing criteria, user-guide criterion section, design.md D6/D11 updated
