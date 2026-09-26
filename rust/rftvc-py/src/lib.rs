@@ -58,7 +58,23 @@ fn surv_data(
     let s = vec1(start, "start")?;
     let t = vec1(stop, "stop")?;
     let e = vec1(event, "event")?;
+    check_times(&s, &t)?;
     Ok(SurvData::new(&s, &t, &e))
+}
+
+/// Finite times with `start < stop` on every row (the grid sorts them, and a
+/// row with no at-risk time cannot carry an event).
+fn check_times(start: &[f64], stop: &[f64]) -> PyResult<()> {
+    let ok = start
+        .iter()
+        .zip(stop)
+        .all(|(a, b)| a.is_finite() && b.is_finite() && a < b);
+    if start.len() != stop.len() || !ok {
+        return Err(PyValueError::new_err(
+            "start and stop must be finite with start < stop on every row",
+        ));
+    }
+    Ok(())
 }
 
 fn pool(n_jobs: usize) -> PyResult<rayon::ThreadPool> {
@@ -96,6 +112,7 @@ fn cause_data(
     if !(1..=255).contains(&n_causes) {
         return Err(PyValueError::new_err("n_causes must be in [1, 255]"));
     }
+    check_times(&s, &t)?;
     if e.iter().any(|&c| c as usize > n_causes) {
         return Err(PyValueError::new_err(
             "event codes must be in [0, n_causes]",
@@ -518,6 +535,9 @@ fn fit_forest_py(
     )?;
     if !(2..=256).contains(&max_bins) {
         return Err(PyValueError::new_err("max_bins must be in [2, 256]"));
+    }
+    if p == 0 {
+        return Err(PyValueError::new_err("X must have at least one feature"));
     }
     let groups: Vec<u32> = vec1(&groups, "groups")?;
     if n_groups == 0 || groups.iter().any(|&g| g as usize >= n_groups) {

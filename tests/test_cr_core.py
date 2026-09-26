@@ -268,7 +268,15 @@ def test_split_cause_splits_on_that_causes_signal(split_label, feature):
 
 @pytest.mark.parametrize(
     "params",
-    [{"ntime": 10}, {"resample_unit": "block", "block_length": 1.0}, {"oob_score": True}, {"aggregate": "cif"}],
+    [
+        {"ntime": 10},
+        {"resample_unit": "block", "block_length": 1.0},
+        {"resample_unit": "block"},
+        {"block_length": 1.0},
+        {"oob_buffer": 0},
+        {"oob_score": True},
+        {"aggregate": "cif"},
+    ],
 )
 def test_s12_options_raise(params):
     X, y, ids = _cr_data(40, seed=1)
@@ -360,3 +368,20 @@ def test_make_and_check_competing_risks_y():
 def test_survival_y_rejects_cause_labels_with_a_pointer():
     with pytest.raises(TypeError, match="CompetingRisksForestTV"):
         check_survival_y(np.array([(0.0, 1.0, 2)], dtype=CR_DTYPE))
+
+
+def test_core_rejects_malformed_inputs_without_panicking():
+    X = np.zeros((2, 1))
+    ev = np.array([1, 1], np.uint8)
+    kw = dict(n_trees=1, n_draw=2, bootstrap=False, max_depth=None, min_ids_leaf=1, min_events_leaf=1,
+              max_features=1, max_bins=255, seed=0, n_jobs=1, n_causes=1)
+    groups = np.array([0, 1], np.uint32)
+    for start, stop in [([0.0, 0.0], [1.0, np.nan]), ([0.0, np.inf], [1.0, 2.0]), ([0.0, 2.0], [1.0, 2.0])]:
+        with pytest.raises(ValueError, match="finite with start < stop"):
+            _core.fit_forest(X, np.array(start), np.array(stop), ev, groups, 2, **kw)
+    with pytest.raises(ValueError, match="at least one feature"):
+        _core.fit_forest(np.zeros((2, 0)), np.zeros(2), np.ones(2), ev, groups, 2, **kw)
+    with pytest.raises(ValueError, match="event codes"):
+        _core.fit_forest(X, np.zeros(2), np.ones(2), np.array([0, 2], np.uint8), groups, 2, **kw)
+    with pytest.raises(ValueError, match="split_cause"):
+        _core.fit_forest(X, np.zeros(2), np.ones(2), ev, groups, 2, **{**kw, "split_cause": 2})

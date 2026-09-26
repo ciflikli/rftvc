@@ -140,12 +140,23 @@ class CompetingRisksForestTV(_BaseForestTV):
         return {"n_causes": self.n_causes_, "split_cause": self._split_code}
 
     def _validate_params(self):
+        # S12 options first, so they raise NotImplementedError whatever else is set.
+        reserved = [
+            ("ntime", None),
+            ("resample_unit", "id"),
+            ("block_length", None),
+            ("oob_buffer", 1),
+            ("oob_score", False),
+            ("aggregate", "cif"),
+        ]
+        for name, default in reserved:
+            value = getattr(self, name)
+            unsupported = value == "cif" if name == "aggregate" else value != default
+            if unsupported:
+                raise NotImplementedError(f"{name}={value!r} {_S12}")
         super()._validate_params()
         if self.criterion != "composite":
             raise ValueError(f"criterion must be 'composite', got {self.criterion!r}")
-        for name, default in [("ntime", None), ("resample_unit", "id"), ("oob_score", False), ("aggregate", "hazard")]:
-            if getattr(self, name) != default:
-                raise NotImplementedError(f"{name}={getattr(self, name)!r} {_S12}")
 
     def _cause_index(self, cause, name="cause"):
         """Position of a cause label in ``causes_``."""

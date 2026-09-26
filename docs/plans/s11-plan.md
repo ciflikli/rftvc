@@ -120,7 +120,7 @@ Notation: `J` causes (internal codes 1..J, 0 = censored), `K` grid times, `T` re
 - [x] Python: validation helpers, `_BaseForestTV`, `CompetingRisksForestTV`, exports
 - [x] Tests: `tests/ref/cr_ref.py`, AJ fixture, `tests/test_cr_core.py`, validation + structure tests, updated `leaf_profile` callers; test-quality audit
 - [x] Identity bench + J = 2 timing; `plan.md` / `cr-plan.md` status + "S11 done" note
-- [ ] Codex diff review; fixes
+- [x] Codex diff review; fixes
 
 ## Plan review (Codex, 2026-09-26)
 1. The J = 1 identity claimed `1 − S` equality, but `S` is a product limit in the new class and `exp(−H)` in `SurvivalForestTV` (high) → the contract is narrowed to trees, leaves, `apply` and the cumulative hazard. A relationship test was added, and the `cr-plan.md` wording was corrected.
@@ -133,3 +133,8 @@ Notation: `J` causes (internal codes 1..J, 0 = censored), `K` grid times, `T` re
 - `test_split_cause_uses_that_causes_log_rank` only asserted that forests differ, so a label → code off-by-one would pass (weak). It was replaced by a feature-attribution test: cause 3 depends on x0 and cause 8 on x1, and the root split must follow `split_cause`.
 - `test_step_helper` tested an unused reference helper (slop) → both were removed.
 - Mutation checks: swapping the AJ update order fails 17 tests; summing only the first cause in the composite fails the hypothesis reference test.
+
+## Diff review (Codex, 2026-09-26)
+1. A direct `_core.fit_forest` call with zero feature columns panicked in `max_features.clamp(1, 0)` (medium; also on `main`) → `ValueError`. Test added.
+2. Direct binding calls with NaN / infinite times, or `start >= stop`, panicked in the grid sort or fitted rows with no at-risk time (medium; also on `main` for the bool path) → `check_times` in both binding constructors. Tests added.
+3. `oob_buffer` (and a bare `resample_unit="block"` / `block_length`) passed or raised `ValueError` instead of the S12 `NotImplementedError` (medium) → the reserved options are checked before base validation. Tests added.
