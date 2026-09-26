@@ -335,9 +335,24 @@ def test_dataframe_input_matches_arrays():
     assert a.feature_names.tolist() == ["z", "x0"]
     with pytest.raises(ValueError, match="ids column"):
         inspection.permutation_importance(m, dft, YT, ids="id", features=["id"], n_bootstrap=0)
+    with pytest.raises(ValueError, match="unknown feature 'bogus'"):
+        inspection.permutation_importance(m, dft, YT, ids="id", features=["bogus"], n_bootstrap=0)
 
 
 # --- OOB ------------------------------------------------------------------------------
+
+
+def test_subset_csr_composes():
+    """OOB re-prediction subsets the CSR set twice (once to the OOB rows, again to the
+    permuted rows within them); the composition must equal subsetting by the combined index directly."""
+    offsets = np.array([0, 2, 2, 5, 7, 9])
+    units = np.array([10, 11, 20, 21, 22, 30, 31, 40, 41])
+    off1, uni1 = inspection._subset_csr(offsets, units, np.array([0, 2, 3, 4]))
+    off2, uni2 = inspection._subset_csr(off1, uni1, np.array([1, 3]))  # positions within the first subset
+    off_direct, uni_direct = inspection._subset_csr(offsets, units, np.array([2, 4]))  # the same rows directly
+    np.testing.assert_array_equal(off2, off_direct)
+    np.testing.assert_array_equal(uni2, uni_direct)
+
 
 XS, YS, IDSS = synth(1200, p=4, rows_per_id=4, seed=1)
 OOB_MODES = {
