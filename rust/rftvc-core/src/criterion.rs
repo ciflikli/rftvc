@@ -2,9 +2,15 @@
 ///
 /// A child profile shares the parent's `times`. Log-rank reads only `at_risk`
 /// and `events`; the other fields serve likelihood and impurity criteria.
+#[derive(Clone, Copy)]
 pub struct Profile<'a> {
     pub at_risk: &'a [f64],
+    /// Events of any cause.
     pub events: &'a [f64],
+    /// Events per cause, cause-major: `cause_events[j * K + k]` for cause `j`
+    /// (0-based) at time `k` of `K = at_risk.len()`. For `n_causes == 1` it is `events`.
+    pub cause_events: &'a [f64],
+    pub n_causes: usize,
     /// Event times (the parent node's), aligned with `at_risk` / `events`.
     pub times: &'a [f64],
     /// Person-time: the sum of `stop - start` over the node's rows.
@@ -108,5 +114,153 @@ impl NodeScorer for LogRankNode<'_> {
             var += yl * (self.y[j] - yl) * self.c[j];
         }
         if var > 0.0 { num * num / var } else { 0.0 }
+    }
+}
+
+/// Composite cause-specific LTRC log-rank: `sum_j U_j^2 / V_j` over causes with
+/// `V_j > 0`, where `U_j`, `V_j` are the log-rank numerator and hypergeometric
+/// variance with "event" = cause `j` (cr-design.md C3). Unlike the all-cause
+/// statistic, opposing effects on two causes do not cancel.
+pub struct CompositeCauseLogRank;
+
+impl SplitCriterion for CompositeCauseLogRank {
+    fn score(&self, l: &Profile, p: &Profile, _n_units_right: f64) -> f64 {
+        let k = p.at_risk.len();
+        let mut total = 0.0;
+        for j in 0..p.n_causes {
+            let (pd, ld) = (cause_col(p, j), cause_col(l, j));
+            let (mut num, mut var) = (0.0, 0.0);
+            for t in 0..k {
+                let (y, d, yl) = (p.at_risk[t], pd[t], l.at_risk[t]);
+                if y < 2.0 || d == 0.0 {
+                    continue;
+                }
+                let frac = yl / y;
+                num += ld[t] - d * frac;
+                var += d * frac * (1.0 - frac) * (y - d) / (y - 1.0);
+            }
+            if var > 0.0 {
+                total += num * num / var;
+            }
+        }
+        total
+    }
+
+    /// Per cause, the `LogRankNode` terms `mask`, `e`, `c` (cause-major); causes
+    /// without an informative event time in the node are skipped.
+    fn node_scorer<'a>(&'a self, p: Profile<'a>) -> Box<dyn NodeScorer + 'a> {
+        let k = p.at_risk.len();
+        let mut causes = Vec::new();
+        for j in 0..p.n_causes {
+            let terms = log_rank_terms(p.at_risk, cause_col(&p, j));
+            if terms.0.iter().any(|&m| m > 0.0) {
+                causes.push((j, terms));
+            }
+        }
+        Box::new(CompositeNode {
+            y: p.at_risk,
+            k,
+            causes,
+        })
+    }
+}
+
+/// Cause `j`'s event counts of a profile (a contiguous column).
+#[inline]
+fn cause_col<'a>(p: &Profile<'a>, j: usize) -> &'a [f64] {
+    let k = p.at_risk.len();
+    &p.cause_events[j * k..(j + 1) * k]
+}
+
+/// `(mask, e, c)` of `LtrcLogRank::node_scorer` for events `d` at risk `y`.
+fn log_rank_terms(y: &[f64], d: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let k = y.len();
+    let (mut mask, mut e, mut c) = (vec![0.0; k], vec![0.0; k], vec![0.0; k]);
+    for j in 0..k {
+        let (y, d) = (y[j], d[j]);
+        if y < 2.0 || d == 0.0 {
+            continue;
+        }
+        mask[j] = 1.0;
+        e[j] = d / y;
+        c[j] = d * (y - d) / (y * y * (y - 1.0));
+    }
+    (mask, e, c)
+}
+
+/// The `LogRankNode` candidate loop on one column of left-child events.
+#[inline]
+fn log_rank_candidate(
+    y: &[f64],
+    yl: &[f64],
+    dl: &[f64],
+    mask: &[f64],
+    e: &[f64],
+    c: &[f64],
+) -> f64 {
+    let (mut num, mut var) = (0.0, 0.0);
+    for j in 0..y.len() {
+        let yl = yl[j];
+        num += mask[j] * dl[j] - yl * e[j];
+        var += yl * (y[j] - yl) * c[j];
+    }
+    if var > 0.0 { num * num / var } else { 0.0 }
+}
+
+type Terms = (Vec<f64>, Vec<f64>, Vec<f64>);
+
+struct CompositeNode<'a> {
+    y: &'a [f64],
+    k: usize,
+    /// Informative causes and their log-rank terms.
+    causes: Vec<(usize, Terms)>,
+}
+
+impl NodeScorer for CompositeNode<'_> {
+    fn score(&self, l: &Profile, _n_units_right: f64) -> f64 {
+        let k = self.k;
+        self.causes
+            .iter()
+            .map(|(j, (mask, e, c))| {
+                let dl = &l.cause_events[j * k..(j + 1) * k];
+                log_rank_candidate(self.y, l.at_risk, dl, mask, e, c)
+            })
+            .sum()
+    }
+}
+
+/// LTRC log-rank on one cause (`cause`, 0-based) with the other causes treated
+/// as censoring. It runs the operations of `LtrcLogRank`'s node scorer in the
+/// same order on the cause's column; times without a cause-`cause` event add
+/// exact zeros, so the score equals `LtrcLogRank` on "cause vs rest" data bit-for-bit.
+pub struct SingleCause {
+    pub cause: usize,
+}
+
+impl SplitCriterion for SingleCause {
+    fn score(&self, l: &Profile, p: &Profile, n_units_right: f64) -> f64 {
+        self.node_scorer(*p).score(l, n_units_right)
+    }
+
+    fn node_scorer<'a>(&'a self, p: Profile<'a>) -> Box<dyn NodeScorer + 'a> {
+        assert!(self.cause < p.n_causes, "split cause out of range");
+        Box::new(SingleCauseNode {
+            y: p.at_risk,
+            cause: self.cause,
+            terms: log_rank_terms(p.at_risk, cause_col(&p, self.cause)),
+        })
+    }
+}
+
+struct SingleCauseNode<'a> {
+    y: &'a [f64],
+    cause: usize,
+    terms: Terms,
+}
+
+impl NodeScorer for SingleCauseNode<'_> {
+    fn score(&self, l: &Profile, _n_units_right: f64) -> f64 {
+        let (mask, e, c) = &self.terms;
+        log_rank_candidate(self.y, l.at_risk, cause_col(l, self.cause), mask, e, c)
     }
 }

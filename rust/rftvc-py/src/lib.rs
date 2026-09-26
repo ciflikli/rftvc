@@ -1,16 +1,18 @@
 //! Python bindings: `rftvc._core`.
 
-use numpy::ndarray::Array2;
+use numpy::ndarray::{Array2, Array3};
 use numpy::{
-    IntoPyArray, PyArray1, PyArray2, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
+    IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2,
+    PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rftvc_core::{
-    Aggregate, Binned, Extrapolate, FlatForest, Forest, ForestParams, Grid, Groups, LtrcLogRank,
-    Profile, SplitCriterion, SplitParams, SurvData, TreeParams, best_split as core_best_split,
-    coarsen, exposure_of, fit_forest, node_profile, profile_on,
+    Aggregate, Binned, CompositeCauseLogRank, Extrapolate, FlatForest, Forest, ForestParams, Grid,
+    Groups, LtrcLogRank, Profile, SingleCause, SplitCriterion, SplitParams, SurvData, TreeParams,
+    best_split as core_best_split, cause_profile_on, coarsen, exposure_of, fit_forest,
+    node_profile, profile_on,
 };
 
 /// Contiguous 1-d input as a Vec. Strided views (e.g. a field of a structured
@@ -56,7 +58,23 @@ fn surv_data(
     let s = vec1(start, "start")?;
     let t = vec1(stop, "stop")?;
     let e = vec1(event, "event")?;
+    check_times(&s, &t)?;
     Ok(SurvData::new(&s, &t, &e))
+}
+
+/// Finite times with `start < stop` on every row (the grid sorts them, and a
+/// row with no at-risk time cannot carry an event).
+fn check_times(start: &[f64], stop: &[f64]) -> PyResult<()> {
+    let ok = start
+        .iter()
+        .zip(stop)
+        .all(|(a, b)| a.is_finite() && b.is_finite() && a < b);
+    if start.len() != stop.len() || !ok {
+        return Err(PyValueError::new_err(
+            "start and stop must be finite with start < stop on every row",
+        ));
+    }
+    Ok(())
 }
 
 fn pool(n_jobs: usize) -> PyResult<rayon::ThreadPool> {
@@ -76,8 +94,53 @@ fn aggregate(name: &str) -> PyResult<Aggregate> {
     }
 }
 
-/// `(event_times, cumhaz)` of one leaf.
-type LeafProfile = (Vec<f64>, Vec<f64>);
+/// `(event_times, cumhaz (n_entries, n_causes))` of one leaf.
+type LeafProfile<'py> = (Vec<f64>, Bound<'py, PyArray2<f64>>);
+
+/// Cause-coded response: codes in `0..=n_causes`, `n_causes` in `1..=255`.
+fn cause_data(
+    start: &PyReadonlyArray1<f64>,
+    stop: &PyReadonlyArray1<f64>,
+    event: &PyReadonlyArray1<u8>,
+    n_causes: usize,
+) -> PyResult<SurvData> {
+    let (s, t, e) = (
+        vec1(start, "start")?,
+        vec1(stop, "stop")?,
+        vec1(event, "event")?,
+    );
+    if !(1..=255).contains(&n_causes) {
+        return Err(PyValueError::new_err("n_causes must be in [1, 255]"));
+    }
+    check_times(&s, &t)?;
+    if e.iter().any(|&c| c as usize > n_causes) {
+        return Err(PyValueError::new_err(
+            "event codes must be in [0, n_causes]",
+        ));
+    }
+    Ok(SurvData::with_causes(&s, &t, &e, n_causes))
+}
+
+/// Split rule for `n_causes` causes (cr-plan.md P4a): one cause always uses
+/// `LtrcLogRank`; otherwise `SingleCause` for `split_cause` (1-based) or the composite.
+fn criterion_for(n_causes: usize, split_cause: Option<usize>) -> PyResult<Box<dyn SplitCriterion>> {
+    match split_cause {
+        Some(k) if !(1..=n_causes).contains(&k) => Err(PyValueError::new_err(
+            "split_cause must be in [1, n_causes]",
+        )),
+        _ if n_causes == 1 => Ok(Box::new(LtrcLogRank)),
+        Some(k) => Ok(Box::new(SingleCause { cause: k - 1 })),
+        None => Ok(Box::new(CompositeCauseLogRank)),
+    }
+}
+
+fn times_vec(times: &PyReadonlyArray1<f64>) -> PyResult<Vec<f64>> {
+    let t = vec1(times, "times")?;
+    if t.iter().any(|v| v.is_nan()) {
+        return Err(PyValueError::new_err("times must not contain NaN"));
+    }
+    Ok(t)
+}
 
 #[pyclass(module = "rftvc._core", name = "Forest", frozen)]
 struct PyForest {
@@ -111,6 +174,11 @@ impl PyForest {
         self.inner.trees.len()
     }
 
+    #[getter]
+    fn n_causes(&self) -> usize {
+        self.inner.n_causes
+    }
+
     fn n_leaves(&self, tree: usize) -> PyResult<usize> {
         Ok(self.tree(tree)?.n_leaves())
     }
@@ -121,19 +189,29 @@ impl PyForest {
         self.inner.nbytes()
     }
 
-    /// `(event_times, cumhaz)` of one leaf of one tree: the Nelson–Aalen
-    /// cumulative hazard at the leaf's event times.
-    fn leaf_profile(&self, tree: usize, leaf: usize) -> PyResult<LeafProfile> {
+    /// `(event_times, cumhaz)` of one leaf of one tree: the per-cause
+    /// Nelson–Aalen cumulative hazards, shape `(n_event_times, n_causes)`, at the
+    /// leaf's event times (of any cause).
+    fn leaf_profile<'py>(
+        &self,
+        py: Python<'py>,
+        tree: usize,
+        leaf: usize,
+    ) -> PyResult<LeafProfile<'py>> {
         let t = self.tree(tree)?;
         if leaf >= t.n_leaves() {
             return Err(PyValueError::new_err("leaf index out of range"));
         }
-        let times = t
+        let times: Vec<f64> = t
             .leaf_event_idx(leaf)
             .iter()
             .map(|&k| t.grid_times[k as usize])
             .collect();
-        Ok((times, t.leaf_cumhaz(leaf).to_vec()))
+        let cumhaz =
+            Array2::from_shape_vec((times.len(), t.n_causes), t.leaf_cumhaz(leaf).to_vec())
+                .expect("shape")
+                .into_pyarray(py);
+        Ok((times, cumhaz))
     }
 
     /// Id indices each tree was grown on (sorted; repeats under bootstrap).
@@ -178,6 +256,54 @@ impl PyForest {
         Ok(Array2::from_shape_vec((n, m), out)
             .expect("shape")
             .into_pyarray(py))
+    }
+
+    /// Ensemble per-cause cumulative hazards `(n_rows, n_causes, n_times)` for
+    /// rows starting at time 0 (mean over trees).
+    fn predict_cause_cumhaz<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        times: PyReadonlyArray1<'py, f64>,
+        n_jobs: usize,
+    ) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        let (v, n, p) = self.check_x(&x)?;
+        let times = times_vec(&times)?;
+        let (m, nc) = (times.len(), self.inner.n_causes);
+        let forest = &self.inner;
+        let pool = pool(n_jobs)?;
+        let out = py.detach(|| pool.install(|| forest.predict_cause_cumhaz(&v, p, &times)));
+        Ok(Array3::from_shape_vec((n, nc, m), out)
+            .expect("shape")
+            .into_pyarray(py))
+    }
+
+    /// Aalen–Johansen `(cif (n_rows, n_causes, n_times), surv (n_rows, n_times),
+    /// n_clamped)` from the tree-averaged cause-specific hazards, for rows
+    /// starting at time 0.
+    #[allow(clippy::type_complexity)]
+    fn predict_cif<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        times: PyReadonlyArray1<'py, f64>,
+        n_jobs: usize,
+    ) -> PyResult<(Bound<'py, PyArray3<f64>>, Bound<'py, PyArray2<f64>>, usize)> {
+        let (v, n, p) = self.check_x(&x)?;
+        let times = times_vec(&times)?;
+        let (m, nc) = (times.len(), self.inner.n_causes);
+        let forest = &self.inner;
+        let pool = pool(n_jobs)?;
+        let (cif, surv, clamped) = py.detach(|| pool.install(|| forest.predict_cif(&v, p, &times)));
+        Ok((
+            Array3::from_shape_vec((n, nc, m), cif)
+                .expect("shape")
+                .into_pyarray(py),
+            Array2::from_shape_vec((n, m), surv)
+                .expect("shape")
+                .into_pyarray(py),
+            clamped,
+        ))
     }
 
     /// Out-of-bag ensemble mortality per row and the size of its ensemble.
@@ -318,6 +444,7 @@ impl PyForest {
         d.set_item("event_offsets", f.event_offsets.into_pyarray(py))?;
         d.set_item("event_idx", f.event_idx.into_pyarray(py))?;
         d.set_item("cumhaz", f.cumhaz.into_pyarray(py))?;
+        d.set_item("n_causes", f.n_causes)?;
         Ok((slf.getattr("_from_state")?, (d,)))
     }
 
@@ -337,8 +464,15 @@ impl PyForest {
                 "forest state from an older rftvc build (pre-S9 leaf format); refit the model",
             ));
         }
+        let format_version: u64 = item(state, "format_version")?.extract()?;
+        // v2 states (before S11) are single-event and carry no `n_causes`.
+        let n_causes: u64 = match state.get_item("n_causes")? {
+            Some(v) => v.extract()?,
+            None if format_version == 2 => 1,
+            None => return Err(PyValueError::new_err("forest state missing 'n_causes'")),
+        };
         let flat = FlatForest {
-            format_version: item(state, "format_version")?.extract()?,
+            format_version,
             grid: vec_of!("grid", f64),
             tree_seeds: vec_of!("tree_seeds", u64),
             n_features: item(state, "n_features")?.extract()?,
@@ -354,6 +488,7 @@ impl PyForest {
             event_offsets: vec_of!("event_offsets", u64),
             event_idx: vec_of!("event_idx", u32),
             cumhaz: vec_of!("cumhaz", f64),
+            n_causes,
         };
         let inner = flat.to_forest().map_err(PyValueError::new_err)?;
         Ok(PyForest { inner })
@@ -363,7 +498,8 @@ impl PyForest {
 #[pyfunction]
 #[pyo3(name = "fit_forest", signature = (
     x, start, stop, event, groups, n_groups, *, n_trees, n_draw, bootstrap,
-    max_depth, min_ids_leaf, min_events_leaf, max_features, max_bins, seed, n_jobs
+    max_depth, min_ids_leaf, min_events_leaf, max_features, max_bins, seed, n_jobs,
+    n_causes=1, split_cause=None
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_forest_py(
@@ -371,7 +507,7 @@ fn fit_forest_py(
     x: PyReadonlyArray2<'_, f64>,
     start: PyReadonlyArray1<'_, f64>,
     stop: PyReadonlyArray1<'_, f64>,
-    event: PyReadonlyArray1<'_, bool>,
+    event: PyReadonlyArray1<'_, u8>,
     groups: PyReadonlyArray1<'_, u32>,
     n_groups: usize,
     n_trees: usize,
@@ -384,6 +520,8 @@ fn fit_forest_py(
     max_bins: usize,
     seed: u64,
     n_jobs: usize,
+    n_causes: usize,
+    split_cause: Option<usize>,
 ) -> PyResult<PyForest> {
     let (v, n, p) = matrix(&x)?;
     check_lengths(
@@ -398,6 +536,9 @@ fn fit_forest_py(
     if !(2..=256).contains(&max_bins) {
         return Err(PyValueError::new_err("max_bins must be in [2, 256]"));
     }
+    if p == 0 {
+        return Err(PyValueError::new_err("X must have at least one feature"));
+    }
     let groups: Vec<u32> = vec1(&groups, "groups")?;
     if n_groups == 0 || groups.iter().any(|&g| g as usize >= n_groups) {
         return Err(PyValueError::new_err("groups must be in [0, n_groups)"));
@@ -407,7 +548,8 @@ fn fit_forest_py(
             "need n_trees >= 1 and 1 <= n_draw (<= n_groups without bootstrap)",
         ));
     }
-    let surv = surv_data(&start, &stop, &event)?;
+    let surv = cause_data(&start, &stop, &event, n_causes)?;
+    let criterion = criterion_for(n_causes, split_cause)?;
     let params = ForestParams {
         tree: TreeParams {
             max_depth,
@@ -429,7 +571,7 @@ fn fit_forest_py(
                 &surv,
                 &Groups::new(&groups, n_groups),
                 &params,
-                &LtrcLogRank,
+                criterion.as_ref(),
             )
         })
     });
@@ -550,6 +692,8 @@ fn logrank_score(
         &Profile {
             at_risk: &l_at,
             events: &l_ev,
+            cause_events: &l_ev,
+            n_causes: 1,
             times: &parent.times,
             exposure: exposure_of(&surv, &left_rows),
             n_units: n_left,
@@ -557,6 +701,53 @@ fn logrank_score(
         &parent.view(n),
         n - n_left,
     ))
+}
+
+/// Split score of `left` rows against the rest for cause-coded data, with the
+/// rule `fit_forest` would use (`LtrcLogRank` for one cause, else `SingleCause`
+/// for `split_cause` or the composite), both through the node scorer.
+#[pyfunction]
+#[pyo3(signature = (start, stop, event, left, n_causes, split_cause=None))]
+fn cause_score(
+    start: PyReadonlyArray1<'_, f64>,
+    stop: PyReadonlyArray1<'_, f64>,
+    event: PyReadonlyArray1<'_, u8>,
+    left: PyReadonlyArray1<'_, bool>,
+    n_causes: usize,
+    split_cause: Option<usize>,
+) -> PyResult<f64> {
+    check_lengths(
+        start.as_array().len(),
+        &[
+            ("stop", stop.as_array().len()),
+            ("event", event.as_array().len()),
+            ("left", left.as_array().len()),
+        ],
+    )?;
+    let surv = cause_data(&start, &stop, &event, n_causes)?;
+    let criterion = criterion_for(n_causes, split_cause)?;
+    let all: Vec<u32> = (0..surv.n_rows() as u32).collect();
+    let parent = node_profile(&surv, &all);
+    let left_rows: Vec<u32> = vec1(&left, "left")?
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| **l)
+        .map(|(i, _)| i as u32)
+        .collect();
+    let (l_at, l_ev, l_cev) = cause_profile_on(&surv, &left_rows, &parent.event_idx);
+    let (n, n_left) = (surv.n_rows() as f64, left_rows.len() as f64);
+    let left = Profile {
+        at_risk: &l_at,
+        events: &l_ev,
+        cause_events: if n_causes == 1 { &l_ev } else { &l_cev },
+        n_causes,
+        times: &parent.times,
+        exposure: exposure_of(&surv, &left_rows),
+        n_units: n_left,
+    };
+    Ok(criterion
+        .node_scorer(parent.view(n))
+        .score(&left, n - n_left))
 }
 
 /// Best root split: `(feature, threshold, score, left_mask, ids_left, ids_right)` or `None`.
@@ -637,6 +828,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyForest>()?;
     m.add_function(wrap_pyfunction!(fit_forest_py, m)?)?;
     m.add_function(wrap_pyfunction!(logrank_score, m)?)?;
+    m.add_function(wrap_pyfunction!(cause_score, m)?)?;
     m.add_function(wrap_pyfunction!(coarsen_py, m)?)?;
     m.add_function(wrap_pyfunction!(best_split, m)?)?;
     Ok(())

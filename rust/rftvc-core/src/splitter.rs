@@ -11,11 +11,17 @@ pub struct NodeProfile {
     pub event_idx: Vec<u32>,
     pub at_risk: Vec<f64>,
     pub events: Vec<f64>,
+    /// Events per cause, cause-major `[j * K + k]`; empty when `n_causes == 1`
+    /// (the view then uses `events`).
+    pub cause_events: Vec<f64>,
+    pub n_causes: usize,
     /// Grid times of `event_idx`.
     pub times: Vec<f64>,
     /// Person-time of the node's rows.
     pub exposure: f64,
     pub n_events: usize,
+    /// Events of each cause (length `n_causes`).
+    pub n_cause_events: Vec<usize>,
     /// Local at-risk range of each row, in the order of the node's `rows`.
     local: Vec<LocalRow>,
 }
@@ -26,6 +32,12 @@ impl NodeProfile {
         Profile {
             at_risk: &self.at_risk,
             events: &self.events,
+            cause_events: if self.n_causes == 1 {
+                &self.events
+            } else {
+                &self.cause_events
+            },
+            n_causes: self.n_causes,
             times: &self.times,
             exposure: self.exposure,
             n_units,
@@ -33,12 +45,12 @@ impl NodeProfile {
     }
 }
 
-/// Local `[la, lb)` at-risk range, event flag and duration for each row of a node.
+/// Local `[la, lb)` at-risk range, cause code (0 = censored) and duration for each row of a node.
 #[derive(Clone, Debug)]
 struct LocalRow {
     la: u32,
     lb: u32,
-    event: bool,
+    cause: u8,
     dur: f64,
 }
 
@@ -53,7 +65,7 @@ fn node_event_idx_and_local(surv: &SurvData, rows: &[u32]) -> (Vec<u32>, Vec<Loc
         // pos[g] = number of node event times below global index g.
         let mut pos = vec![0u32; kg + 1];
         for &r in rows {
-            if surv.event[r as usize] {
+            if surv.event[r as usize] != 0 {
                 pos[surv.b[r as usize] as usize] = 1; // marks global index b - 1
             }
         }
@@ -74,7 +86,7 @@ fn node_event_idx_and_local(surv: &SurvData, rows: &[u32]) -> (Vec<u32>, Vec<Loc
                 LocalRow {
                     la: pos[surv.a[r] as usize],
                     lb: pos[surv.b[r] as usize],
-                    event: surv.event[r],
+                    cause: surv.event[r],
                     dur: surv.duration[r],
                 }
             })
@@ -83,7 +95,7 @@ fn node_event_idx_and_local(surv: &SurvData, rows: &[u32]) -> (Vec<u32>, Vec<Loc
     }
     let mut e: Vec<u32> = rows
         .iter()
-        .filter(|&&r| surv.event[r as usize])
+        .filter(|&&r| surv.event[r as usize] != 0)
         .map(|&r| surv.b[r as usize] - 1)
         .collect();
     e.sort_unstable();
@@ -99,21 +111,31 @@ fn local_rows(surv: &SurvData, rows: &[u32], event_idx: &[u32]) -> Vec<LocalRow>
             LocalRow {
                 la: event_idx.partition_point(|&k| k < surv.a[r]) as u32,
                 lb: event_idx.partition_point(|&k| k < surv.b[r]) as u32,
-                event: surv.event[r],
+                cause: surv.event[r],
                 dur: surv.duration[r],
             }
         })
         .collect()
 }
 
-fn profile_from_local(local: &[LocalRow], k: usize) -> (Vec<f64>, Vec<f64>) {
+/// `(at_risk, events, cause_events)` on `k` local event times; `cause_events`
+/// is empty for `n_causes == 1`.
+fn profile_from_local(
+    local: &[LocalRow],
+    k: usize,
+    n_causes: usize,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let mut diff = vec![0.0; k + 1];
     let mut events = vec![0.0; k];
+    let mut cause_events = vec![0.0; if n_causes == 1 { 0 } else { k * n_causes }];
     for row in local {
         diff[row.la as usize] += 1.0;
         diff[row.lb as usize] -= 1.0;
-        if row.event {
+        if row.cause != 0 {
             events[row.lb as usize - 1] += 1.0;
+            if n_causes > 1 {
+                cause_events[(row.cause as usize - 1) * k + row.lb as usize - 1] += 1.0;
+            }
         }
     }
     let mut at_risk = vec![0.0; k];
@@ -122,13 +144,18 @@ fn profile_from_local(local: &[LocalRow], k: usize) -> (Vec<f64>, Vec<f64>) {
         run += diff[j];
         at_risk[j] = run;
     }
-    (at_risk, events)
+    (at_risk, events, cause_events)
 }
 
 pub fn node_profile(surv: &SurvData, rows: &[u32]) -> NodeProfile {
     let (event_idx, local) = node_event_idx_and_local(surv, rows);
-    let (at_risk, events) = profile_from_local(&local, event_idx.len());
-    let n_events = local.iter().filter(|r| r.event).count();
+    let n_causes = surv.n_causes;
+    let (at_risk, events, cause_events) = profile_from_local(&local, event_idx.len(), n_causes);
+    let mut n_cause_events = vec![0usize; n_causes];
+    for r in local.iter().filter(|r| r.cause != 0) {
+        n_cause_events[r.cause as usize - 1] += 1;
+    }
+    let n_events = n_cause_events.iter().sum();
     let times = event_idx
         .iter()
         .map(|&k| surv.grid.times[k as usize])
@@ -138,9 +165,12 @@ pub fn node_profile(surv: &SurvData, rows: &[u32]) -> NodeProfile {
         event_idx,
         at_risk,
         events,
+        cause_events,
+        n_causes,
         times,
         exposure,
         n_events,
+        n_cause_events,
         local,
     }
 }
@@ -220,6 +250,8 @@ pub fn best_split_in(
     let mut best: Option<SplitCandidate> = None;
     let mut left_at = vec![0.0; k];
     let mut left_ev = vec![0.0; k];
+    let nc = profile.n_causes;
+    let mut left_cev = vec![0.0; if nc == 1 { 0 } else { k * nc }];
     let mut diff = vec![0.0; k + 1];
     let mut by_bin = vec![0u32; rows.len()];
 
@@ -231,7 +263,7 @@ pub fn best_split_in(
         for ((b, row), &r) in bins.iter_mut().zip(local).zip(rows) {
             *b = col[r as usize];
             counts[*b as usize] += 1;
-            ev_counts[*b as usize] += row.event as usize;
+            ev_counts[*b as usize] += (row.cause != 0) as usize;
         }
         let used: Vec<usize> = (0..256).filter(|&b| counts[b] > 0).collect();
         let nb = used.len();
@@ -270,6 +302,7 @@ pub fn best_split_in(
 
         diff.iter_mut().for_each(|v| *v = 0.0);
         left_ev.iter_mut().for_each(|v| *v = 0.0);
+        left_cev.iter_mut().for_each(|v| *v = 0.0);
         let (mut ids_left, mut max_le, mut e_left) = (0usize, 0usize, 0usize);
         let mut left_exposure = 0.0;
         for c in 0..nb - 1 {
@@ -278,8 +311,11 @@ pub fn best_split_in(
                 left_exposure += row.dur;
                 diff[row.la as usize] += 1.0;
                 diff[row.lb as usize] -= 1.0;
-                if row.event {
+                if row.cause != 0 {
                     left_ev[row.lb as usize - 1] += 1.0;
+                    if nc > 1 {
+                        left_cev[(row.cause as usize - 1) * k + row.lb as usize - 1] += 1.0;
+                    }
                 }
             }
             ids_left += min_hist[used[c]];
@@ -302,6 +338,8 @@ pub fn best_split_in(
             let left = Profile {
                 at_risk: &left_at,
                 events: &left_ev,
+                cause_events: if nc == 1 { &left_ev } else { &left_cev },
+                n_causes: nc,
                 times: &profile.times,
                 exposure: left_exposure,
                 n_units: ids_left as f64,
@@ -330,8 +368,19 @@ pub fn exposure_of(surv: &SurvData, rows: &[u32]) -> f64 {
 
 /// Profile of `rows` evaluated on a given (e.g. parent's) event-time index set.
 pub fn profile_on(surv: &SurvData, rows: &[u32], event_idx: &[u32]) -> (Vec<f64>, Vec<f64>) {
+    let (at_risk, events, _) = cause_profile_on(surv, rows, event_idx);
+    (at_risk, events)
+}
+
+/// `(at_risk, events, cause_events)` of `rows` on a given event-time index set;
+/// `cause_events` is cause-major `[j * K + k]`, empty for `n_causes == 1`.
+pub fn cause_profile_on(
+    surv: &SurvData,
+    rows: &[u32],
+    event_idx: &[u32],
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let local = local_rows(surv, rows, event_idx);
-    profile_from_local(&local, event_idx.len())
+    profile_from_local(&local, event_idx.len(), surv.n_causes)
 }
 
 #[cfg(test)]
@@ -347,6 +396,8 @@ mod tests {
     struct Seen {
         at_risk: Vec<f64>,
         events: Vec<f64>,
+        cause_events: Vec<f64>,
+        n_causes: usize,
         times: Vec<f64>,
         exposure: f64,
         n_units: f64,
@@ -364,6 +415,8 @@ mod tests {
         Seen {
             at_risk: p.at_risk.to_vec(),
             events: p.events.to_vec(),
+            cause_events: p.cause_events.to_vec(),
+            n_causes: p.n_causes,
             times: p.times.to_vec(),
             exposure: p.exposure,
             n_units: p.n_units,
@@ -399,11 +452,17 @@ mod tests {
     }
 
     /// Every candidate's child summaries equal a brute-force recomputation:
-    /// exposure (with delayed entry), at-risk/event counts, the parent's times,
-    /// and distinct units on each side, including units whose rows straddle
-    /// the threshold and children with no events.
+    /// exposure (with delayed entry), at-risk/event counts (all causes and per
+    /// cause), the parent's times, and distinct units on each side, including
+    /// units whose rows straddle the threshold and children with no events.
     #[test]
     fn child_summaries_match_brute_force() {
+        for n_causes in [1, 3] {
+            child_summaries_match_brute_force_for(n_causes);
+        }
+    }
+
+    fn child_summaries_match_brute_force_for(n_causes: usize) {
         let mut rng = Rng::new(23);
         let mut straddled = 0;
         let mut eventless = 0;
@@ -414,12 +473,20 @@ mod tests {
                 .iter()
                 .map(|s| s + 0.25 + rng.below(8) as f64 * 0.75)
                 .collect();
-            let event: Vec<bool> = (0..n).map(|_| rng.below(3) == 0).collect();
+            let codes: Vec<u8> = (0..n)
+                .map(|_| {
+                    if rng.below(3) == 0 {
+                        1 + rng.below(n_causes) as u8
+                    } else {
+                        0
+                    }
+                })
+                .collect();
             let x: Vec<f64> = (0..n).map(|_| rng.below(5) as f64).collect();
             // Sorted unit labels keep each unit's rows contiguous.
             let mut all_units: Vec<u32> = (0..n).map(|_| rng.below(n / 2 + 1) as u32).collect();
             all_units.sort_unstable();
-            let surv = SurvData::new(&start, &stop, &event);
+            let surv = SurvData::with_causes(&start, &stop, &codes, n_causes);
             let binned = Binned::fit(&x, n, 1, 256);
             let rows: Vec<u32> = (0..n as u32).filter(|_| rng.below(4) > 0).collect();
             let units: Vec<u32> = rows.iter().map(|&r| all_units[r as usize]).collect();
@@ -443,6 +510,17 @@ mod tests {
                 .map(|&k| surv.grid.times[k as usize])
                 .collect();
             assert_eq!(p.times, times);
+            assert_eq!(p.n_causes, n_causes);
+            let (_, p_ev, p_cev) = cause_profile_on(&surv, &rows, &parent.event_idx);
+            assert_eq!(p.events, p_ev);
+            assert_eq!(p.cause_events, if n_causes == 1 { p_ev } else { p_cev });
+            for j in 0..n_causes {
+                let want = rows
+                    .iter()
+                    .filter(|&&r| codes[r as usize] as usize == j + 1)
+                    .count();
+                assert_eq!(parent.n_cause_events[j], want);
+            }
 
             let col = binned.column(0);
             let mut used: Vec<u8> = rows.iter().map(|&r| col[r as usize]).collect();
@@ -454,9 +532,27 @@ mod tests {
                 let (left, right): (Vec<usize>, Vec<usize>) =
                     (0..rows.len()).partition(|&i| col[rows[i] as usize] <= b);
                 let left_rows: Vec<u32> = left.iter().map(|&i| rows[i]).collect();
-                let (at, ev) = profile_on(&surv, &left_rows, &parent.event_idx);
+                let (at, ev, cev) = cause_profile_on(&surv, &left_rows, &parent.event_idx);
                 assert_eq!(c.at_risk, at);
                 assert_eq!(c.events, ev);
+                // Brute force per cause, independent of `profile_from_local`.
+                let want_cev: Vec<f64> = (0..parent.event_idx.len() * n_causes)
+                    .map(|i| {
+                        let (j, k) = (i / parent.event_idx.len(), i % parent.event_idx.len());
+                        let t = parent.event_idx[k] as usize;
+                        left_rows
+                            .iter()
+                            .filter(|&&r| {
+                                surv.b[r as usize] as usize == t + 1
+                                    && codes[r as usize] as usize == j + 1
+                            })
+                            .count() as f64
+                    })
+                    .collect();
+                assert_eq!(c.cause_events, want_cev);
+                if n_causes > 1 {
+                    assert_eq!(cev, want_cev);
+                }
                 assert_eq!(c.times, times);
                 let want = exposure_of(&surv, &left_rows);
                 assert!((c.exposure - want).abs() <= 1e-12 * want.max(1.0));
@@ -516,14 +612,14 @@ mod tests {
             let (idx, local) = node_event_idx_and_local(&surv, &rows);
             let mut e: Vec<u32> = rows
                 .iter()
-                .filter(|&&r| surv.event[r as usize])
+                .filter(|&&r| surv.event[r as usize] != 0)
                 .map(|&r| surv.b[r as usize] - 1)
                 .collect();
             e.sort_unstable();
             e.dedup();
             assert_eq!(idx, e);
             for (a, b) in local.iter().zip(local_rows(&surv, &rows, &e)) {
-                assert_eq!((a.la, a.lb, a.event), (b.la, b.lb, b.event));
+                assert_eq!((a.la, a.lb, a.cause), (b.la, b.lb, b.cause));
             }
         }
     }

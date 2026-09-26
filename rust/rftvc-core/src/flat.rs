@@ -7,8 +7,9 @@ use crate::forest::Forest;
 use crate::tree::{Node, Tree};
 
 /// Version of the flat state. v1 (before S9) stored leaf counts `d`, `y`;
-/// v2 stores the leaf cumulative hazards.
-pub const FORMAT_VERSION: u64 = 2;
+/// v2 stores the leaf cumulative hazards; v3 (S11) adds `n_causes`, with
+/// `n_causes` hazards per leaf entry. A v2 state loads as `n_causes = 1`.
+pub const FORMAT_VERSION: u64 = 3;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FlatForest {
@@ -31,7 +32,9 @@ pub struct FlatForest {
     /// Per leaf (all trees), start of its event entries; length `n_leaves + 1`.
     pub event_offsets: Vec<u64>,
     pub event_idx: Vec<u32>,
+    /// Entry-major: `n_causes` values per entry of `event_idx`.
     pub cumhaz: Vec<f64>,
+    pub n_causes: u64,
 }
 
 impl FlatForest {
@@ -48,6 +51,7 @@ impl FlatForest {
             n_groups: forest.n_groups as u64,
             n_draw: forest.n_draw as u64,
             bootstrap: forest.bootstrap,
+            n_causes: forest.n_causes as u64,
             node_offsets: vec![0],
             leaf_offsets: vec![0],
             event_offsets: vec![0],
@@ -93,15 +97,19 @@ impl FlatForest {
         let n_nodes = self.node_feature.len();
         let n_leaves = self.event_offsets.len().saturating_sub(1);
         let n_events = self.event_idx.len();
-        if self.format_version != FORMAT_VERSION {
+        if !(2..=FORMAT_VERSION).contains(&self.format_version) {
             return Err(format!(
-                "forest state has format version {}, expected {FORMAT_VERSION}; refit the model",
+                "forest state has format version {}, supported 2..={FORMAT_VERSION}; refit the model",
                 self.format_version
             ));
         }
         // Scalars must be ones a fit can produce; `cumhaz_at` binary-searches
         // the grid, so it must be finite and strictly increasing.
-        let scalars_ok = self.n_features >= 1
+        // v2 has no `n_causes` (single event); the loader passes 1.
+        let nc = self.n_causes as usize;
+        let scalars_ok = (1..=255).contains(&self.n_causes)
+            && (self.format_version == FORMAT_VERSION || self.n_causes == 1)
+            && self.n_features >= 1
             && self.n_groups >= 1
             && self.n_draw >= 1
             && (self.bootstrap || self.n_draw <= self.n_groups);
@@ -119,7 +127,7 @@ impl FlatForest {
             ]
             .iter()
             .all(|&l| l == n_nodes)
-            && self.cumhaz.len() == n_events
+            && Some(self.cumhaz.len()) == n_events.checked_mul(nc)
             && monotone(&self.node_offsets, n_nodes)
             && monotone(&self.leaf_offsets, n_leaves)
             && monotone(&self.event_offsets, n_events)
@@ -189,11 +197,15 @@ impl FlatForest {
                 // increasing; the cumulative hazard must be finite, non-negative
                 // and non-decreasing.
                 let (a, b) = (e0 + w[0] as usize, e0 + w[1] as usize);
-                let (idx, ch) = (&self.event_idx[a..b], &self.cumhaz[a..b]);
+                let (idx, ch) = (&self.event_idx[a..b], &self.cumhaz[a * nc..b * nc]);
+                // Per cause: entries `j, j + nc, ...` of the leaf.
                 let ok = idx.windows(2).all(|p| p[0] < p[1])
                     && ch.iter().all(|c| c.is_finite())
-                    && ch.first().is_none_or(|&c| c >= 0.0)
-                    && ch.windows(2).all(|p| p[0] <= p[1]);
+                    && (0..nc).all(|j| {
+                        let col = ch.iter().skip(j).step_by(nc);
+                        col.clone().next().is_none_or(|&c| c >= 0.0)
+                            && col.clone().zip(col.skip(1)).all(|(p, q)| p <= q)
+                    });
                 if !ok {
                     return Err(format!("invalid leaf {}", l0 + l));
                 }
@@ -202,7 +214,8 @@ impl FlatForest {
                 nodes,
                 leaf_offsets,
                 event_idx: self.event_idx[e0..e1].to_vec(),
-                cumhaz: self.cumhaz[e0..e1].to_vec(),
+                cumhaz: self.cumhaz[e0 * nc..e1 * nc].to_vec(),
+                n_causes: nc,
                 grid_times: Arc::clone(&grid),
             });
         }
@@ -213,6 +226,7 @@ impl FlatForest {
             n_groups: self.n_groups as usize,
             n_draw: self.n_draw as usize,
             bootstrap: self.bootstrap,
+            n_causes: nc,
         })
     }
 }

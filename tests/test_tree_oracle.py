@@ -34,6 +34,7 @@ def test_root_leaf_matches_nelson_aalen(ties):
     model = _tree(max_depth=0).fit(X, make_survival_y(t, e))
     assert model.forest_.n_leaves(0) == 1
     times, cumhaz = model.forest_.leaf_profile(0, 0)
+    cumhaz = cumhaz[:, 0]  # one cause
     naf = NelsonAalenFitter(nelson_aalen_smoothing=False).fit(t, e, timeline=times)
     np.testing.assert_allclose(cumhaz, naf.cumulative_hazard_.to_numpy().ravel(), rtol=0, atol=1e-10)
     np.testing.assert_allclose(model.predict_cumulative_hazard(X[:5], times), np.tile(cumhaz, (5, 1)), atol=1e-10)
@@ -43,6 +44,7 @@ def test_cumulative_hazard_is_right_continuous_step():
     X, t, e = _data(100, 1, seed=2)
     model = _tree(max_depth=0).fit(X, make_survival_y(t, e))
     times, cumhaz = map(np.asarray, model.forest_.leaf_profile(0, 0))
+    cumhaz = cumhaz[:, 0]  # one cause
     before = model.predict_cumulative_hazard(X[:1], times - 1e-9)[0]
     at = model.predict_cumulative_hazard(X[:1], times)[0]
     np.testing.assert_allclose(at, cumhaz, atol=1e-12)
@@ -198,7 +200,7 @@ def test_core_rejects_mismatched_lengths():
     with pytest.raises(ValueError, match="start"):
         _core.best_split(X, zero, one, ev, min_ids_leaf=1, min_events_leaf=1)
     with pytest.raises(ValueError, match="start"):
-        _core.fit_forest(X, zero, one, ev, np.zeros(1, np.uint32), 1, n_trees=1, n_draw=1,
+        _core.fit_forest(X, zero, one, ev.view(np.uint8), np.zeros(1, np.uint32), 1, n_trees=1, n_draw=1,
                          bootstrap=False, max_depth=None, min_ids_leaf=1, min_events_leaf=1,
                          max_features=1, max_bins=255, seed=0, n_jobs=1)
     with pytest.raises(ValueError, match="left"):

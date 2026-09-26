@@ -4,7 +4,7 @@ Source of truth: `cr-design.md` v2 (C1–C8; C2/C3 user-confirmed). Background: 
 Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) times, `T` requested times.
 
 ## Status
-- [ ] S11: Core — cause-coded `y`, engine cause dimension, composite criterion, per-cause leaves, `CompetingRisksForestTV` fit + per-row CIF (branch `feat/s11-cr-core`)
+- [x] S11: Core — cause-coded `y`, engine cause dimension, composite criterion, per-cause leaves, `CompetingRisksForestTV` fit + per-row CIF (branch `feat/s11-cr-core`)
 - [ ] S12: Paths, coarsening, `aggregate="cif"`, OOB + Wolbers C, Approach-B equivalence (branch `feat/s12-cr-paths`)
 - [ ] S13: Cause-specific metrics + landmark competing-risks workflow (branch `feat/s13-cr-landmark`)
 - [ ] S14: Bench (simulations, parity, bake-off) + docs + case study (branch `feat/s14-cr-bench`)
@@ -22,7 +22,7 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 
 ## S11: Core (vertical: fit + per-row CIF)
 **Files:**
-- Rust core: `data.rs` (`SurvData.event: Vec<u8>`, `n_causes`), `grid.rs` (exact grid from `code != 0`, so every cause's event times are grid points; quantile grid / coarsening accept codes but stay J = 1-only until S12), `criterion.rs` (`Profile.cause_events`, `n_causes`; `CompositeCauseLogRank`; `SingleCause { k }`), `splitter.rs` (events accumulated `bins × K × J`; per-cause counts in `NodeProfile`), `tree.rs` (per-cause leaf cumhaz, entry-major, `n_causes` in `Tree`), `forest.rs` (`n_causes` in `Forest`; `predict_cif` per row, `aggregate="hazard"`), `flat.rs` (format v3, stride invariant, v2 states load as J = 1).
+- Rust core: `data.rs` (`SurvData.event: Vec<u8>`, `n_causes`), `grid.rs` (exact grid from `code != 0`, so every cause's event times are grid points; quantile grid / coarsening stay bool (J = 1) until S12), `criterion.rs` (`Profile.cause_events`, `n_causes`; `CompositeCauseLogRank`; `SingleCause { k }`), `splitter.rs` (events accumulated `bins × K × J`; per-cause counts in `NodeProfile`), `tree.rs` (per-cause leaf cumhaz, entry-major, `n_causes` in `Tree`), `forest.rs` (`n_causes` in `Forest`; `predict_cif` per row, `aggregate="hazard"`), `flat.rs` (format v3, stride invariant, v2 states load as J = 1).
 - Binding `rftvc-py/src/lib.rs`: `fit_forest(event: u8[], n_causes, criterion=…, split_cause=None)`, `Forest.predict_cif`, `leaf_profile` returns `(times, cumhaz[n_e, J])`; existing bool callers convert (`event.astype(u8)`).
 - Python: `_validation.py` (`make_competing_risks_y`, `check_competing_risks_y`; structural checks in `check_counting_process` use `event != 0`, not `&`, so a non-terminal label 2 is caught (`2 & True == 0` today); `check_survival_y` errors on integer events > 1 with a pointer to the new class), `_estimator.py` (shared private `_BaseForestTV`; `SurvivalForestTV` keeps its surface), new `_competing.py` (`CompetingRisksForestTV`), `__init__.py`.
 - Tests: `tests/test_cr_core.py`, `tests/ref/cr_ref.py` (naive composite score + naive per-cause Nelson–Aalen / AJ with delayed entry), `tests/fixtures/make_aj_fixtures.R` → `aj_survfit.json`; Rust unit tests in `criterion.rs` / `splitter.rs`.
@@ -34,7 +34,7 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 
 **Tests:**
 - **Leaf oracle:** a single-node tree (`max_depth=0`) equals `survival::survfit(Surv(start, stop, cause) ~ 1, id=id)` `pstate` on start–stop rows with delayed entry and ties, to 1e-10; also equals `cr_ref.py`.
-- **J = 1 bit-identity:** `CompetingRisksForestTV` (default `criterion="composite"` and `split_cause=1`) on {0,1} events equals `SurvivalForestTV` (node arrays, leaf arrays, cumhaz, `1 − S`), several seeds and `max_features`.
+- **J = 1 bit-identity:** `CompetingRisksForestTV` (default `criterion="composite"` and `split_cause=1`) on {0,1} events equals `SurvivalForestTV` (node arrays, leaf arrays, hazard-aggregated cumhaz, `apply`), several seeds and `max_features`; its CIF is `1 − Π(1 − ΔΛ)` of the same hazard, not `1 − exp(−Λ)` (`s11-plan.md` review 1).
 - **Single-cause score:** `SingleCause{k}` equals `LtrcLogRank` on "cause k vs rest" bit-for-bit (Rust unit test) and `logrank_ref.py`.
 - **Composite score:** equals `cr_ref.py` (hypothesis, small random data incl. empty children and `y < 2`); a covariate that raises cause 1 and lowers cause 2 scores > 0 where the all-cause log-rank ≈ 0.
 - **Grid:** an event time that only cause 2 has is a grid point and enters the leaf AJ.
@@ -123,3 +123,11 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 4. "Pass `cause`" to CV still scored `1 − S` (high) → explicit CR branch in `_score_landmark`, `landmark_cross_validate`, `_select`; CIF output columns.
 5. The one-event-per-id check uses `event & not_last`, which misses label 2 (high) → `event != 0` in S11, tests for labels 1 and 2 incl. landmark input.
 6. C5 per-cause leaf diagnostics were dropped (medium) → per-leaf per-cause counts stored in S12, exposed and tested against brute force.
+
+**S11 done (2026-09-26). Deviations / notes** (slice plan and review logs: `s11-plan.md`):
+- `CompetingRisksForestTV` fits counting-process rows with cause labels. It predicts per-row CIF, cause-specific / all-cause hazard and event-free survival. `SurvivalForestTV` is bit-identical to `main` (`bench/s9_identity.py`); its pickle grows by 13 B (the `n_causes` key, format v3). v2 states load as J = 1.
+- `cause_events` is **cause-major** (`[j·K + k]`), not the time-major layout in `cr-design.md`. The first version (time-major, two allocations per candidate) fitted J = 2 in 2.9 × the J = 1 time. With a contiguous column per cause, the composite runs `LtrcLogRank`'s dense candidate loop per cause, skipping causes with no event in the node. `SingleCause` is that loop on one column, so it stays bit-identical to `LtrcLogRank`.
+- No `bins × K × J` histogram exists (one running `K × J` left-child buffer), so the root-histogram risk does not apply.
+- Fit at 100k rows, 100 trees (`bench/s11_cr_timing.py`): J = 1 is 1.0 ×, J = 2 1.32 × and J = 4 2.11 × the single-event time. The forest's leaf memory is 1.40 × at J = 2 and 2.21 × at J = 4.
+- `n_estimators` defaults to 500 (the plan's 100 was a typo). `leaf_profile` returns `(times, cumhaz (n_e, J))`. Event-free `S` is the Aalen–Johansen product limit, not `exp(−Λ)`.
+- `Grid::quantile` / `coarsen` stay bool until S12 (plan-review finding 5 was declined).

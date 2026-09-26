@@ -1,5 +1,7 @@
 //! Forest: whole-id resampling, parallel tree building, aggregated prediction.
 
+use std::sync::Arc;
+
 use rayon::prelude::*;
 
 use crate::criterion::SplitCriterion;
@@ -71,6 +73,8 @@ pub struct Forest {
     pub n_groups: usize,
     pub n_draw: usize,
     pub bootstrap: bool,
+    /// Causes `J` of the leaf hazards (1 for single-event survival).
+    pub n_causes: usize,
 }
 
 /// Id indices drawn for one tree. Deterministic in `seed`, so bags are
@@ -121,6 +125,7 @@ pub fn fit_forest(
         n_groups: groups.len(),
         n_draw: params.n_draw,
         bootstrap: params.bootstrap,
+        n_causes: surv.n_causes,
     }
 }
 
@@ -152,6 +157,133 @@ impl Forest {
                 ensemble_cumhaz(self.trees.iter(), xr, times, agg, row_out);
             });
         out
+    }
+
+    /// Ensemble per-cause cumulative hazards (mean over trees), row-major
+    /// `(n_rows, n_causes, times.len())`. Accumulated in the order of
+    /// `predict_cumhaz`, so for one cause the two are bit-identical under `Hazard`.
+    pub fn predict_cause_cumhaz(&self, x: &[f64], n_features: usize, times: &[f64]) -> Vec<f64> {
+        let (m, nc) = (times.len(), self.n_causes);
+        let n = self.trees.len() as f64;
+        let mut out = vec![0.0; x.len() / n_features * nc * m];
+        out.par_chunks_mut((nc * m).max(1))
+            .zip(x.par_chunks(n_features))
+            .for_each(|(row_out, xr)| {
+                for tree in &self.trees {
+                    let leaf = tree.apply(xr);
+                    for (j, out_j) in row_out.chunks_mut(m.max(1)).enumerate() {
+                        for (o, &t) in out_j.iter_mut().zip(times) {
+                            *o += tree.cause_cumhaz_at(leaf, t, j);
+                        }
+                    }
+                }
+                row_out.iter_mut().for_each(|v| *v /= n);
+            });
+        out
+    }
+
+    /// Cumulative incidence per cause and event-free survival for rows whose
+    /// covariates hold from time 0, by the discrete Aalen–Johansen estimator on
+    /// the ensemble (tree-averaged) cause-specific hazard increments:
+    /// `F_j(t) = sum_{v <= t} S(v-) dL_j(v)`, `S(t) = prod_{v <= t} (1 - sum_j dL_j(v))`.
+    ///
+    /// Returns `(cif (n_rows, n_causes, T), surv (n_rows, T), n_clamped)`, where
+    /// `n_clamped` counts the grid points at which `1 - sum_j dL_j < 0` was set
+    /// to 0 (only rounding can cause it: every leaf has `sum_j dL_j = d / y <= 1`).
+    ///
+    /// Per row, each tree's leaf increments are added into a dense `K x J`
+    /// buffer; only the touched grid points are swept and reset. `times` must
+    /// not contain NaN.
+    pub fn predict_cif(
+        &self,
+        x: &[f64],
+        n_features: usize,
+        times: &[f64],
+    ) -> (Vec<f64>, Vec<f64>, usize) {
+        let (m, nc) = (times.len(), self.n_causes);
+        let n_rows = x.len() / n_features;
+        let grid = match self.trees.first() {
+            Some(t) => Arc::clone(&t.grid_times),
+            None => {
+                return (
+                    vec![f64::NAN; n_rows * nc * m],
+                    vec![f64::NAN; n_rows * m],
+                    0,
+                );
+            }
+        };
+        let kg = grid.len();
+        let n_trees = self.trees.len() as f64;
+        // Requested times in increasing order (ties kept), to merge with the sweep.
+        let mut t_order: Vec<usize> = (0..m).collect();
+        t_order.sort_by(|&a, &b| times[a].total_cmp(&times[b]));
+        let (mut cif, mut surv) = (vec![0.0; n_rows * nc * m], vec![0.0; n_rows * m]);
+        let n_clamped = cif
+            .par_chunks_mut((nc * m).max(1))
+            .zip(surv.par_chunks_mut(m.max(1)))
+            .zip(x.par_chunks(n_features))
+            .map_init(
+                || (vec![0.0; kg * nc], vec![false; kg], Vec::<u32>::new()),
+                |(inc, seen, touched), ((cif_row, surv_row), xr)| {
+                    for tree in &self.trees {
+                        let leaf = tree.apply(xr);
+                        let r = tree.entries(leaf);
+                        for e in r.clone() {
+                            let k = tree.event_idx[e] as usize;
+                            if !seen[k] {
+                                seen[k] = true;
+                                touched.push(k as u32);
+                            }
+                            for j in 0..nc {
+                                let prev = if e == r.start {
+                                    0.0
+                                } else {
+                                    tree.cumhaz[(e - 1) * nc + j]
+                                };
+                                inc[k * nc + j] += tree.cumhaz[e * nc + j] - prev;
+                            }
+                        }
+                    }
+                    touched.sort_unstable();
+                    let (mut s, mut f) = (1.0, vec![0.0; nc]);
+                    let (mut clamped, mut next) = (0usize, 0usize);
+                    let mut write = |upto: f64, s: f64, f: &[f64], next: &mut usize| {
+                        while *next < m && times[t_order[*next]] < upto {
+                            let ti = t_order[*next];
+                            surv_row[ti] = s;
+                            for j in 0..nc {
+                                cif_row[j * m + ti] = f[j];
+                            }
+                            *next += 1;
+                        }
+                    };
+                    for &k in touched.iter() {
+                        let k = k as usize;
+                        // Requested times before grid point k see the state before it.
+                        write(grid[k], s, &f, &mut next);
+                        let d = &mut inc[k * nc..(k + 1) * nc];
+                        let mut total = 0.0;
+                        for (fj, dj) in f.iter_mut().zip(d.iter_mut()) {
+                            *dj /= n_trees;
+                            *fj += s * *dj;
+                            total += *dj;
+                        }
+                        let step = 1.0 - total;
+                        if step < 0.0 {
+                            clamped += 1;
+                        }
+                        s *= step.max(0.0);
+                        d.iter_mut().for_each(|v| *v = 0.0);
+                        seen[k] = false;
+                    }
+                    write(f64::INFINITY, s, &f, &mut next);
+                    debug_assert_eq!(next, m, "times must not be NaN");
+                    touched.clear();
+                    clamped
+                },
+            )
+            .sum();
+        (cif, surv, n_clamped)
     }
 
     /// Out-of-bag ensemble mortality per row: `sum_k Λ_oob(t_k | x_row)`, and

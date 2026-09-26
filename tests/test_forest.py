@@ -64,6 +64,7 @@ def test_hazard_aggregation_is_mean_of_tree_hazards():
         h = np.empty((len(X), len(times)))
         for i, leaf in enumerate(leaves):
             lt, cum = map(np.asarray, forest.forest_.leaf_profile(b, int(leaf)))
+            cum = cum[:, 0]  # one cause
             h[i] = np.r_[0.0, cum][np.searchsorted(lt, times, side="right")]
         per_tree.append(h)
     np.testing.assert_allclose(forest.predict_cumulative_hazard(X), np.mean(per_tree, axis=0), atol=1e-12)
@@ -117,7 +118,7 @@ def test_pre_s9_state_is_rejected():
 @pytest.mark.parametrize(
     "edit",
     [
-        lambda s: s.update(format_version=3),
+        lambda s: s.update(format_version=4),
         lambda s: s.update(n_features=0),
         lambda s: s.update(grid=s["grid"][::-1].copy()),
         lambda s: s.update(cumhaz=-s["cumhaz"]),

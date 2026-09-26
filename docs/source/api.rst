@@ -11,6 +11,7 @@ Estimators
    :nosignatures:
 
    SurvivalForestTV
+   CompetingRisksForestTV
    LandmarkSurvivalForest
 
 Data
@@ -22,6 +23,8 @@ Data
 
    make_survival_y
    check_survival_y
+   make_competing_risks_y
+   check_competing_risks_y
    check_counting_process
    make_landmark_data
    landmark_features

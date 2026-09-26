@@ -84,16 +84,31 @@ pub struct SurvData {
     pub grid: Grid,
     pub a: Vec<u32>,
     pub b: Vec<u32>,
-    pub event: Vec<bool>,
+    /// Cause code of each row: 0 = censored, `1..=n_causes` = event of that cause.
+    pub event: Vec<u8>,
+    /// Number of causes `J` (1 for single-event survival).
+    pub n_causes: usize,
     /// Person-time `stop - start` of each row (on the snapped times in coarse mode,
     /// which are the times passed in).
     pub duration: Vec<f64>,
 }
 
 impl SurvData {
+    /// Single-event data (`J = 1`).
     pub fn new(start: &[f64], stop: &[f64], event: &[bool]) -> SurvData {
-        assert!(start.len() == stop.len() && stop.len() == event.len());
-        let grid = Grid::exact(stop, event);
+        let codes: Vec<u8> = event.iter().map(|&e| e as u8).collect();
+        SurvData::with_causes(start, stop, &codes, 1)
+    }
+
+    /// Competing-risks data: `codes[r]` in `0..=n_causes`.
+    pub fn with_causes(start: &[f64], stop: &[f64], codes: &[u8], n_causes: usize) -> SurvData {
+        assert!(start.len() == stop.len() && stop.len() == codes.len());
+        assert!((1..=255).contains(&n_causes), "n_causes must be in 1..=255");
+        assert!(
+            codes.iter().all(|&c| (c as usize) <= n_causes),
+            "cause code above n_causes"
+        );
+        let grid = Grid::exact(stop, codes);
         let a = start
             .iter()
             .map(|&s| grid.first_greater(s) as u32)
@@ -104,7 +119,8 @@ impl SurvData {
             grid,
             a,
             b,
-            event: event.to_vec(),
+            event: codes.to_vec(),
+            n_causes,
             duration,
         }
     }

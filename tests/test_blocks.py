@@ -54,6 +54,7 @@ def test_splitting_leaves_the_nelson_aalen_estimate_unchanged():
     m = _block(n_estimators=1, max_depth=0, max_samples=1.0, block_length=0.4).fit(X, y, ids)
     assert m.n_units_ > m.n_ids_  # rows were split
     times, cumhaz = map(np.asarray, m.forest_.leaf_profile(0, 0))
+    cumhaz = cumhaz[:, 0]  # one cause
     ref_t, ref_c = nelson_aalen_ref(y["start"], y["stop"], y["event"])
     np.testing.assert_allclose(times, ref_t)
     np.testing.assert_allclose(cumhaz, ref_c, atol=1e-12)
@@ -127,6 +128,7 @@ def _reference_oob(forest, X, y, ids, length, buffer, aggregate):
             if need & bags[b]:
                 continue
             lt, cumhaz = core.leaf_profile(b, int(leaves[r, b]))
+            cumhaz = cumhaz[:, 0]  # one cause
             H.append(np.r_[0.0, cumhaz][np.searchsorted(lt, times, side="right")])
         n_trees[r] = len(H)
         if H:

@@ -7,12 +7,12 @@ pub struct Grid {
 }
 
 impl Grid {
-    /// Exact grid: all unique times at which an event occurs.
-    pub fn exact(stop: &[f64], event: &[bool]) -> Grid {
+    /// Exact grid: all unique times at which an event (of any cause, `code != 0`) occurs.
+    pub fn exact(stop: &[f64], codes: &[u8]) -> Grid {
         let mut times: Vec<f64> = stop
             .iter()
-            .zip(event)
-            .filter(|(_, e)| **e)
+            .zip(codes)
+            .filter(|(_, c)| **c != 0)
             .map(|(t, _)| *t)
             .collect();
         times.sort_by(|a, b| a.partial_cmp(b).expect("NaN time"));
