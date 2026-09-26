@@ -89,7 +89,7 @@ Notation: `J` causes, `K` grid, `T` requested times, `u` origin.
 - [x] Python: `_blocks` codes; base `_path_args`; CR options, paths, OOB, `score`, summary; `metrics.concordance_index_cr`
 - [x] Tests (above) + `coarsen_ref` codes + test-quality audit
 - [x] Identity bench; `cr-plan.md` status + "S12 done" note
-- [ ] Codex diff review; fixes
+- [x] Codex diff review; fixes
 
 ## Plan review (Codex, 2026-09-26)
 1. "Every leaf has ≥ m cause-k events" is false for an unsplittable root, e.g. from a bootstrap bag with few cause-k events (high) → the test covers leaves from admitted splits only; a below-floor root leaf is allowed.
@@ -102,3 +102,8 @@ Notation: `J` causes, `K` grid, `T` requested times, `u` origin.
 - The block OOB reference is by equivalence (one block per id is bit-identical to id resampling, OOB included), not a separate manual block reference; the S10 block-OOB set tests cover the sets.
 - Mutation checks: a closed lower bound on path intervals (`< lo` for `<= lo`) fails 8 path tests. Excluding type-B ties (`<` for `<=`) fails the hand-worked and brute-force Wolbers tests.
 - A test assertion was wrong, not the code: x1 raises the competing cause, so as a cause-1 score it is *below* chance (0.38) under Wolbers C (type-B controls). The test now asserts that.
+
+## Diff review (Codex, 2026-09-26)
+1. A requested time of `+∞` was never written by the sweep (strict `<` merge), which gave zero CIF / unit survival, e.g. under `locf` (medium) → the final flush writes every remaining time. Tests for rows and paths.
+2. `concordance_index_cr` (and `concordance_index_cp`) did not check the `ids` length, so a short `ids` raised `IndexError` or grouped wrongly (medium) → a shared `_groups` validation. Test added.
+3. A present but empty `leaf_cause_events` key was accepted as "absent" (low) → rejected on load. Test added.

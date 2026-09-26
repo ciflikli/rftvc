@@ -669,8 +669,10 @@ impl Sweep<'_> {
         buf.touched.sort_unstable();
         let (mut s, mut f, mut h) = (1.0, vec![0.0; nc], vec![0.0; nc]);
         let (mut clamped, mut next) = (0usize, 0usize);
-        let mut write = |upto: f64, s: f64, f: &[f64], h: &[f64], next: &mut usize| {
-            while *next < m && self.times[self.t_order[*next]] < upto {
+        // Writes the current state at every remaining requested time below
+        // `upto` (all remaining ones for `None`, including `+inf`).
+        let mut write = |upto: Option<f64>, s: f64, f: &[f64], h: &[f64], next: &mut usize| {
+            while *next < m && upto.is_none_or(|u| self.times[self.t_order[*next]] < u) {
                 let ti = self.t_order[*next];
                 surv[ti] += s;
                 for j in 0..nc {
@@ -683,7 +685,7 @@ impl Sweep<'_> {
         for &k in buf.touched.iter() {
             let k = k as usize;
             // Requested times before grid point k see the state before it.
-            write(self.grid[k], s, &f, &h, &mut next);
+            write(Some(self.grid[k]), s, &f, &h, &mut next);
             let d = &mut buf.inc[k * nc..(k + 1) * nc];
             let mut total = 0.0;
             for ((fj, hj), dj) in f.iter_mut().zip(h.iter_mut()).zip(d.iter_mut()) {
@@ -700,8 +702,7 @@ impl Sweep<'_> {
             d.iter_mut().for_each(|v| *v = 0.0);
             buf.seen[k] = false;
         }
-        write(f64::INFINITY, s, &f, &h, &mut next);
-        debug_assert_eq!(next, m, "times must not be NaN");
+        write(None, s, &f, &h, &mut next);
         buf.touched.clear();
         clamped
     }

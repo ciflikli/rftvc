@@ -666,7 +666,14 @@ impl PyForest {
             cumhaz: vec_of!("cumhaz", f64),
             n_causes,
             leaf_cause_events: if state.contains("leaf_cause_events")? {
-                vec_of!("leaf_cause_events", u32)
+                // Present means stored: an empty array is corrupt, not "absent".
+                let v = vec_of!("leaf_cause_events", u32);
+                if v.is_empty() {
+                    return Err(PyValueError::new_err(
+                        "forest state has an empty 'leaf_cause_events'",
+                    ));
+                }
+                v
             } else {
                 Vec::new()
             },

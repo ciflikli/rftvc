@@ -185,3 +185,11 @@ def test_wolbers_rejects_bad_causes():
     for cause in [0, -1, True, 1.5, "1"]:
         with pytest.raises(ValueError, match="positive integer"):
             concordance_index_cr(y, [0.1, 0.2], cause=cause)
+
+
+def test_concordance_validates_ids():
+    y = make_competing_risks_y([1.0, 2.0, 3.0], [0, 1, 2])
+    for f, kw in [(concordance_index_cr, {"cause": 1}), (concordance_index_cp, {})]:
+        with pytest.raises(ValueError, match="ids must be 1-d with 3 entries"):
+            f(y if f is concordance_index_cr else make_survival_y([1.0, 2.0, 3.0], [0, 1, 1]), [0.1, 0.2, 0.3],
+              ids=[0], **kw)

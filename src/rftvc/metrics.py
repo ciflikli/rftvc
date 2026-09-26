@@ -275,6 +275,16 @@ def _concordance(start, stop, event, risk, weights, groups=None, event_mask=None
     return num, den, n_pairs
 
 
+def _groups(ids, n):
+    """Group codes of ``ids`` (one per row), or ``None``."""
+    if ids is None:
+        return None
+    ids = np.asarray(ids)
+    if ids.shape != (n,):
+        raise ValueError(f"ids must be 1-d with {n} entries, got shape {ids.shape}")
+    return np.unique(ids, return_inverse=True)[1].ravel()
+
+
 def concordance_index_cp(y, risk, ids=None):
     """Concordance for counting-process data with time-varying risk scores.
 
@@ -288,7 +298,7 @@ def concordance_index_cp(y, risk, ids=None):
     """
     start, stop, event = check_survival_y(y, require_events=False)
     risk = _check_pred(risk, stop.size, "risk").ravel()
-    groups = None if ids is None else np.unique(np.asarray(ids), return_inverse=True)[1].ravel()
+    groups = _groups(ids, stop.size)
     num, den, _ = _concordance(start, stop, event, risk, np.ones(stop.size), groups)
     if den == 0:
         raise UndefinedMetricError("no comparable pairs")
@@ -353,7 +363,7 @@ def concordance_index_cr(y, risk, cause, ids=None):
         raise ValueError(f"cause must be a positive integer label, got {cause!r}")
     start, stop, labels = competing_risks_labels(y)
     risk = _check_pred(risk, stop.size, "risk").ravel()
-    groups = None if ids is None else np.unique(np.asarray(ids), return_inverse=True)[1].ravel()
+    groups = _groups(ids, stop.size)
     num_a, den_a, _ = _concordance(
         start, stop, labels != 0, risk, np.ones(stop.size), groups, event_mask=labels == cause
     )

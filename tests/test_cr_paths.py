@@ -281,6 +281,8 @@ def test_leaf_count_key_in_pickled_states():
     assert state["leaf_cause_events"].shape == (n_leaves * 2,)
     with pytest.raises(ValueError):
         Forest._from_state({**state, "leaf_cause_events": state["leaf_cause_events"][:-1].copy()})
+    with pytest.raises(ValueError, match="empty"):
+        Forest._from_state({**state, "leaf_cause_events": np.zeros(0, np.uint32)})
     # An S11 state (no key) loads; predictions are unchanged, diagnostics are unavailable.
     old = {k: v for k, v in state.items() if k != "leaf_cause_events"}
     m.forest_ = Forest._from_state(old)
@@ -291,3 +293,18 @@ def test_leaf_count_key_in_pickled_states():
         m.leaf_cause_events_summary()
     with pytest.raises(ValueError, match="no per-leaf cause counts"):
         m.forest_.leaf_cause_events(0)
+
+
+@pytest.mark.parametrize("aggregate", ["hazard", "cif"])
+def test_infinite_time_gives_the_final_state(fitted, aggregate):
+    X, y, ids, models = fitted
+    m = models[aggregate]
+    last = m.event_times_[-1]
+    np.testing.assert_array_equal(
+        m.predict_cumulative_incidence(X[:5], [np.inf, last]), m.predict_cumulative_incidence(X[:5], [last, last])
+    )
+    sel = ids < 5
+    kw = dict(intervals=_intervals(y[sel]), ids=ids[sel], extrapolate="locf")
+    F = m.predict_cumulative_incidence(X[sel], [np.inf, last + 1e6], **kw)
+    np.testing.assert_array_equal(F[:, :, 0], F[:, :, 1])
+    assert (F[:, :, 0].sum(axis=1) > 0).all()
