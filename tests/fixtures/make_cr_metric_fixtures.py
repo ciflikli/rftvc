@@ -1,4 +1,4 @@
-"""Regenerate tests/fixtures/cr_brier.json with comprisk 0.8.0 (IPCW Brier for competing risks).
+"""Regenerate tests/fixtures/cr_brier.json with comprisk 0.8.0 (IPCW Brier and AUC for competing risks).
 
 comprisk is not a dependency: install it anywhere importable, e.g.
 ``uv pip install --target /tmp/cr_lib comprisk==0.8.0`` and run from the repo root
@@ -8,7 +8,9 @@ comprisk's Brier (Gerds–Schumacher, extended to competing risks) weights cases
 and competing events by 1/G(T-) and subjects event-free past t by 1/G(t), with a
 Kaplan–Meier censoring model (events before censoring at ties). This equals
 rftvc's convention (controls: stop >= t, weight 1/G(t-)) when no observed time
-equals an evaluation time, which the continuous data below guarantee.
+equals an evaluation time, which the continuous data below guarantee. Its
+cumulative/dynamic AUC (Blanche 2013, definition 2) has cases weighted 1/G(T-),
+event-free controls 1/G(t) and competing controls 1/G(T-).
 """
 
 import json
@@ -33,8 +35,8 @@ def main():
     t_unique, G = evaluation._km_censoring_cr(time, event)
     out = {"time": time.tolist(), "event": event.tolist(), "eval_times": eval_times.tolist(), "causes": {}}
     for k, p in probs.items():
-        _, brier = evaluation._per_time_auc_brier(p, time, event, eval_times, t_unique, G, k)
-        out["causes"][str(k)] = {"probs": p.tolist(), "brier": brier.tolist()}
+        auc, brier = evaluation._per_time_auc_brier(p, time, event, eval_times, t_unique, G, k)
+        out["causes"][str(k)] = {"probs": p.tolist(), "brier": brier.tolist(), "auc": auc.tolist()}
     OUT.write_text(json.dumps(out, indent=1))
 
 

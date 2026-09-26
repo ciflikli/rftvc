@@ -87,6 +87,9 @@ def test_one_cause_equals_the_survival_metrics(censor):
         assert cindex_dynamic(y, p[:, j], w, kind="incident", cause=1, **kw) == cindex_dynamic(
             y, p[:, j], w, kind="incident", **kw
         )
+        assert cindex_dynamic(y, p[:, j], w, kind="cumulative", cause=1, **kw) == cindex_dynamic(
+            y, p[:, j], w, kind="cumulative", **kw
+        )
     # integrated_brier takes F = 1 - S with a cause, S without.
     S = 1.0 - np.cumsum(p, axis=1) / 4
     assert integrated_brier(y, 1.0 - S, times, cause=1, **kw) == pytest.approx(integrated_brier(y, S, times, **kw),
@@ -156,10 +159,79 @@ def test_dynamic_wolbers_matches_brute_force(n, data):
         assert cindex_dynamic(y, risk, w, **kw) == pytest.approx(num / den, rel=1e-12, abs=1e-12)
 
 
-def test_cause_specific_auc_is_not_available():
-    y = make_competing_risks_y([1.0, 2.0, 3.0], [1, 2, 0])
-    with pytest.raises(NotImplementedError, match="competing-risks AUC"):
-        cindex_dynamic(y, [0.3, 0.2, 0.1], 2.5, kind="cumulative", cause=1, y_censor=y)
+# --- cumulative/dynamic AUC (S15, Blanche definition 2) ---------------------------------
+
+
+@pytest.mark.parametrize("cause", [1, 2])
+def test_auc_matches_comprisk(cause):
+    y = make_competing_risks_y(ORACLE["time"], ORACLE["event"])
+    fx = ORACLE["causes"][str(cause)]
+    probs = np.array(fx["probs"])
+    got = [cindex_dynamic(y, probs[:, j], t, kind="cumulative", cause=cause, y_censor=y, g_min=1e-12)
+           for j, t in enumerate(ORACLE["eval_times"])]
+    np.testing.assert_allclose(got, fx["auc"], rtol=0, atol=1e-12)
+
+
+def test_auc_boundary_convention():
+    # Boundary fixture (above) with risks chosen so that the subject censored exactly at w
+    # (id 3, risk 0.35) matters. Controls (all weight a = 48/35): id 2 (0.3), id 4 (0.4, competing
+    # at w), id 3 (0.35, censored at w: an event-free control here), id 7 (0.1).
+    # Case id 1 (0.3, weight 8/7): 1/2 + 0 + 0 + 1 = 1.5; case id 5 (0.5, weight 48/35): 4.
+    # AUC = (8/7 * 1.5 + 48/35 * 4) / ((8/7 + 48/35) * 4) = 63/88.
+    # comprisk's convention (stop > w, G(w)) drops id 3 and weights id 7 by 96/35: 73/88.
+    y = make_competing_risks_y(BOUNDARY_STOP, BOUNDARY_LABEL)
+    risk = [0.3, 0.3, 0.35, 0.4, 0.5, 0.9, 0.1, 0.7]
+    assert cindex_dynamic(y, risk, 2.0, kind="cumulative", cause=1, y_censor=y) == pytest.approx(63 / 88, abs=1e-15)
+
+
+def test_auc_with_only_competing_controls():
+    y = make_competing_risks_y([1.0, 1.5], [1, 2])  # complete follow-up to w = 2: exact path
+    assert cindex_dynamic(y, [0.6, 0.4], 2.0, kind="cumulative", cause=1) == 1.0
+    assert cindex_dynamic(y, [0.4, 0.6], 2.0, kind="cumulative", cause=1) == 0.0
+    with pytest.raises(UndefinedMetricError):
+        cindex_dynamic(make_competing_risks_y([1.0, 1.5], [2, 2]), [0.1, 0.2], 2.0, kind="cumulative", cause=1)
+
+
+def _brute_auc(stop, labels, risk, w, cause, g_min):
+    case = (labels == cause) & (stop <= w)
+    by_w = (labels != 0) & (stop <= w)
+    comp = by_w & ~case
+    ctrl = ((stop >= w) & ~by_w) | comp
+    if np.all(case | ctrl):
+        wt = np.ones(stop.size)
+    else:
+        G = KaplanMeierCensoring().fit(make_competing_risks_y(stop, labels))
+        g = np.where(case | comp, G.predict(stop, left=True), G.predict([w], left=True)[0])
+        wt = 1.0 / np.maximum(g, g_min)
+    num = den = 0.0
+    for i in np.flatnonzero(case):
+        for j in np.flatnonzero(ctrl):
+            pw = wt[i] * wt[j]
+            den += pw
+            num += pw * (1.0 if risk[i] > risk[j] else 0.5 if risk[i] == risk[j] else 0.0)
+    return num, den
+
+
+@settings(max_examples=300, deadline=None)
+@given(n=st.integers(2, 25), data=st.data())
+def test_auc_matches_brute_force(n, data):
+    ints = lambda lo, hi: np.array(data.draw(st.lists(st.integers(lo, hi), min_size=n, max_size=n)))
+    stop = ints(1, 8) * 0.5
+    labels = ints(0, 3)
+    risk = ints(0, 4).astype(float)
+    cause = data.draw(st.integers(1, 3))
+    w = data.draw(st.sampled_from([1.0, 2.0, 2.5, 5.0]))
+    g_min = data.draw(st.sampled_from([0.05, 0.5]))
+    y = make_competing_risks_y(stop, labels)
+    num, den = _brute_auc(stop, labels, risk, w, cause, g_min)
+    kw = dict(kind="cumulative", cause=cause, y_censor=y, g_min=g_min)
+    if np.all(((labels != 0) & (stop <= w)) | (stop >= w)):
+        kw.pop("y_censor")
+    if den == 0:
+        with pytest.raises(UndefinedMetricError):
+            cindex_dynamic(y, risk, w, **kw)
+    else:
+        assert cindex_dynamic(y, risk, w, **kw) == pytest.approx(num / den, rel=1e-12, abs=1e-12)
 
 
 def test_labels_need_a_cause():

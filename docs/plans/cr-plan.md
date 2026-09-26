@@ -157,3 +157,5 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 - Scale: J = 2 is ≤ 1.4× and J = 4 ≤ 2.2× the single-event fit time, peak RSS ≤ 1.5×, and leaf bytes equal the `(1 + 2J)/3` bound.
 - Docs: a competing-risks user-guide page, compatibility, and a PBC2 transplant-vs-death case study (`examples/pbc2_competing.py`).
 - Out of scope, as designed: Fine–Gray / Gray splitting (C6), competing-risks AUC, multi-state.
+
+**S15 done (2026-09-26)** (`s15-plan.md`): competing-risks cumulative/dynamic AUC (Blanche 2013, definition 2) in `cindex_dynamic(kind="cumulative", cause=k)` and in landmark CV. It uses rftvc's tie convention (a subject censored at `w` is a control, weighted `G(w−)`); comprisk / timeROC use `stop > w` and `G(w)`.

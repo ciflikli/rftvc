@@ -134,11 +134,17 @@ def _censoring(y_censor, censoring_estimator):
 
 
 def _ipcw(stop, event, w, y_censor, censoring_estimator, g_min, cause=None):
-    """Per-subject weights at horizon ``w`` and the diagnostic info.
+    """Per-subject weights at horizon ``w`` and the diagnostic info: ``(case, control, weights, info)``.
 
     Cases and competing events (``cause`` given) are weighted ``1/G(stop-)``,
     controls ``1/G(w-)``, subjects censored before ``w`` 0.
     """
+    case, _, control, weights, info = _ipcw_classes(stop, event, w, y_censor, censoring_estimator, g_min, cause)
+    return case, control, weights, info
+
+
+def _ipcw_classes(stop, event, w, y_censor, censoring_estimator, g_min, cause=None):
+    """As ``_ipcw``, also returning the competing mask: ``(case, competing, control, weights, info)``."""
     if not 0 < g_min <= 1:
         raise ValueError("g_min must lie in (0, 1]")
     case, competing, control = _classes(stop, event, w, cause)
@@ -151,7 +157,7 @@ def _ipcw(stop, event, w, y_censor, censoring_estimator, g_min, cause=None):
         if y_censor is not None and censoring_estimator is not None:
             raise ValueError("pass at most one of y_censor or censoring_estimator")
         info.update(n_censored=0, n_clipped=0)
-        return case, control, np.ones(stop.size), info
+        return case, competing, control, np.ones(stop.size), info
     cens = _censoring(y_censor, censoring_estimator)
     g = np.ones(stop.size)
     g[observed_event] = cens.predict(stop[observed_event], left=True)
@@ -161,7 +167,7 @@ def _ipcw(stop, event, w, y_censor, censoring_estimator, g_min, cause=None):
     g = np.maximum(g, g_min)
     weights = np.where(weighted, 1.0 / g, 0.0)
     info.update(n_censored=int((~weighted).sum()), n_clipped=int(clipped.sum()))
-    return case, control, weights, info
+    return case, competing, control, weights, info
 
 
 def _check_pred(values, n, name):
@@ -452,21 +458,33 @@ def cindex_dynamic(
     Weights are 1 under complete follow-up to ``w`` (exact path).
 
     With ``cause=k`` (competing risks; ``y_test`` holds cause labels, ``risk``
-    is ``F_k(w)``), only ``kind="incident"`` is available: the IPCW Wolbers C
-    truncated at ``w``. Each cause-``k`` event by ``w`` is compared with (A) the
-    subjects still at risk at its time, weight ``1/G(T_i-)^2`` as above, and
-    (B) the subjects with a competing event at ``T_j <= T_i``, weight
-    ``1/(G(T_i-) G(T_j-))``. With one cause this is the incident C above.
-    Competing-risks AUC (``kind="cumulative"``) is not implemented.
+    is ``F_k(w)``):
+
+    - ``kind="cumulative"``: the cumulative/dynamic AUC of Blanche et al.
+      (2013), definition 2. Cases (cause-``k`` events by ``w``, weight
+      ``1/G(T_i-)``) against every observed non-case: subjects event-free
+      through ``w`` (``stop >= w``, weight ``1/G(w-)``) and subjects with a
+      competing event by ``w`` (weight ``1/G(T_j-)``). Each pair counts
+      ``w_i w_j``. A subject censored exactly at ``w`` is an event-free control,
+      as in ``brier_landmark`` (``comprisk`` / ``timeROC`` use ``stop > w`` and
+      ``G(w)``; the two agree when no time equals ``w``).
+    - ``kind="incident"``: the IPCW Wolbers C truncated at ``w``. Each
+      cause-``k`` event by ``w`` is compared with (A) the subjects still at risk
+      at its time, weight ``1/G(T_i-)^2`` as above, and (B) the subjects with a
+      competing event at ``T_j <= T_i``, weight ``1/(G(T_i-) G(T_j-))``.
+
+    With one cause both equal their survival versions above.
     """
     stop, event = _landmark_outcomes(y_test, "y_test", cause)
     risk = _check_pred(risk, stop.size, "risk").ravel()
     if kind not in ("cumulative", "incident"):
         raise ValueError(f"kind must be 'cumulative' or 'incident', got {kind!r}")
-    if cause is not None and kind == "cumulative":
-        raise NotImplementedError("competing-risks AUC (kind='cumulative' with cause) is not implemented")
-    case, control, weights, info = _ipcw(stop, event, w, y_censor, censoring_estimator, g_min, cause)
-    if kind == "cumulative":
+    case, competing, control, weights, info = _ipcw_classes(
+        stop, event, w, y_censor, censoring_estimator, g_min, cause
+    )
+    if kind == "cumulative" and competing.any():
+        score = _cumulative_auc_weighted(risk, case, control | competing, weights)
+    elif kind == "cumulative":
         if not case.any() or not control.any():
             raise UndefinedMetricError("need at least one case and one control at w")
         ctrl = np.sort(risk[control])
@@ -484,6 +502,20 @@ def cindex_dynamic(
             raise UndefinedMetricError("no comparable pairs before w")
         score = num / den
     return (score, info) if return_info else score
+
+
+def _cumulative_auc_weighted(risk, case, ctrl_mask, weights):
+    """``sum_ij w_i w_j (1{r_i > r_j} + 1/2 1{r_i = r_j}) / (sum_i w_i sum_j w_j)`` over cases i, controls j."""
+    if not case.any() or not ctrl_mask.any():
+        raise UndefinedMetricError("need at least one case and one control at w")
+    order = np.argsort(risk[ctrl_mask], kind="stable")
+    r_ctrl, w_ctrl = risk[ctrl_mask][order], weights[ctrl_mask][order]
+    cum = np.r_[0.0, np.cumsum(w_ctrl)]
+    rc, wc = risk[case], weights[case]
+    lo = np.searchsorted(r_ctrl, rc, side="left")
+    hi = np.searchsorted(r_ctrl, rc, side="right")
+    num = np.sum(wc * (cum[lo] + 0.5 * (cum[hi] - cum[lo])))
+    return float(num / (wc.sum() * cum[-1]))
 
 
 def _km_at(stop, event, w):

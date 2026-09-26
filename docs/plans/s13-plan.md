@@ -25,7 +25,7 @@ Notation: `s` landmark, `w` horizon on the reset clock, `k` the cause of interes
      - **Type A** controls are rows at risk at `T_i` with no event at `T_i`, weight `1/G(T_i−)²`.
      - **Type B** controls are competing events at `T_j ≤ T_i`, weight `1/(G(T_i−) G(T_j−))`.
    - Type A deviates from `cr-design.md`'s `1/(G(T_i−) G(T_i))`, so that with one cause the value equals today's Uno C bit-for-bit. The two agree whenever there is no censoring at `T_i`. **Design amendment** (plan review 1): `cr-design.md` "Metrics" is updated to this convention. Ties are handled as in the existing incident C, with events at `T_i` excluded as type-A controls and censoring at `T_i` still at risk. A fixture with censoring at a case time pins the weight, and it differs from the design's original form.
-   - `kind="cumulative"` with `cause` raises `NotImplementedError`: competing-risks AUC (Blanche 2013) is deferred, as in the design.
+   - `kind="cumulative"` with `cause` raises `NotImplementedError`: competing-risks AUC (Blanche 2013) is deferred, as in the design. *(Superseded by S15, which implements it.)*
    - `_competing_pairs` gains case / control weights (a float Fenwick tree); `concordance_index_cr` is unchanged.
 5. **Censoring model with labels:** a `KaplanMeierCensoring` fitted on `y` with labels treats any label ≠ 0 as an event. `fit` accepts bool or labelled targets. For bool input its result is unchanged.
 
