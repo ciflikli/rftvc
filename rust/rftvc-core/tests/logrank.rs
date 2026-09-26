@@ -1,4 +1,17 @@
-use rftvc_core::{Grid, LtrcLogRank, Profile, SplitCriterion, SurvData, node_profile, profile_on};
+use rftvc_core::{
+    Grid, LtrcLogRank, NodeProfile, Profile, SplitCriterion, SurvData, node_profile, profile_on,
+};
+
+/// A child profile on the parent's times (exposure and units unused by log-rank).
+fn child<'a>(parent: &'a NodeProfile, at_risk: &'a [f64], events: &'a [f64]) -> Profile<'a> {
+    Profile {
+        at_risk,
+        events,
+        times: &parent.times,
+        exposure: 0.0,
+        n_units: 0.0,
+    }
+}
 
 /// Hand-computed: left = {1 (event), 3 (event)}, right = {2 (event), 4 (censored)}.
 /// Per event time (O - E, V): t=1 (1/2, 1/4), t=2 (-1/3, 2/9), t=3 (1/2, 1/4)
@@ -11,16 +24,7 @@ fn logrank_matches_hand_computation() {
     let surv = SurvData::new(&start, &stop, &event);
     let parent = node_profile(&surv, &[0, 1, 2, 3]);
     let (l_at, l_ev) = profile_on(&surv, &[0, 1], &parent.event_idx);
-    let score = LtrcLogRank.score(
-        &Profile {
-            at_risk: &l_at,
-            events: &l_ev,
-        },
-        &Profile {
-            at_risk: &parent.at_risk,
-            events: &parent.events,
-        },
-    );
+    let score = LtrcLogRank.score(&child(&parent, &l_at, &l_ev), &parent.view(4.0), 2.0);
     assert!((score - 8.0 / 13.0).abs() < 1e-12, "score = {score}");
 }
 
@@ -86,21 +90,12 @@ fn node_scorer_matches_reference_score() {
         let surv = SurvData::new(&start, &stop, &event);
         let rows: Vec<u32> = (0..n as u32).collect();
         let parent = node_profile(&surv, &rows);
-        let p = Profile {
-            at_risk: &parent.at_risk,
-            events: &parent.events,
-        };
-        let scorer = LtrcLogRank.node_scorer(Profile {
-            at_risk: &parent.at_risk,
-            events: &parent.events,
-        });
+        let p = parent.view(n as f64);
+        let scorer = LtrcLogRank.node_scorer(parent.view(n as f64));
         let left: Vec<u32> = rows.iter().copied().filter(|_| rng.below(2) == 0).collect();
         let (l_at, l_ev) = profile_on(&surv, &left, &parent.event_idx);
-        let l = Profile {
-            at_risk: &l_at,
-            events: &l_ev,
-        };
-        let (a, b) = (LtrcLogRank.score(&l, &p), scorer.score(&l));
+        let l = child(&parent, &l_at, &l_ev);
+        let (a, b) = (LtrcLogRank.score(&l, &p, 0.0), scorer.score(&l, 0.0));
         assert!((a - b).abs() <= 1e-9 * a.abs().max(1.0), "{a} vs {b}");
     }
 }

@@ -1,0 +1,38 @@
+{
+  "n_estimators": 300,
+  "grid_min_ids_leaf": [
+    5,
+    15,
+    50
+  ],
+  "grid_max_features": [
+    "sqrt",
+    null
+  ],
+  "outer_folds": 5,
+  "inner_folds": 3,
+  "n_times": 10,
+  "n_bins": 10,
+  "n_boot": 500,
+  "sim_reps": 20,
+  "sim_n_train": 400,
+  "sim_n_test": 200,
+  "panel_units": 2000,
+  "panel_periods": 96,
+  "panel_test_size": 6.0,
+  "fit_time_reps": 3,
+  "seed": 0,
+  "n_jobs": -1,
+  "datasets": [
+    "pbc2",
+    "panel",
+    "sim",
+    "cl"
+  ],
+  "criteria": [
+    "logrank",
+    "grouped_lik",
+    "poisson",
+    "km_gini"
+  ]
+}

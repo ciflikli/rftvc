@@ -1,12 +1,24 @@
-/// At-risk and event counts on a node's event-time grid.
+/// Summaries of one node (or candidate child) on the parent node's event times.
+///
+/// A child profile shares the parent's `times`. Log-rank reads only `at_risk`
+/// and `events`; the other fields serve likelihood and impurity criteria.
 pub struct Profile<'a> {
     pub at_risk: &'a [f64],
     pub events: &'a [f64],
+    /// Event times (the parent node's), aligned with `at_risk` / `events`.
+    pub times: &'a [f64],
+    /// Person-time: the sum of `stop - start` over the node's rows.
+    pub exposure: f64,
+    /// Distinct resampling units. A unit with rows on both sides of a split
+    /// counts in both children (the `min_ids_leaf` convention).
+    pub n_units: f64,
 }
 
 pub trait SplitCriterion: Sync {
     /// Score a candidate split from the left child's and the parent's profiles.
-    fn score(&self, left: &Profile, parent: &Profile) -> f64;
+    /// The right child is the parent minus the left, except for its unit
+    /// count (units may straddle), which is passed as `n_units_right`.
+    fn score(&self, left: &Profile, parent: &Profile, n_units_right: f64) -> f64;
 
     /// A scorer for many candidates of one parent. Criteria may precompute
     /// parent-only terms; the default defers to `score`.
@@ -20,7 +32,7 @@ pub trait SplitCriterion: Sync {
 
 /// Scores left-child profiles against a fixed parent.
 pub trait NodeScorer {
-    fn score(&self, left: &Profile) -> f64;
+    fn score(&self, left: &Profile, n_units_right: f64) -> f64;
 }
 
 struct Deferred<'a, C: SplitCriterion + ?Sized> {
@@ -29,8 +41,8 @@ struct Deferred<'a, C: SplitCriterion + ?Sized> {
 }
 
 impl<C: SplitCriterion + ?Sized> NodeScorer for Deferred<'_, C> {
-    fn score(&self, left: &Profile) -> f64 {
-        self.criterion.score(left, &self.parent)
+    fn score(&self, left: &Profile, n_units_right: f64) -> f64 {
+        self.criterion.score(left, &self.parent, n_units_right)
     }
 }
 
@@ -41,7 +53,7 @@ impl<C: SplitCriterion + ?Sized> NodeScorer for Deferred<'_, C> {
 pub struct LtrcLogRank;
 
 impl SplitCriterion for LtrcLogRank {
-    fn score(&self, l: &Profile, p: &Profile) -> f64 {
+    fn score(&self, l: &Profile, p: &Profile, _n_units_right: f64) -> f64 {
         let (mut num, mut var) = (0.0, 0.0);
         for k in 0..p.at_risk.len() {
             let (y, d, yl) = (p.at_risk[k], p.events[k], l.at_risk[k]);
@@ -88,7 +100,7 @@ struct LogRankNode<'a> {
 }
 
 impl NodeScorer for LogRankNode<'_> {
-    fn score(&self, l: &Profile) -> f64 {
+    fn score(&self, l: &Profile, _n_units_right: f64) -> f64 {
         let (mut num, mut var) = (0.0, 0.0);
         for j in 0..self.y.len() {
             let yl = l.at_risk[j];

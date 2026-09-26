@@ -85,6 +85,9 @@ pub struct SurvData {
     pub a: Vec<u32>,
     pub b: Vec<u32>,
     pub event: Vec<bool>,
+    /// Person-time `stop - start` of each row (on the snapped times in coarse mode,
+    /// which are the times passed in).
+    pub duration: Vec<f64>,
 }
 
 impl SurvData {
@@ -96,11 +99,13 @@ impl SurvData {
             .map(|&s| grid.first_greater(s) as u32)
             .collect();
         let b = stop.iter().map(|&s| grid.first_greater(s) as u32).collect();
+        let duration = start.iter().zip(stop).map(|(s, t)| t - s).collect();
         SurvData {
             grid,
             a,
             b,
             event: event.to_vec(),
+            duration,
         }
     }
 

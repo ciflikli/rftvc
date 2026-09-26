@@ -223,3 +223,50 @@ def test_nested_cv_selects_the_best_inner_candidate(panel, refit, best):
         means.append(float(np.nanmean(inner_res[refit].to_numpy())))
     assert means[0] != means[1]
     assert set(res["params"]) == {repr(candidates[int(best(means))])}
+
+
+# --- out-of-fold predictions (S8) -------------------------------------------------
+
+
+def test_returned_predictions_reproduce_every_fold_landmark_score(panel):
+    from rftvc import make_survival_y
+    from rftvc.metrics import brier_landmark, integrated_brier
+
+    cv = RollingOriginSplit(2, test_size=6, gap=6)
+    scoring = ["brier", "integrated_brier"]
+    scores, preds = landmark_cross_validate(_model(), panel, cv, scoring=scoring, n_times=4,
+                                            return_predictions=True)
+    times = np.linspace(0, 6.0, 5)[1:]
+    assert len(scores) > 1
+    for row in scores.iter_rows(named=True):
+        p = preds.filter((pl.col("fold") == row["fold"]) & (pl.col("landmark") == row["landmark"]))
+        assert len(p) == row["n"]
+        y = make_survival_y(p["time"].to_numpy(), p["event"].to_numpy())
+        cens = KaplanMeierCensoring().fit(y)
+        S = np.vstack(p["survival"].to_list())
+        np.testing.assert_allclose(p["risk"].to_numpy(), 1.0 - S[:, -1])
+        assert brier_landmark(y, p["risk"].to_numpy(), 6.0, censoring_estimator=cens) == pytest.approx(row["brier"])
+        assert integrated_brier(y, S, times, censoring_estimator=cens) == pytest.approx(row["integrated_brier"])
+
+
+def test_new_subject_cv_predicts_every_landmark_row_once(panel):
+    data = make_landmark_data(panel, horizon=6.0, step=6.0, history_features=FEATURES)
+    scores, preds = landmark_cross_validate(_model(), panel, GroupKFold(3), return_predictions=True)
+    got = sorted(zip(preds["landmark"].to_list(), preds["id"].to_list()))
+    assert got == sorted(zip(data.s.tolist(), data.ids.tolist()))
+    # Each id is predicted in exactly one fold.
+    assert preds.group_by("id").agg(pl.col("fold").n_unique())["fold"].max() == 1
+    # Outcomes are on the reset clock.
+    np.testing.assert_array_equal(np.sort(preds["time"].to_numpy()), np.sort(data.y["stop"]))
+
+
+def test_default_return_is_unchanged_and_nested_cv_returns_predictions(panel):
+    cv = RollingOriginSplit(1, test_size=6, gap=6)
+    plain = landmark_cross_validate(_model(), panel, cv)
+    assert isinstance(plain, pl.DataFrame)
+    scores, preds = landmark_cross_validate(
+        _model(), panel, cv, param_grid={"forest__max_depth": [0, 3]},
+        inner_cv=RollingOriginSplit(2, test_size=6, gap=6), return_predictions=True,
+    )
+    assert "params" in scores.columns and len(preds) == int(scores["n"].sum())
+    assert scores.drop("params").columns == plain.columns

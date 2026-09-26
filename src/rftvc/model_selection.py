@@ -168,15 +168,15 @@ def _landmark_data(model, df, landmarks=None):
     )
 
 
-def _score_landmark(forest, X, y, w, scoring, times, censoring_estimator, g_min):
-    """Scores of one landmark's test risk set, with ``G_s`` fitted on its outcomes."""
+def _score_landmark(S, y, w, scoring, times, censoring_estimator, g_min):
+    """Scores of one landmark's test risk set from its predicted survival ``S`` at
+    ``times`` (last column at ``w``), with ``G_s`` fitted on its outcomes."""
     _, stop, event = y["start"], y["stop"], y["event"]
     need = any(not np.all(np.logical_or(*_outcome_classes(stop, event, t))) for t in times)
     cens = None
     if need:
         cens = KaplanMeierCensoring() if censoring_estimator is None else clone(censoring_estimator)
         cens = cens.fit(y)
-    S = forest.predict_survival_function(X, times)
     risk = 1.0 - S[:, -1]
     kw = dict(censoring_estimator=cens, g_min=g_min)
     out = {}
@@ -212,6 +212,7 @@ def landmark_cross_validate(
     param_grid=None,
     inner_cv=None,
     refit="brier",
+    return_predictions=False,
 ):
     """Cross-validate a ``LandmarkSurvivalForest`` over its landmark grid.
 
@@ -244,12 +245,21 @@ def landmark_cross_validate(
         that raises ``metrics.UndefinedMetricError`` at a landmark is NaN there;
         any other error propagates.
 
+    return_predictions : bool, default=False
+        Also return the out-of-fold predictions the scores were computed from.
+
     Returns
     -------
-    polars.DataFrame
+    scores : polars.DataFrame
         One row per (fold, test landmark): ``fold``, ``landmark``, counts
         (``n``, ``n_cases``, ``n_censored``, ``n_clipped``), one column per score,
         and ``params`` (the selected parameters) under nested CV.
+    predictions : polars.DataFrame
+        Only with ``return_predictions=True``. One row per scored test row (a
+        subject in a test landmark's risk set): ``fold``, ``landmark``, ``id``,
+        ``time`` and ``event`` (the outcome on the reset clock, time since the
+        landmark), ``risk`` (``1 - S(w)``), and ``survival``: a list of ``S`` at
+        the ``n_times`` times ``w/n_times, ..., w`` (the ``integrated_brier`` grid).
     """
     df = _as_polars(df)
     if model.horizon is None:
@@ -278,7 +288,7 @@ def landmark_cross_validate(
     times = np.linspace(0, w, n_times + 1)[1:]
     data = _landmark_data(model, df)
     ids = data.ids
-    rows = []
+    rows, preds = [], []
     for fold, (train_idx, test_idx) in enumerate(cv.split(data.s, groups=data.groups)):
         test_s = np.unique(data.s[test_idx])
         train_ids = np.unique(ids[train_idx])
@@ -298,13 +308,24 @@ def landmark_cross_validate(
         fitted = clone(model).set_params(landmarks=train_s, step=None, **(params or {})).fit(df_train)
         for s in test_s:
             m = test_idx[data.s[test_idx] == s]
-            scores = _score_landmark(
-                fitted.forest_, data.X[m], data.y[m], w, scoring, times, censoring_estimator, g_min
-            )
+            S = fitted.forest_.predict_survival_function(data.X[m], times)
+            scores = _score_landmark(S, data.y[m], w, scoring, times, censoring_estimator, g_min)
+            if return_predictions:
+                preds.append(pl.DataFrame({
+                    "fold": np.full(len(m), fold),
+                    "landmark": np.full(len(m), float(s)),
+                    "id": ids[m],
+                    "time": data.y["stop"][m],
+                    "event": data.y["event"][m],
+                    "risk": 1.0 - S[:, -1],
+                    "survival": list(S),
+                }))
             row = {"fold": fold, "landmark": float(s), **scores}
             if candidates is not None:
                 row["params"] = repr(params)
             rows.append(row)
+    if return_predictions:
+        return pl.DataFrame(rows), pl.concat(preds)
     return pl.DataFrame(rows)
 
 

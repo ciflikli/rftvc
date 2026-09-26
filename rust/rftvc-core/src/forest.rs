@@ -2,7 +2,7 @@
 
 use rayon::prelude::*;
 
-use crate::criterion::LtrcLogRank;
+use crate::criterion::SplitCriterion;
 use crate::data::{Binned, SurvData};
 use crate::rng::Rng;
 use crate::tree::{Tree, TreeParams, build_tree};
@@ -94,6 +94,7 @@ pub fn fit_forest(
     surv: &SurvData,
     groups: &Groups,
     params: &ForestParams,
+    criterion: &dyn SplitCriterion,
 ) -> Forest {
     let mut master = Rng::new(params.seed);
     let tree_seeds: Vec<u64> = (0..params.n_trees).map(|_| master.next_u64()).collect();
@@ -110,15 +111,7 @@ pub fn fit_forest(
                 }
             }
             let mut rng = Rng::new(seed ^ SPLIT_STREAM);
-            build_tree(
-                binned,
-                surv,
-                rows,
-                units,
-                &params.tree,
-                &LtrcLogRank,
-                &mut rng,
-            )
+            build_tree(binned, surv, rows, units, &params.tree, criterion, &mut rng)
         })
         .collect();
     Forest {
