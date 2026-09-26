@@ -20,6 +20,8 @@ all weights are 1 and no censoring model is used (the *exact path*).
 """
 
 import numbers
+import warnings
+from typing import NamedTuple
 
 import numpy as np
 import polars as pl
@@ -29,13 +31,16 @@ from ._validation import check_survival_y, competing_risks_labels
 
 __all__ = [
     "KaplanMeierCensoring",
+    "PEScore",
     "UndefinedMetricError",
     "brier_landmark",
     "calibration_table",
     "cindex_dynamic",
     "concordance_index_cp",
     "concordance_index_cr",
+    "event_windows",
     "integrated_brier",
+    "piecewise_exponential_score",
 ]
 
 
@@ -553,3 +558,238 @@ def calibration_table(y_test, risk, w, n_bins=10):
             }
         )
     return pl.DataFrame(rows)
+
+
+# --- piecewise-exponential score (docs/plans/tvc-deviance.md) -----------------
+
+
+class PEScore(NamedTuple):
+    """Result of ``piecewise_exponential_score`` (higher is better).
+
+    With ``reduce="per_event"`` every score field is divided by ``n_events``.
+    ``by_cause`` / ``by_cause_window`` are ``None`` for survival data and when
+    one ``cause`` is selected; ``by_id`` / ``id_labels`` are ``None`` without ``ids``.
+    """
+
+    total: float
+    by_window: np.ndarray
+    by_cause: object
+    by_cause_window: object
+    by_id: object
+    id_labels: object
+    zero_rate_share: float
+    null_total: float
+    n_events: int
+    n_truncated_events: int
+
+
+def event_windows(estimator, n_windows=8):
+    """Scoring windows from a fitted forest's training events.
+
+    Interior edges are inverse-CDF quantiles of the training event times
+    counted with multiplicity: the time of the ``ceil(k·D/n_windows)``-th
+    event, ``k = 1..n_windows-1``, with ``D`` training events. The edges are
+    ``[0, interior..., tau]`` with ``tau`` the last event time, deduplicated,
+    so heavy ties give fewer windows. Windows are right-closed ``(w_{m-1}, w_m]``.
+    """
+    if not isinstance(n_windows, numbers.Integral) or isinstance(n_windows, (bool, np.bool_)) or n_windows < 1:
+        raise ValueError(f"n_windows must be a positive integer, got {n_windows!r}")
+    counts = getattr(estimator, "_event_counts_", None)
+    if counts is None:
+        raise AttributeError("refit: this forest predates baseline_cumhaz_ (or is not fitted)")
+    times = np.asarray(estimator.event_times_, dtype=float)
+    total = counts.sum()
+    if total == 0 or times[-1] <= 0:
+        raise ValueError("the forest has no training events at positive times")
+    ranks = np.ceil(np.arange(1, n_windows) * total / n_windows)
+    interior = times[np.searchsorted(np.cumsum(counts), ranks, side="left")]
+    return np.unique(np.r_[0.0, interior[interior > 0], times[-1]])
+
+
+def _baseline_at(estimator, windows):
+    """The estimator's ``baseline_cumhaz_`` (a right-continuous step function on
+    ``event_times_``) at ``windows``: ``(M+1,)`` or ``(J, M+1)``."""
+    base = getattr(estimator, "baseline_cumhaz_", None)
+    if base is None:
+        raise AttributeError("refit: this forest predates baseline_cumhaz_ (or is not fitted)")
+    idx = np.searchsorted(estimator.event_times_, np.asarray(windows, dtype=float), side="right") - 1
+    padded = np.concatenate([np.zeros(base.shape[:-1] + (1,)), base], axis=-1)
+    return padded[..., idx + 1]
+
+
+def _check_windows(windows):
+    w = np.asarray(windows, dtype=float)
+    if w.ndim != 1 or w.size < 2 or not np.isfinite(w).all() or w[0] != 0 or np.any(np.diff(w) <= 0):
+        raise ValueError("windows must be finite, strictly increasing edges starting at 0, with at least one window")
+    return w
+
+
+def _pe_codes(y, cumhaz, null_cumhaz, causes, cause, m1):
+    """``(start, stop, codes, H (n, J, M+1), H0 (J, M+1), competing)``; ``codes`` 0 = censored, j+1 = axis j."""
+    if cumhaz.ndim == 2:
+        if causes is not None or cause is not None:
+            raise ValueError("causes and cause apply to competing-risks cumhaz of shape (n, J, M+1)")
+        start, stop, event = check_survival_y(y, require_events=False)
+        codes = event.astype(np.int64)
+        H, H0 = cumhaz[:, None, :], np.asarray(null_cumhaz, dtype=float)[None, :]
+        competing = False
+    elif cumhaz.ndim == 3:
+        if causes is None:
+            raise ValueError("competing-risks cumhaz needs causes (the estimator's causes_) to map labels to axes")
+        causes = np.asarray(causes).ravel()
+        start, stop, labels = competing_risks_labels(y)
+        codes = np.zeros(labels.size, dtype=np.int64)
+        known = labels == 0
+        for j, c in enumerate(causes.tolist()):
+            hit = labels == c
+            codes[hit], known = j + 1, known | hit
+        if not known.all():
+            raise ValueError(f"y has cause labels {sorted(set(labels[~known].tolist()))} not in causes")
+        if cumhaz.shape[1] != causes.size:
+            raise ValueError(f"cumhaz has {cumhaz.shape[1]} causes but causes has {causes.size}")
+        H, H0 = cumhaz, np.asarray(null_cumhaz, dtype=float)
+        competing = True
+        if cause is not None:
+            pos = np.flatnonzero(causes == cause) if isinstance(cause, numbers.Integral) else []
+            if len(pos) != 1:
+                raise ValueError(f"cause={cause!r} is not in causes {causes.tolist()}")
+            k = int(pos[0])
+            H, H0 = H[:, k : k + 1], H0[k : k + 1]
+            codes = np.where(codes == k + 1, 1, 0)
+            competing = False
+    else:
+        raise ValueError("cumhaz must have shape (n, M+1) or (n, J, M+1)")
+    if H.shape[0] != stop.size or H.shape[2] != m1:
+        raise ValueError(f"cumhaz must have {stop.size} rows and {m1} edge columns, got shape {cumhaz.shape}")
+    if H0.shape != (H.shape[1], m1):
+        raise ValueError(f"null_cumhaz must have shape {(H.shape[1], m1) if competing or H.shape[1] > 1 else (m1,)}")
+    if not np.isfinite(H).all():
+        raise ValueError("cumhaz must be finite (drop OOB rows that have no out-of-bag tree)")
+    if not np.isfinite(H0).all():
+        raise ValueError("null_cumhaz must be finite")
+    return start, stop, codes, H, H0, competing
+
+
+def piecewise_exponential_score(
+    y, cumhaz, windows, *, null_cumhaz, alpha=0.01, causes=None, cause=None, ids=None, reduce="per_event"
+):
+    """Piecewise-exponential log score of cumulative-hazard predictions on counting-process rows.
+
+    For windows ``W_m = (w_{m-1}, w_m]`` and rows ``(start, stop]`` with
+    covariates fixed on the row, the score is
+
+        S = sum_{r, m} [ N_rm log(rate_rm) - rate_rm * e_rm ],
+        rate_rm = (1 - alpha) (cumhaz[r, m] - cumhaz[r, m-1]) / |W_m| + alpha (null[m] - null[m-1]) / |W_m|,
+
+    with ``e_rm`` the row's exposure in ``W_m`` and ``N_rm`` its event there.
+    It is the log-likelihood of the piecewise-constant hazard ``rate``: proper
+    for piecewise-constant predictions, IPCW-free, and additive over windows,
+    causes and ids (``docs/plans/tvc-deviance.md``). Higher is better; the
+    Poisson deviance is ``-2 S`` plus a data-only term.
+
+    Parameters
+    ----------
+    y : survival or competing-risks target with ``start``, ``stop``, ``event``.
+    cumhaz : ndarray of shape (n, M+1) or (n, J, M+1)
+        Each row's predicted cumulative hazard at ``windows`` (fixed profile,
+        e.g. ``predict_cumulative_hazard(X, times=windows)``).
+    windows : ndarray of shape (M+1,)
+        Strictly increasing edges starting at 0 (see ``event_windows``). Rows are
+        administratively truncated at ``tau = windows[-1]``; exposure outside
+        ``(0, tau]`` is ignored, and events outside it are counted in
+        ``n_truncated_events`` and not scored.
+    null_cumhaz : ndarray of shape (M+1,) or (J, M+1)
+        The training-set null (e.g. the estimator's ``baseline_cumhaz_``) at ``windows``.
+        It must come from training data, not from ``y``.
+    alpha : float in [0, 1), default=0.01
+        Weight of the null in the scored rate. It keeps event cells with a zero
+        predicted rate finite; with ``alpha=0`` such a cell scores ``-inf``.
+    causes : array-like, required for competing risks
+        The labels of the cause axis of ``cumhaz`` (the estimator's ``causes_``).
+    cause : int, default=None
+        Score one cause only; ``None`` sums all causes.
+    ids : array-like of shape (n,), default=None
+        Row subjects, for ``by_id``.
+    reduce : {"per_event", "sum"}, default="per_event"
+        ``"per_event"`` divides the scores by the number of scored events.
+
+    Returns
+    -------
+    PEScore
+        ``zero_rate_share`` is the fraction of scored events whose cell has a
+        zero predicted (unmixed) rate; above 1% the windows are too fine for
+        the model, and a ``UserWarning`` is raised. ``null_total`` is the null's
+        own score on the same cells.
+    """
+    if reduce not in ("per_event", "sum"):
+        raise ValueError(f"reduce must be 'per_event' or 'sum', got {reduce!r}")
+    if isinstance(alpha, (bool, np.bool_)) or not isinstance(alpha, numbers.Real) or not 0 <= alpha < 1:
+        raise ValueError(f"alpha must be in [0, 1), got {alpha!r}")
+    w = _check_windows(windows)
+    M = w.size - 1
+    start, stop, codes, H, H0, competing = _pe_codes(
+        y, np.asarray(cumhaz, dtype=float), null_cumhaz, causes, cause, M + 1
+    )
+    if ids is not None:
+        ids = np.asarray(ids)
+        if ids.shape != (stop.size,):
+            raise ValueError(f"ids must have {stop.size} entries")
+        id_labels, first, inv = np.unique(ids, return_index=True, return_inverse=True)
+        order = np.argsort(first, kind="stable")  # labels in order of first appearance
+        rank = np.empty_like(order)
+        rank[order] = np.arange(order.size)
+        inv, id_labels = rank[inv.ravel()], id_labels[order]
+        by_id = np.zeros(id_labels.size)
+    tau = w[-1]
+    event = codes > 0
+    scored = event & (stop > 0) & (stop <= tau)
+    n_events = int(scored.sum())
+    n_truncated = int((event & ~scored).sum())
+    if n_events == 0:
+        raise UndefinedMetricError("no events in (0, windows[-1]] to score")
+    J = H.shape[1]
+    cw = np.zeros((J, M))
+    null_sum = 0.0
+    zero_cells = 0
+    with np.errstate(divide="ignore"):
+        for m in range(M):
+            lo, hi = w[m], w[m + 1]
+            width = hi - lo
+            e = np.clip(np.minimum(stop, hi) - np.maximum(start, lo), 0.0, None)
+            in_window = scored & (stop > lo)
+            in_window &= stop <= hi
+            for j in range(J):
+                d = H[:, j, m + 1] - H[:, j, m]
+                d0 = H0[j, m + 1] - H0[j, m]
+                rate = ((1.0 - alpha) * d + alpha * d0) / width
+                hit = in_window & (codes == j + 1)
+                contrib = -rate * e
+                contrib[hit] += np.log(rate[hit])
+                zero_cells += int((d[hit] <= 0).sum())
+                cw[j, m] = contrib.sum()
+                if ids is not None:
+                    by_id += np.bincount(inv, weights=contrib, minlength=by_id.size)
+                rate0 = d0 / width
+                n_hit = int(hit.sum())
+                null_sum += (n_hit * np.log(rate0) if n_hit else 0.0) - rate0 * e.sum()
+    div = n_events if reduce == "per_event" else 1.0
+    share = zero_cells / n_events
+    if share > 0.01:
+        warnings.warn(
+            f"{share:.1%} of events fall in windows where the predicted rate is 0; "
+            "the windows are too fine for this model (use fewer windows)",
+            UserWarning,
+            stacklevel=2,
+        )
+    return PEScore(
+        total=float(cw.sum() / div),
+        by_window=cw.sum(axis=0) / div,
+        by_cause=cw.sum(axis=1) / div if competing else None,
+        by_cause_window=cw / div if competing else None,
+        by_id=None if ids is None else by_id / div,
+        id_labels=None if ids is None else id_labels,
+        zero_rate_share=float(share),
+        null_total=float(null_sum / div),
+        n_events=n_events,
+        n_truncated_events=n_truncated,
+    )
