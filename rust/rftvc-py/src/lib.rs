@@ -9,10 +9,10 @@ use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rftvc_core::{
-    Aggregate, Binned, CompositeCauseLogRank, Extrapolate, FlatForest, Forest, ForestParams, Grid,
-    Groups, LtrcLogRank, Profile, SingleCause, SplitCriterion, SplitParams, SurvData, TreeParams,
-    best_split as core_best_split, cause_profile_on, coarsen, exposure_of, fit_forest,
-    node_profile, profile_on,
+    Aggregate, AjOutput, Binned, CifAggregate, CompositeCauseLogRank, Extrapolate, FlatForest,
+    Forest, ForestParams, Grid, Groups, LtrcLogRank, Profile, SingleCause, SplitCriterion,
+    SplitParams, SurvData, TreeParams, best_split as core_best_split, cause_profile_on, coarsen,
+    exposure_of, fit_forest, node_profile, profile_on,
 };
 
 /// Contiguous 1-d input as a Vec. Strided views (e.g. a field of a structured
@@ -132,6 +132,109 @@ fn criterion_for(n_causes: usize, split_cause: Option<usize>) -> PyResult<Box<dy
         Some(k) => Ok(Box::new(SingleCause { cause: k - 1 })),
         None => Ok(Box::new(CompositeCauseLogRank)),
     }
+}
+
+fn cif_aggregate(name: &str) -> PyResult<CifAggregate> {
+    match name {
+        "hazard" => Ok(CifAggregate::Hazard),
+        "cif" => Ok(CifAggregate::Cif),
+        _ => Err(PyValueError::new_err("aggregate must be 'hazard' or 'cif'")),
+    }
+}
+
+fn extrapolate_of(name: &str) -> PyResult<Extrapolate> {
+    match name {
+        "none" => Ok(Extrapolate::None),
+        "locf" => Ok(Extrapolate::Locf),
+        _ => Err(PyValueError::new_err(
+            "extrapolate must be 'none' or 'locf'",
+        )),
+    }
+}
+
+/// Validated path inputs `(start, stop, offsets, origin)` for `n` rows.
+type PathInputs = (Vec<f64>, Vec<f64>, Vec<usize>, Vec<f64>);
+
+fn path_inputs(
+    n: usize,
+    start: &PyReadonlyArray1<f64>,
+    stop: &PyReadonlyArray1<f64>,
+    offsets: &PyReadonlyArray1<u64>,
+    origin: &PyReadonlyArray1<f64>,
+) -> PyResult<PathInputs> {
+    check_lengths(
+        n,
+        &[
+            ("start", start.as_array().len()),
+            ("stop", stop.as_array().len()),
+        ],
+    )?;
+    let offsets: Vec<usize> = vec1(offsets, "offsets")?
+        .into_iter()
+        .map(|o| o as usize)
+        .collect();
+    let n_paths = offsets.len().saturating_sub(1);
+    let valid = offsets.first() == Some(&0)
+        && offsets.last() == Some(&n)
+        && offsets.windows(2).all(|w| w[0] < w[1]);
+    if !valid || origin.as_array().len() != n_paths {
+        return Err(PyValueError::new_err(
+            "offsets must start at 0, strictly increase and end at n_rows; one origin per path",
+        ));
+    }
+    Ok((
+        vec1(start, "start")?,
+        vec1(stop, "stop")?,
+        offsets,
+        vec1(origin, "origin")?,
+    ))
+}
+
+/// CSR per-row OOB unit sets, validated against `n` rows and `n_groups` units.
+fn oob_sets(
+    n: usize,
+    n_groups: usize,
+    offsets: &PyReadonlyArray1<u64>,
+    units: &PyReadonlyArray1<u32>,
+) -> PyResult<(Vec<usize>, Vec<u32>)> {
+    check_lengths(n + 1, &[("offsets", offsets.as_array().len())])?;
+    let offsets: Vec<usize> = vec1(offsets, "offsets")?
+        .into_iter()
+        .map(|o: u64| o as usize)
+        .collect();
+    let units: Vec<u32> = vec1(units, "units")?;
+    if offsets[0] != 0 || offsets.windows(2).any(|w| w[0] >= w[1]) || offsets[n] != units.len() {
+        return Err(PyValueError::new_err(
+            "offsets must start at 0, give each row at least one unit and end at len(units)",
+        ));
+    }
+    if units.iter().any(|&g| g as usize >= n_groups) {
+        return Err(PyValueError::new_err("units must be in [0, n_groups)"));
+    }
+    Ok((offsets, units))
+}
+
+type Array3Out<'py> = Bound<'py, PyArray3<f64>>;
+
+/// `(cif, surv, cumhaz)` of a kernel output as `(n, J, T)`, `(n, T)`, `(n, J, T)` arrays.
+fn aj_arrays<'py>(
+    py: Python<'py>,
+    out: AjOutput,
+    n: usize,
+    nc: usize,
+    m: usize,
+) -> (Array3Out<'py>, Bound<'py, PyArray2<f64>>, Array3Out<'py>) {
+    (
+        Array3::from_shape_vec((n, nc, m), out.cif)
+            .expect("shape")
+            .into_pyarray(py),
+        Array2::from_shape_vec((n, m), out.surv)
+            .expect("shape")
+            .into_pyarray(py),
+        Array3::from_shape_vec((n, nc, m), out.cumhaz)
+            .expect("shape")
+            .into_pyarray(py),
+    )
 }
 
 fn times_vec(times: &PyReadonlyArray1<f64>) -> PyResult<Vec<f64>> {
@@ -282,19 +385,23 @@ impl PyForest {
     /// n_clamped)` from the tree-averaged cause-specific hazards, for rows
     /// starting at time 0.
     #[allow(clippy::type_complexity)]
+    #[pyo3(signature = (x, times, n_jobs, aggregate_by="hazard"))]
     fn predict_cif<'py>(
         &self,
         py: Python<'py>,
         x: PyReadonlyArray2<'py, f64>,
         times: PyReadonlyArray1<'py, f64>,
         n_jobs: usize,
+        aggregate_by: &str,
     ) -> PyResult<(Bound<'py, PyArray3<f64>>, Bound<'py, PyArray2<f64>>, usize)> {
         let (v, n, p) = self.check_x(&x)?;
+        let agg = cif_aggregate(aggregate_by)?;
         let times = times_vec(&times)?;
         let (m, nc) = (times.len(), self.inner.n_causes);
         let forest = &self.inner;
         let pool = pool(n_jobs)?;
-        let (cif, surv, clamped) = py.detach(|| pool.install(|| forest.predict_cif(&v, p, &times)));
+        let (cif, surv, clamped) =
+            py.detach(|| pool.install(|| forest.predict_cif(&v, p, &times, agg)));
         Ok((
             Array3::from_shape_vec((n, nc, m), cif)
                 .expect("shape")
@@ -304,6 +411,113 @@ impl PyForest {
                 .into_pyarray(py),
             clamped,
         ))
+    }
+
+    /// Aalen–Johansen along covariate paths: `(cif (n_paths, J, T), surv
+    /// (n_paths, T), cumhaz (n_paths, J, T), n_clamped)`, conditional on the
+    /// origins. Rows of path `p` are `offsets[p]..offsets[p+1]`, contiguous and
+    /// sorted by start.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn predict_cif_paths<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        start: PyReadonlyArray1<'py, f64>,
+        stop: PyReadonlyArray1<'py, f64>,
+        offsets: PyReadonlyArray1<'py, u64>,
+        origin: PyReadonlyArray1<'py, f64>,
+        times: PyReadonlyArray1<'py, f64>,
+        aggregate_by: &str,
+        extrapolate: &str,
+        n_jobs: usize,
+    ) -> PyResult<(
+        Array3Out<'py>,
+        Bound<'py, PyArray2<f64>>,
+        Array3Out<'py>,
+        usize,
+    )> {
+        let (v, n, p) = self.check_x(&x)?;
+        let (start, stop, offsets, origin) = path_inputs(n, &start, &stop, &offsets, &origin)?;
+        let agg = cif_aggregate(aggregate_by)?;
+        let extrapolate = extrapolate_of(extrapolate)?;
+        let times = times_vec(&times)?;
+        let (m, nc, n_paths) = (times.len(), self.inner.n_causes, offsets.len() - 1);
+        let forest = &self.inner;
+        let pool = pool(n_jobs)?;
+        let out = py.detach(|| {
+            pool.install(|| {
+                forest.predict_cif_paths(
+                    &v,
+                    p,
+                    &start,
+                    &stop,
+                    &offsets,
+                    &origin,
+                    &times,
+                    agg,
+                    extrapolate,
+                )
+            })
+        });
+        let clamped = out.n_clamped;
+        let (cif, surv, cumhaz) = aj_arrays(py, out, n_paths, nc, m);
+        Ok((cif, surv, cumhaz, clamped))
+    }
+
+    /// Out-of-bag cumulative incidence `(n_rows, J, T)` per row (covariates
+    /// fixed from time 0) and each row's ensemble size; rows must be out of bag
+    /// in every unit of `units[offsets[r]..offsets[r+1]]`. NaN without a tree.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    fn oob_cif<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        offsets: PyReadonlyArray1<'py, u64>,
+        units: PyReadonlyArray1<'py, u32>,
+        times: PyReadonlyArray1<'py, f64>,
+        aggregate_by: &str,
+        n_jobs: usize,
+    ) -> PyResult<(Array3Out<'py>, Bound<'py, PyArray1<u32>>)> {
+        let (v, n, p) = self.check_x(&x)?;
+        let (offsets, units) = oob_sets(n, self.inner.n_groups, &offsets, &units)?;
+        let agg = cif_aggregate(aggregate_by)?;
+        let times = times_vec(&times)?;
+        let (m, nc) = (times.len(), self.inner.n_causes);
+        let forest = &self.inner;
+        let pool = pool(n_jobs)?;
+        let out =
+            py.detach(|| pool.install(|| forest.oob_cif(&v, p, &offsets, &units, &times, agg)));
+        let n_trees = out.n_trees.clone();
+        let (cif, _, _) = aj_arrays(py, out, n, nc, m);
+        Ok((cif, n_trees.into_pyarray(py)))
+    }
+
+    /// Whether per-leaf per-cause in-bag event counts are stored.
+    #[getter]
+    fn has_leaf_cause_events(&self) -> bool {
+        self.inner
+            .trees
+            .first()
+            .is_some_and(|t| !t.leaf_cause_events.is_empty())
+    }
+
+    /// In-bag events of each cause per leaf of one tree, `(n_leaves, J)`.
+    fn leaf_cause_events<'py>(
+        &self,
+        py: Python<'py>,
+        tree: usize,
+    ) -> PyResult<Bound<'py, PyArray2<u32>>> {
+        let t = self.tree(tree)?;
+        if t.leaf_cause_events.is_empty() {
+            return Err(PyValueError::new_err(
+                "this forest stores no per-leaf cause counts (fitted before S12 or by SurvivalForestTV)",
+            ));
+        }
+        Ok(
+            Array2::from_shape_vec((t.n_leaves(), t.n_causes), t.leaf_cause_events.clone())
+                .expect("shape")
+                .into_pyarray(py),
+        )
     }
 
     /// Out-of-bag ensemble mortality per row and the size of its ensemble.
@@ -323,21 +537,7 @@ impl PyForest {
         n_jobs: usize,
     ) -> PyResult<(Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<u32>>)> {
         let (v, n, p) = self.check_x(&x)?;
-        check_lengths(n + 1, &[("offsets", offsets.as_array().len())])?;
-        let offsets: Vec<usize> = vec1(&offsets, "offsets")?
-            .into_iter()
-            .map(|o: u64| o as usize)
-            .collect();
-        let units: Vec<u32> = vec1(&units, "units")?;
-        if offsets[0] != 0 || offsets.windows(2).any(|w| w[0] >= w[1]) || offsets[n] != units.len()
-        {
-            return Err(PyValueError::new_err(
-                "offsets must start at 0, give each row at least one unit and end at len(units)",
-            ));
-        }
-        if units.iter().any(|&g| g as usize >= self.inner.n_groups) {
-            return Err(PyValueError::new_err("units must be in [0, n_groups)"));
-        }
+        let (offsets, units) = oob_sets(n, self.inner.n_groups, &offsets, &units)?;
         let agg = aggregate(aggregate_by)?;
         let times: Vec<f64> = vec1(&times, "times")?;
         let forest = &self.inner;
@@ -365,38 +565,10 @@ impl PyForest {
         n_jobs: usize,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
         let (v, n, p) = self.check_x(&x)?;
-        check_lengths(
-            n,
-            &[
-                ("start", start.as_array().len()),
-                ("stop", stop.as_array().len()),
-            ],
-        )?;
-        let offsets: Vec<usize> = vec1(&offsets, "offsets")?
-            .into_iter()
-            .map(|o| o as usize)
-            .collect();
-        let n_paths = offsets.len().saturating_sub(1);
-        let valid = offsets.first() == Some(&0)
-            && offsets.last() == Some(&n)
-            && offsets.windows(2).all(|w| w[0] < w[1]);
-        if !valid || origin.as_array().len() != n_paths {
-            return Err(PyValueError::new_err(
-                "offsets must start at 0, strictly increase and end at n_rows; one origin per path",
-            ));
-        }
+        let (start, stop, offsets, origin) = path_inputs(n, &start, &stop, &offsets, &origin)?;
+        let n_paths = offsets.len() - 1;
         let agg = aggregate(aggregate_by)?;
-        let extrapolate = match extrapolate {
-            "none" => Extrapolate::None,
-            "locf" => Extrapolate::Locf,
-            _ => {
-                return Err(PyValueError::new_err(
-                    "extrapolate must be 'none' or 'locf'",
-                ));
-            }
-        };
-        let (start, stop) = (vec1(&start, "start")?, vec1(&stop, "stop")?);
-        let origin = vec1(&origin, "origin")?;
+        let extrapolate = extrapolate_of(extrapolate)?;
         let times: Vec<f64> = vec1(&times, "times")?;
         let m = times.len();
         let forest = &self.inner;
@@ -445,6 +617,10 @@ impl PyForest {
         d.set_item("event_idx", f.event_idx.into_pyarray(py))?;
         d.set_item("cumhaz", f.cumhaz.into_pyarray(py))?;
         d.set_item("n_causes", f.n_causes)?;
+        // Only forests that stored counts carry the key, so other pickles are unchanged.
+        if !f.leaf_cause_events.is_empty() {
+            d.set_item("leaf_cause_events", f.leaf_cause_events.into_pyarray(py))?;
+        }
         Ok((slf.getattr("_from_state")?, (d,)))
     }
 
@@ -489,6 +665,11 @@ impl PyForest {
             event_idx: vec_of!("event_idx", u32),
             cumhaz: vec_of!("cumhaz", f64),
             n_causes,
+            leaf_cause_events: if state.contains("leaf_cause_events")? {
+                vec_of!("leaf_cause_events", u32)
+            } else {
+                Vec::new()
+            },
         };
         let inner = flat.to_forest().map_err(PyValueError::new_err)?;
         Ok(PyForest { inner })
@@ -499,7 +680,7 @@ impl PyForest {
 #[pyo3(name = "fit_forest", signature = (
     x, start, stop, event, groups, n_groups, *, n_trees, n_draw, bootstrap,
     max_depth, min_ids_leaf, min_events_leaf, max_features, max_bins, seed, n_jobs,
-    n_causes=1, split_cause=None
+    n_causes=1, split_cause=None, min_events_leaf_cause=None, leaf_events=false
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_forest_py(
@@ -522,6 +703,8 @@ fn fit_forest_py(
     n_jobs: usize,
     n_causes: usize,
     split_cause: Option<usize>,
+    min_events_leaf_cause: Option<usize>,
+    leaf_events: bool,
 ) -> PyResult<PyForest> {
     let (v, n, p) = matrix(&x)?;
     check_lengths(
@@ -550,12 +733,23 @@ fn fit_forest_py(
     }
     let surv = cause_data(&start, &stop, &event, n_causes)?;
     let criterion = criterion_for(n_causes, split_cause)?;
+    let cause_floor = match (split_cause, min_events_leaf_cause) {
+        (_, None) => None,
+        (Some(k), Some(m)) => Some((k - 1, m)),
+        (None, Some(_)) => {
+            return Err(PyValueError::new_err(
+                "min_events_leaf_cause requires split_cause",
+            ));
+        }
+    };
     let params = ForestParams {
         tree: TreeParams {
             max_depth,
             min_ids_leaf,
             min_events_leaf,
             max_features: max_features.clamp(1, p),
+            cause_floor,
+            leaf_events,
         },
         n_trees,
         n_draw,
@@ -582,7 +776,7 @@ type CoarsenOut<'py> = (
     Bound<'py, PyArray1<u32>>,
     Bound<'py, PyArray1<f64>>,
     Bound<'py, PyArray1<f64>>,
-    Bound<'py, PyArray1<bool>>,
+    Bound<'py, PyArray1<u8>>,
     Bound<'py, PyArray1<f64>>,
     usize,
 );
@@ -597,7 +791,7 @@ fn coarsen_py<'py>(
     py: Python<'py>,
     start: PyReadonlyArray1<'py, f64>,
     stop: PyReadonlyArray1<'py, f64>,
-    event: PyReadonlyArray1<'py, bool>,
+    event: PyReadonlyArray1<'py, u8>,
     order: PyReadonlyArray1<'py, u32>,
     offsets: PyReadonlyArray1<'py, u64>,
     ntime: usize,
@@ -629,7 +823,7 @@ fn coarsen_py<'py>(
         && offsets.first() == Some(&0)
         && offsets.last() == Some(&n)
         && offsets.windows(2).all(|w| w[0] < w[1]);
-    if !valid || ntime == 0 || !e.iter().any(|&x| x) {
+    if !valid || ntime == 0 || !e.iter().any(|&x| x != 0) {
         return Err(PyValueError::new_err(
             "need a row permutation `order`, chain offsets from 0 to n_rows, ntime >= 1 and an event",
         ));
@@ -799,6 +993,7 @@ fn best_split(
     let params = SplitParams {
         min_leaf: min_ids_leaf,
         min_events_leaf,
+        cause_floor: None,
     };
     Ok(core_best_split(
         &binned,

@@ -165,6 +165,13 @@ def _check_causes(causes):
     return np.sort(labels)
 
 
+def competing_risks_labels(y):
+    """``(start, stop, labels)`` of a competing-risks (or boolean survival) target, labels as int64."""
+    y = _structured(y, ("start", "stop", "event"), make=make_competing_risks_y)
+    y, start, stop = _start_stop(y, ("start", "stop", "event"))
+    return start, stop, _as_labels(np.asarray(y["event"]))
+
+
 def check_competing_risks_y(y, causes=None, *, require_events=True):
     """Validate a competing-risks target; return ``(start, stop, codes, causes_)``.
 
@@ -175,9 +182,7 @@ def check_competing_risks_y(y, causes=None, *, require_events=True):
     ``UserWarning`` (its hazard is then zero). Raises ``ValueError`` for no
     events unless ``require_events=False``.
     """
-    y = _structured(y, ("start", "stop", "event"), make=make_competing_risks_y)
-    y, start, stop = _start_stop(y, ("start", "stop", "event"))
-    labels = _as_labels(np.asarray(y["event"]))
+    start, stop, labels = competing_risks_labels(y)
     observed = np.unique(labels[labels != 0])
     if require_events and observed.size == 0:
         raise ValueError("y contains no events")

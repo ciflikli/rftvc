@@ -1,9 +1,9 @@
 //! Competing risks (S11): criteria, per-cause leaves, Aalen–Johansen prediction, flat v3.
 
 use rftvc_core::{
-    Aggregate, Binned, CompositeCauseLogRank, FlatForest, Forest, ForestParams, Groups,
-    LtrcLogRank, Profile, Rng, SingleCause, SplitCriterion, SplitParams, SurvData, TreeParams,
-    best_split, cause_profile_on, fit_forest, node_profile, profile_on,
+    Aggregate, Binned, CifAggregate, CompositeCauseLogRank, FlatForest, Forest, ForestParams,
+    Groups, LtrcLogRank, Profile, Rng, SingleCause, SplitCriterion, SplitParams, SurvData,
+    TreeParams, best_split, cause_profile_on, fit_forest, node_profile, profile_on,
 };
 
 /// Random delayed-entry rows with half-unit times (many ties) and codes in `0..=n_causes`.
@@ -98,6 +98,7 @@ fn single_cause_best_split_equals_single_event_forest() {
         let params = SplitParams {
             min_leaf: 0,
             min_events_leaf: 0,
+            ..Default::default()
         };
         let surv = SurvData::with_causes(&start, &stop, &codes, 2);
         for k in 0..2 {
@@ -182,6 +183,7 @@ fn cr_forest(n_trees: usize, max_depth: Option<usize>, seed: u64) -> (Vec<f64>, 
             min_ids_leaf: 5,
             min_events_leaf: 3,
             max_features: 1,
+            ..Default::default()
         },
         n_trees,
         n_draw: if n_trees == 1 { n } else { 90 },
@@ -224,7 +226,7 @@ fn root_leaf_is_per_cause_nelson_aalen_and_aalen_johansen() {
         assert!((a - b).abs() < 1e-12);
     }
     assert_eq!(tree.leaf_cumhaz(0).len(), grid.len() * 2);
-    let (cif, sv, clamped) = forest.predict_cif(&[0.0], 1, grid);
+    let (cif, sv, clamped) = forest.predict_cif(&[0.0], 1, grid, CifAggregate::Hazard);
     let m = grid.len();
     assert_eq!(clamped, 0);
     for k in 0..m {
@@ -243,7 +245,7 @@ fn aalen_johansen_invariants_and_time_order() {
     let grid = surv.grid.times.to_vec();
     let m = grid.len();
     let n = 40;
-    let (cif, sv, clamped) = forest.predict_cif(&x[..n], 1, &grid);
+    let (cif, sv, clamped) = forest.predict_cif(&x[..n], 1, &grid, CifAggregate::Hazard);
     assert_eq!(clamped, 0);
     for r in 0..n {
         let (c, s) = (&cif[r * 2 * m..(r + 1) * 2 * m], &sv[r * m..(r + 1) * m]);
@@ -255,7 +257,7 @@ fn aalen_johansen_invariants_and_time_order() {
         }
     }
     let times = [grid[m / 2] + 0.25, -1.0, grid[m - 1], grid[3], grid[3], 1e9];
-    let (c2, s2, _) = forest.predict_cif(&x[..n], 1, &times);
+    let (c2, s2, _) = forest.predict_cif(&x[..n], 1, &times, CifAggregate::Hazard);
     for r in 0..n {
         for (ti, &t) in times.iter().enumerate() {
             let pos = grid.partition_point(|&g| g <= t);
@@ -289,6 +291,7 @@ fn one_cause_cumhaz_matches_single_event_prediction() {
             min_ids_leaf: 5,
             min_events_leaf: 3,
             max_features: 1,
+            ..Default::default()
         },
         n_trees: 15,
         n_draw: 70,
@@ -314,6 +317,7 @@ fn whole_risk_set_failing_gives_zero_survival() {
             min_ids_leaf: 1,
             min_events_leaf: 1,
             max_features: 1,
+            ..Default::default()
         },
         n_trees: 1,
         n_draw: 2,
@@ -321,7 +325,7 @@ fn whole_risk_set_failing_gives_zero_survival() {
         seed: 0,
     };
     let forest = fit_forest(&binned, &surv, &groups, &params, &CompositeCauseLogRank);
-    let (cif, sv, clamped) = forest.predict_cif(&[0.0], 1, &[1.0, 2.0]);
+    let (cif, sv, clamped) = forest.predict_cif(&[0.0], 1, &[1.0, 2.0], CifAggregate::Hazard);
     assert!(clamped <= 1);
     assert_eq!(sv, vec![0.5, 0.0]);
     assert_eq!(cif, vec![0.5, 0.5, 0.0, 0.5]);
@@ -338,7 +342,10 @@ fn flat_v3_roundtrip_preserves_cif() {
     assert_eq!((flat.format_version, flat.n_causes), (3, 2));
     let back = flat.to_forest().unwrap();
     let t = surv.grid.times.to_vec();
-    assert_eq!(forest.predict_cif(&x, 1, &t), back.predict_cif(&x, 1, &t));
+    assert_eq!(
+        forest.predict_cif(&x, 1, &t, CifAggregate::Hazard),
+        back.predict_cif(&x, 1, &t, CifAggregate::Hazard)
+    );
     assert_eq!(FlatForest::from_forest(&back), flat);
 }
 
@@ -358,6 +365,7 @@ fn flat_v2_loads_as_one_cause_and_bad_v3_states_error() {
                 min_ids_leaf: 5,
                 min_events_leaf: 3,
                 max_features: 1,
+                ..Default::default()
             },
             n_trees: 3,
             n_draw: 50,

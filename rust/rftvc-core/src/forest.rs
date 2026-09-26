@@ -183,107 +183,231 @@ impl Forest {
     }
 
     /// Cumulative incidence per cause and event-free survival for rows whose
-    /// covariates hold from time 0, by the discrete Aalen–Johansen estimator on
-    /// the ensemble (tree-averaged) cause-specific hazard increments:
-    /// `F_j(t) = sum_{v <= t} S(v-) dL_j(v)`, `S(t) = prod_{v <= t} (1 - sum_j dL_j(v))`.
+    /// covariates hold from time 0, by the discrete Aalen–Johansen estimator
+    /// (see `predict_cif_paths`; each row is a path of one row covering all times).
     ///
-    /// Returns `(cif (n_rows, n_causes, T), surv (n_rows, T), n_clamped)`, where
-    /// `n_clamped` counts the grid points at which `1 - sum_j dL_j < 0` was set
-    /// to 0 (only rounding can cause it: every leaf has `sum_j dL_j = d / y <= 1`).
-    ///
-    /// Per row, each tree's leaf increments are added into a dense `K x J`
-    /// buffer; only the touched grid points are swept and reset. `times` must
-    /// not contain NaN.
+    /// Returns `(cif (n_rows, n_causes, T), surv (n_rows, T), n_clamped)`.
+    /// `times` must not contain NaN.
     pub fn predict_cif(
         &self,
         x: &[f64],
         n_features: usize,
         times: &[f64],
+        agg: CifAggregate,
     ) -> (Vec<f64>, Vec<f64>, usize) {
-        let (m, nc) = (times.len(), self.n_causes);
-        let n_rows = x.len() / n_features;
-        let grid = match self.trees.first() {
-            Some(t) => Arc::clone(&t.grid_times),
-            None => {
-                return (
-                    vec![f64::NAN; n_rows * nc * m],
-                    vec![f64::NAN; n_rows * m],
-                    0,
-                );
-            }
+        let out = self.aj_rows(x, n_features, times, agg, &|_, _| true);
+        (out.cif, out.surv, out.n_clamped)
+    }
+
+    /// Cumulative incidence, event-free survival and cause-specific cumulative
+    /// hazard along covariate paths, conditional on being event-free at `origin`.
+    ///
+    /// Path `p` owns rows `offsets[p]..offsets[p+1]` (contiguous in time, sorted
+    /// by `start`). Row `r` routes its own covariates; its leaf's per-cause
+    /// increments `dL_j(v)` at grid times `v` in `(max(start_r, u), stop_r]`
+    /// enter (the last row's interval is unbounded above under `Locf`). With
+    /// `u = origin[p]`, the discrete Aalen–Johansen estimator gives
+    /// `S(t | u) = prod_{u < v <= t} (1 - sum_j dL_j(v))` and
+    /// `F_j(t | u) = sum_{u < v <= t} S(v- | u) dL_j(v)`; the hazard output is
+    /// `L_j(t) - L_j(u)`. `Hazard` aggregation averages the increments over trees,
+    /// then applies the estimator; `Cif` applies it per tree and averages `F`,
+    /// `S` and the hazard. Values are NaN for `t < u`, and for `t` beyond the
+    /// last `stop` unless `extrapolate` is `Locf`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn predict_cif_paths(
+        &self,
+        x: &[f64],
+        n_features: usize,
+        start: &[f64],
+        stop: &[f64],
+        offsets: &[usize],
+        origin: &[f64],
+        times: &[f64],
+        agg: CifAggregate,
+        extrapolate: Extrapolate,
+    ) -> AjOutput {
+        let paths = Paths {
+            x,
+            n_features,
+            start,
+            stop,
+            offsets,
+            origin,
+            extrapolate,
         };
-        let kg = grid.len();
-        let n_trees = self.trees.len() as f64;
+        self.aj_paths(&paths, times, agg, &|_, _| true)
+    }
+
+    /// Out-of-bag Aalen–Johansen per row (covariates fixed from time 0): the
+    /// ensemble of trees whose bag contains none of the row's units
+    /// `units[offsets[r]..offsets[r + 1]]` (as in `oob_mortality`). Rows with no
+    /// such tree are NaN; `n_trees` gives each row's ensemble size.
+    #[allow(clippy::too_many_arguments)]
+    pub fn oob_cif(
+        &self,
+        x: &[f64],
+        n_features: usize,
+        offsets: &[usize],
+        units: &[u32],
+        times: &[f64],
+        agg: CifAggregate,
+    ) -> AjOutput {
+        let in_bag = self.in_bag_bits();
+        let keep = |row: usize, b: usize| {
+            units[offsets[row]..offsets[row + 1]]
+                .iter()
+                .all(|&g| in_bag[b][g as usize / 64] & (1 << (g % 64)) == 0)
+        };
+        self.aj_rows(x, n_features, times, agg, &keep)
+    }
+
+    /// In-bag id bitsets per tree.
+    fn in_bag_bits(&self) -> Vec<Vec<u64>> {
+        let words = self.n_groups.div_ceil(64);
+        (0..self.trees.len())
+            .into_par_iter()
+            .map(|b| {
+                let mut bits = vec![0u64; words];
+                for g in self.in_bag_ids(b) {
+                    bits[g as usize / 64] |= 1 << (g % 64);
+                }
+                bits
+            })
+            .collect()
+    }
+
+    /// Each row as a path of one row with covariates in force over all times.
+    fn aj_rows(
+        &self,
+        x: &[f64],
+        n_features: usize,
+        times: &[f64],
+        agg: CifAggregate,
+        keep: &(dyn Fn(usize, usize) -> bool + Sync),
+    ) -> AjOutput {
+        let n = x.len() / n_features;
+        let (lo, hi) = (vec![f64::NEG_INFINITY; n], vec![f64::INFINITY; n]);
+        let offsets: Vec<usize> = (0..=n).collect();
+        let paths = Paths {
+            x,
+            n_features,
+            start: &lo,
+            stop: &hi,
+            offsets: &offsets,
+            origin: &lo,
+            extrapolate: Extrapolate::None,
+        };
+        self.aj_paths(&paths, times, agg, keep)
+    }
+
+    /// The Aalen–Johansen kernel over paths; `keep(path, tree)` selects each
+    /// path's ensemble.
+    fn aj_paths(
+        &self,
+        paths: &Paths,
+        times: &[f64],
+        agg: CifAggregate,
+        keep: &(dyn Fn(usize, usize) -> bool + Sync),
+    ) -> AjOutput {
+        let (m, nc) = (times.len(), self.n_causes);
+        let n_paths = paths.offsets.len().saturating_sub(1);
+        let mut out = AjOutput {
+            cif: vec![0.0; n_paths * nc * m],
+            surv: vec![0.0; n_paths * m],
+            cumhaz: vec![0.0; n_paths * nc * m],
+            n_trees: vec![0; n_paths],
+            n_clamped: 0,
+        };
+        let Some(first) = self.trees.first() else {
+            out.cif.fill(f64::NAN);
+            out.surv.fill(f64::NAN);
+            out.cumhaz.fill(f64::NAN);
+            return out;
+        };
+        let grid = Arc::clone(&first.grid_times);
         // Requested times in increasing order (ties kept), to merge with the sweep.
         let mut t_order: Vec<usize> = (0..m).collect();
         t_order.sort_by(|&a, &b| times[a].total_cmp(&times[b]));
-        let (mut cif, mut surv) = (vec![0.0; n_rows * nc * m], vec![0.0; n_rows * m]);
-        let n_clamped = cif
-            .par_chunks_mut((nc * m).max(1))
-            .zip(surv.par_chunks_mut(m.max(1)))
-            .zip(x.par_chunks(n_features))
+        let sweep = Sweep {
+            grid: &grid,
+            times,
+            t_order: &t_order,
+            n_causes: nc,
+        };
+        let (cw, sw) = ((nc * m).max(1), m.max(1));
+        out.n_clamped = out
+            .cif
+            .par_chunks_mut(cw)
+            .zip(out.surv.par_chunks_mut(sw))
+            .zip(out.cumhaz.par_chunks_mut(cw))
+            .zip(out.n_trees.par_iter_mut())
+            .enumerate()
             .map_init(
-                || (vec![0.0; kg * nc], vec![false; kg], Vec::<u32>::new()),
-                |(inc, seen, touched), ((cif_row, surv_row), xr)| {
-                    for tree in &self.trees {
-                        let leaf = tree.apply(xr);
-                        let r = tree.entries(leaf);
-                        for e in r.clone() {
-                            let k = tree.event_idx[e] as usize;
-                            if !seen[k] {
-                                seen[k] = true;
-                                touched.push(k as u32);
+                || AjBuffer::new(grid.len(), nc),
+                |buf, (p, (((cif, surv), cumhaz), n_used))| {
+                    let (r0, r1) = (paths.offsets[p], paths.offsets[p + 1]);
+                    let u = paths.origin[p];
+                    let locf = paths.extrapolate == Extrapolate::Locf;
+                    let mut clamped = 0;
+                    let mut n = 0usize;
+                    for (b, tree) in self.trees.iter().enumerate() {
+                        if !keep(p, b) {
+                            continue;
+                        }
+                        n += 1;
+                        for r in r0..r1 {
+                            let xr = &paths.x[r * paths.n_features..(r + 1) * paths.n_features];
+                            let lo = paths.start[r].max(u);
+                            let hi = if r == r1 - 1 && locf {
+                                f64::INFINITY
+                            } else {
+                                paths.stop[r]
+                            };
+                            if lo < hi {
+                                buf.add_leaf(tree, tree.apply(xr), lo, hi);
                             }
-                            for j in 0..nc {
-                                let prev = if e == r.start {
-                                    0.0
-                                } else {
-                                    tree.cumhaz[(e - 1) * nc + j]
-                                };
-                                inc[k * nc + j] += tree.cumhaz[e * nc + j] - prev;
+                        }
+                        if agg == CifAggregate::Cif {
+                            clamped += sweep.run(buf, 1.0, cif, surv, cumhaz);
+                        }
+                    }
+                    *n_used = n as u32;
+                    if n == 0 {
+                        cif.fill(f64::NAN);
+                        surv.fill(f64::NAN);
+                        cumhaz.fill(f64::NAN);
+                        return 0;
+                    }
+                    match agg {
+                        CifAggregate::Hazard => {
+                            clamped += sweep.run(buf, n as f64, cif, surv, cumhaz)
+                        }
+                        CifAggregate::Cif => {
+                            let nf = n as f64;
+                            for v in cif
+                                .iter_mut()
+                                .chain(surv.iter_mut())
+                                .chain(cumhaz.iter_mut())
+                            {
+                                *v /= nf;
                             }
                         }
                     }
-                    touched.sort_unstable();
-                    let (mut s, mut f) = (1.0, vec![0.0; nc]);
-                    let (mut clamped, mut next) = (0usize, 0usize);
-                    let mut write = |upto: f64, s: f64, f: &[f64], next: &mut usize| {
-                        while *next < m && times[t_order[*next]] < upto {
-                            let ti = t_order[*next];
-                            surv_row[ti] = s;
+                    let last_stop = paths.stop[r1 - 1];
+                    for (ti, &t) in times.iter().enumerate() {
+                        if t < u || (t > last_stop && !locf) {
+                            surv[ti] = f64::NAN;
                             for j in 0..nc {
-                                cif_row[j * m + ti] = f[j];
+                                cif[j * m + ti] = f64::NAN;
+                                cumhaz[j * m + ti] = f64::NAN;
                             }
-                            *next += 1;
                         }
-                    };
-                    for &k in touched.iter() {
-                        let k = k as usize;
-                        // Requested times before grid point k see the state before it.
-                        write(grid[k], s, &f, &mut next);
-                        let d = &mut inc[k * nc..(k + 1) * nc];
-                        let mut total = 0.0;
-                        for (fj, dj) in f.iter_mut().zip(d.iter_mut()) {
-                            *dj /= n_trees;
-                            *fj += s * *dj;
-                            total += *dj;
-                        }
-                        let step = 1.0 - total;
-                        if step < 0.0 {
-                            clamped += 1;
-                        }
-                        s *= step.max(0.0);
-                        d.iter_mut().for_each(|v| *v = 0.0);
-                        seen[k] = false;
                     }
-                    write(f64::INFINITY, s, &f, &mut next);
-                    debug_assert_eq!(next, m, "times must not be NaN");
-                    touched.clear();
                     clamped
                 },
             )
             .sum();
-        (cif, surv, n_clamped)
+        out
     }
 
     /// Out-of-bag ensemble mortality per row: `sum_k Λ_oob(t_k | x_row)`, and
@@ -301,17 +425,7 @@ impl Forest {
         times: &[f64],
         agg: Aggregate,
     ) -> (Vec<f64>, Vec<u32>) {
-        let words = self.n_groups.div_ceil(64);
-        let in_bag: Vec<Vec<u64>> = (0..self.trees.len())
-            .into_par_iter()
-            .map(|b| {
-                let mut bits = vec![0u64; words];
-                for g in self.in_bag_ids(b) {
-                    bits[g as usize / 64] |= 1 << (g % 64);
-                }
-                bits
-            })
-            .collect();
+        let in_bag = self.in_bag_bits();
         let n_rows = offsets.len() - 1;
         let (mut out, mut n_oob) = (vec![0.0; n_rows], vec![0u32; n_rows]);
         out.par_iter_mut()
@@ -448,6 +562,148 @@ impl Forest {
                 }
             });
         out
+    }
+}
+
+/// Ensemble rule for competing-risks predictions (cr-design.md C4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CifAggregate {
+    /// Average the cause-specific hazard increments over trees, then Aalen–Johansen.
+    Hazard,
+    /// Aalen–Johansen per tree, then average `F`, `S` (and the hazard).
+    Cif,
+}
+
+/// Row-major outputs of the Aalen–Johansen kernel: `cif` and `cumhaz` are
+/// `(n_paths, n_causes, T)`, `surv` is `(n_paths, T)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AjOutput {
+    pub cif: Vec<f64>,
+    pub surv: Vec<f64>,
+    pub cumhaz: Vec<f64>,
+    /// Trees in each path's ensemble.
+    pub n_trees: Vec<u32>,
+    /// Grid points at which `1 - sum_j dL_j < 0` was set to 0 (only rounding
+    /// can cause it: every leaf has `sum_j dL_j = d / y <= 1`).
+    pub n_clamped: usize,
+}
+
+struct Paths<'a> {
+    x: &'a [f64],
+    n_features: usize,
+    start: &'a [f64],
+    stop: &'a [f64],
+    offsets: &'a [usize],
+    origin: &'a [f64],
+    extrapolate: Extrapolate,
+}
+
+/// Per-thread increments on the grid: a dense `K x J` buffer plus the list of
+/// touched grid points, so a path costs its leaf entries, not `K J`.
+struct AjBuffer {
+    inc: Vec<f64>,
+    seen: Vec<bool>,
+    touched: Vec<u32>,
+    n_causes: usize,
+}
+
+impl AjBuffer {
+    fn new(k: usize, n_causes: usize) -> AjBuffer {
+        AjBuffer {
+            inc: vec![0.0; k * n_causes],
+            seen: vec![false; k],
+            touched: Vec::new(),
+            n_causes,
+        }
+    }
+
+    /// Add the leaf's per-cause increments at its event times in `(lo, hi]`.
+    fn add_leaf(&mut self, tree: &Tree, leaf: usize, lo: f64, hi: f64) {
+        let nc = self.n_causes;
+        let r = tree.entries(leaf);
+        let idx = &tree.event_idx[r.clone()];
+        let grid = &tree.grid_times;
+        let first = r.start + idx.partition_point(|&k| grid[k as usize] <= lo);
+        for e in first..r.end {
+            let k = tree.event_idx[e] as usize;
+            if grid[k] > hi {
+                break;
+            }
+            if !self.seen[k] {
+                self.seen[k] = true;
+                self.touched.push(k as u32);
+            }
+            for j in 0..nc {
+                let prev = if e == r.start {
+                    0.0
+                } else {
+                    tree.cumhaz[(e - 1) * nc + j]
+                };
+                self.inc[k * nc + j] += tree.cumhaz[e * nc + j] - prev;
+            }
+        }
+    }
+}
+
+/// The Aalen–Johansen sweep over touched grid points, merged with the requested times.
+struct Sweep<'a> {
+    grid: &'a [f64],
+    times: &'a [f64],
+    t_order: &'a [usize],
+    n_causes: usize,
+}
+
+impl Sweep<'_> {
+    /// Divide the buffered increments by `div`, run the estimator, add the
+    /// values at the requested times into `cif`, `surv` and `cumhaz`, and
+    /// reset the buffer. Returns the number of clamped grid points.
+    fn run(
+        &self,
+        buf: &mut AjBuffer,
+        div: f64,
+        cif: &mut [f64],
+        surv: &mut [f64],
+        cumhaz: &mut [f64],
+    ) -> usize {
+        let (m, nc) = (self.times.len(), self.n_causes);
+        buf.touched.sort_unstable();
+        let (mut s, mut f, mut h) = (1.0, vec![0.0; nc], vec![0.0; nc]);
+        let (mut clamped, mut next) = (0usize, 0usize);
+        let mut write = |upto: f64, s: f64, f: &[f64], h: &[f64], next: &mut usize| {
+            while *next < m && self.times[self.t_order[*next]] < upto {
+                let ti = self.t_order[*next];
+                surv[ti] += s;
+                for j in 0..nc {
+                    cif[j * m + ti] += f[j];
+                    cumhaz[j * m + ti] += h[j];
+                }
+                *next += 1;
+            }
+        };
+        for &k in buf.touched.iter() {
+            let k = k as usize;
+            // Requested times before grid point k see the state before it.
+            write(self.grid[k], s, &f, &h, &mut next);
+            let d = &mut buf.inc[k * nc..(k + 1) * nc];
+            let mut total = 0.0;
+            for ((fj, hj), dj) in f.iter_mut().zip(h.iter_mut()).zip(d.iter_mut()) {
+                *dj /= div;
+                *fj += s * *dj;
+                *hj += *dj;
+                total += *dj;
+            }
+            let step = 1.0 - total;
+            if step < 0.0 {
+                clamped += 1;
+            }
+            s *= step.max(0.0);
+            d.iter_mut().for_each(|v| *v = 0.0);
+            buf.seen[k] = false;
+        }
+        write(f64::INFINITY, s, &f, &h, &mut next);
+        debug_assert_eq!(next, m, "times must not be NaN");
+        buf.touched.clear();
+        clamped
     }
 }
 

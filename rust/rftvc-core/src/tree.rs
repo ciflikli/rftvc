@@ -18,14 +18,20 @@ pub enum Node {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct TreeParams {
     /// `None` = unlimited; `Some(0)` = a single root leaf.
     pub max_depth: Option<usize>,
     pub min_ids_leaf: usize,
+    /// Minimum events of any cause per child.
     pub min_events_leaf: usize,
     /// Features tried per node (without replacement).
     pub max_features: usize,
+    /// `(cause, m)` (0-based cause): each child needs `m` events of that cause,
+    /// and a node needs `2 m` before any feature is drawn (cr-design.md C5).
+    pub cause_floor: Option<(usize, usize)>,
+    /// Store per-leaf per-cause in-bag event counts (`Tree::leaf_cause_events`).
+    pub leaf_events: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -40,6 +46,9 @@ pub struct Tree {
     pub event_idx: Vec<u32>,
     pub cumhaz: Vec<f64>,
     pub n_causes: usize,
+    /// In-bag events of each cause per leaf, `[leaf * n_causes + j]` (bootstrap
+    /// copies count); empty unless `TreeParams::leaf_events`.
+    pub leaf_cause_events: Vec<u32>,
     pub grid_times: Arc<Vec<f64>>,
 }
 
@@ -58,16 +67,21 @@ pub fn build_tree(
     let split_params = SplitParams {
         min_leaf: params.min_ids_leaf,
         min_events_leaf: params.min_events_leaf,
+        cause_floor: params.cause_floor,
     };
     let mut nodes = vec![Node::Leaf { leaf: 0 }];
     let (mut leaf_offsets, mut event_idx, mut cumhaz) = (vec![0u32], Vec::new(), Vec::new());
+    let mut leaf_cause_events = Vec::new();
     let mut stack = vec![(0usize, rows, units, 0usize)];
 
     while let Some((node_id, rows, units, depth)) = stack.pop() {
         let profile = node_profile(surv, &rows);
         let can_split = params.max_depth.is_none_or(|m| depth < m)
             && count_units(&units) >= 2 * params.min_ids_leaf
-            && profile.n_events >= 2 * params.min_events_leaf;
+            && profile.n_events >= 2 * params.min_events_leaf
+            && params
+                .cause_floor
+                .is_none_or(|(c, m)| profile.n_cause_events[c] >= 2 * m);
         let split = if can_split {
             let features = rng.sample_without_replacement(binned.n_features, params.max_features);
             best_split_in(
@@ -115,6 +129,9 @@ pub fn build_tree(
                     cum += d / y;
                     cum
                 }));
+                if params.leaf_events {
+                    leaf_cause_events.extend(profile.n_cause_events.iter().map(|&c| c as u32));
+                }
                 event_idx.extend_from_slice(&profile.event_idx);
                 nodes[node_id] = Node::Leaf {
                     leaf: leaf_offsets.len() as u32 - 1,
@@ -131,6 +148,9 @@ pub fn build_tree(
                     }
                     cumhaz.extend_from_slice(&cum);
                 }
+                if params.leaf_events {
+                    leaf_cause_events.extend(profile.n_cause_events.iter().map(|&c| c as u32));
+                }
                 event_idx.extend_from_slice(&profile.event_idx);
                 nodes[node_id] = Node::Leaf {
                     leaf: leaf_offsets.len() as u32 - 1,
@@ -144,12 +164,14 @@ pub fn build_tree(
     leaf_offsets.shrink_to_fit();
     event_idx.shrink_to_fit();
     cumhaz.shrink_to_fit();
+    leaf_cause_events.shrink_to_fit();
     Tree {
         nodes,
         leaf_offsets,
         event_idx,
         cumhaz,
         n_causes: surv.n_causes,
+        leaf_cause_events,
         grid_times: Arc::clone(&surv.grid.times),
     }
 }
@@ -227,5 +249,6 @@ impl Tree {
             + self.leaf_offsets.capacity() * size_of::<u32>()
             + self.event_idx.capacity() * size_of::<u32>()
             + self.cumhaz.capacity() * size_of::<f64>()
+            + self.leaf_cause_events.capacity() * size_of::<u32>()
     }
 }

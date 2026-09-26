@@ -84,11 +84,11 @@ Notation: `J` causes, `K` grid, `T` requested times, `u` origin.
 - The existing suite is green.
 
 ## Tasks
-- [ ] Rust: AJ kernel (paths, origin, extrapolate, `"cif"`), `oob_cif`, `min_events_leaf_cause`, leaf cause counts (+ flat key), coarsen / quantile with codes; Rust tests
-- [ ] Binding: `predict_cif_paths`, `oob_cif`, aggregate arg on `predict_cif`, `leaf_cause_events`, `fit_forest(min_events_leaf_cause=, leaf_events=)`, `coarsen` u8
-- [ ] Python: `_blocks` codes; base `_path_args`; CR options, paths, OOB, `score`, summary; `metrics.concordance_index_cr`
-- [ ] Tests (above) + `coarsen_ref` codes + test-quality audit
-- [ ] Identity bench; `cr-plan.md` status + "S12 done" note
+- [x] Rust: AJ kernel (paths, origin, extrapolate, `"cif"`), `oob_cif`, `min_events_leaf_cause`, leaf cause counts (+ flat key), coarsen / quantile with codes; Rust tests
+- [x] Binding: `predict_cif_paths`, `oob_cif`, aggregate arg on `predict_cif`, `leaf_cause_events`, `fit_forest(min_events_leaf_cause=, leaf_events=)`, `coarsen` u8
+- [x] Python: `_blocks` codes; base `_path_args`; CR options, paths, OOB, `score`, summary; `metrics.concordance_index_cr`
+- [x] Tests (above) + `coarsen_ref` codes + test-quality audit
+- [x] Identity bench; `cr-plan.md` status + "S12 done" note
 - [ ] Codex diff review; fixes
 
 ## Plan review (Codex, 2026-09-26)
@@ -96,3 +96,9 @@ Notation: `J` causes, `K` grid, `T` requested times, `u` origin.
 2. The coarsened OOB target was rebuilt with `make_survival_y`, which rejects label 2 and loses the score cause (high) → `_oob_target` hook; test with labels [2, 5], `ntime`, `score_cause=5`.
 3. An always-emitted `leaf_cause_events` key would change every SF pickle (medium) → the key is written only when counts were stored; tests for the SF, CR and S11 states.
 4. The identity bench did not fail on pickle-size changes (medium) → a `--pickle` strict mode and a fresh post-S11 baseline.
+
+## Test-quality audit (2026-09-26)
+- In `test_root_below_the_floor_stays_a_leaf`, the leaf-count assertion was tautological: a bag can never hold 2 × n2 cause-2 events (weak) → removed. The pre-RNG gate's effect on RNG use is pinned by the Approach-B node-array test.
+- The block OOB reference is by equivalence (one block per id is bit-identical to id resampling, OOB included), not a separate manual block reference; the S10 block-OOB set tests cover the sets.
+- Mutation checks: a closed lower bound on path intervals (`< lo` for `<= lo`) fails 8 path tests. Excluding type-B ties (`<` for `<=`) fails the hand-worked and brute-force Wolbers tests.
+- A test assertion was wrong, not the code: x1 raises the competing cause, so as a cause-1 score it is *below* chance (0.38) under Wolbers C (type-B controls). The test now asserts that.

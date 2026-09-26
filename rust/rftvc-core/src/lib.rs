@@ -17,7 +17,10 @@ pub use criterion::{
 };
 pub use data::{Binned, SurvData};
 pub use flat::{FORMAT_VERSION, FlatForest};
-pub use forest::{Aggregate, Extrapolate, Forest, ForestParams, Groups, draw_ids, fit_forest};
+pub use forest::{
+    Aggregate, AjOutput, CifAggregate, Extrapolate, Forest, ForestParams, Groups, draw_ids,
+    fit_forest,
+};
 pub use grid::{Coarsened, Grid, coarsen};
 pub use rng::Rng;
 pub use splitter::{

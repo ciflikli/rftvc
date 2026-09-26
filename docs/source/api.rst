@@ -57,5 +57,6 @@ Metrics
    cindex_dynamic
    calibration_table
    concordance_index_cp
+   concordance_index_cr
    KaplanMeierCensoring
    UndefinedMetricError

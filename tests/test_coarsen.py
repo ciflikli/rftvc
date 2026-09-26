@@ -53,7 +53,7 @@ def _core_coarsen(start, stop, event, ids, ntime, stacked=False):
     else:
         cp = check_counting_process(start, stop, event, ids)
         order, offsets = cp.order.astype(np.uint32), cp.offsets
-    return _core.coarsen(start, stop, event, order, offsets, ntime)
+    return _core.coarsen(start, stop, np.asarray(event).astype(np.uint8), order, offsets, ntime)
 
 
 def test_d8_table_rows_and_lost_event_count():
@@ -156,7 +156,7 @@ def test_huge_ntime_is_the_exact_event_set():
 
 
 def test_core_coarsen_rejects_chains_out_of_time_order():
-    start, stop, event = np.array([0.0, 2.0]), np.array([2.0, 2.5]), np.array([False, True])
+    start, stop, event = np.array([0.0, 2.0]), np.array([2.0, 2.5]), np.array([0, 1], np.uint8)
     offsets = np.array([0, 2], dtype=np.uint64)
     assert _core.coarsen(start, stop, event, np.array([0, 1], np.uint32), offsets, 1)[5] == 0
     with pytest.raises(ValueError, match="time order"):
