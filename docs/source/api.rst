@@ -54,6 +54,7 @@ Inspection
    :nosignatures:
 
    permutation_importance
+   drop_column_importance
 
 Metrics
 -------
