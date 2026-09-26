@@ -1,5 +1,6 @@
 # Implementation Plan: TVC foundation, importance and effects (S16–S20)
 
+Status note: v2 (2026-09-26), Codex plan review applied (Review log).
 Source of truth: `tvc-design.md` v2 (T1–T10; T2/T3 user-confirmed). Background: `tvc-research.md`, `tvc-deviance.md`. Conventions, oracles and the slice workflow are those of `plan.md`:
 - branch `feat/sN-*`;
 - a slice plan `sN-plan.md`, with a Codex plan review before coding;
@@ -15,8 +16,9 @@ Notation: `M` windows, edges `w_0 = 0 < … < w_M = τ`; `S` = α-mixed piecewis
 - [ ] S20: `hazard_effect`, `path_effect`, foundation + importance user guide, case study, bench sims (branch `feat/s20-effects-docs`)
 
 ## Plan-level decisions (defaults; the slice plan reviews may change them)
-- **Q1. The metric is NumPy.**
-  - Cells are computed as dense `(n_rows, M)` arrays, which is fine for M ≤ ~64 at 1M rows (8 bytes × n × M per array).
+- **Q1. The metric is NumPy, streamed by window.**
+  - Cells are computed one window at a time (exposure, count, rate and contribution are 1-D per window), and events are stored as `bool` / index arrays, not float64 matrices. Peak memory is O(n) plus the `(n, M + 1)` prediction array.
+  - This matters at scale: a dense float64 `(n, M)` array is 512 MB at 1M rows and M = 64, and a naive implementation needs several.
   - The forest supplies only `Λ̂` at the `M + 1` edges (`predict_cumulative_hazard(X, times=edges[1:])` with an implicit 0 at `w_0`), so no new predict path is needed.
 - **Q2. One Rust row kernel.** `oob_cumhaz` reuses `ensemble_cumhaz` per row. `oob_mortality` becomes "`oob_cumhaz`'s kernel, then a sequential sum of the row buffer", the same order as today, so `oob_mortality` stays bit-identical. The test compares against `np.cumsum(H, axis=1)[:, -1]`, which is sequential, not `H.sum` (pairwise).
 - **Q3. `_fit_design` is a pure refactor.**
@@ -47,14 +49,16 @@ Notation: `M` windows, edges `w_0 = 0 < … < w_M = τ`; `S` = α-mixed piecewis
 - Rust core `forest.rs`: `oob_cumhaz(x, p, offsets, units, times, agg) -> (Vec<f64> n×T, Vec<u32>)` and `oob_cumhaz_causes` (n×J×T), sharing a row kernel with `oob_mortality` / `oob_cif`. `oob_mortality` is re-expressed through it.
 - Binding `rftvc-py/src/lib.rs`: `Forest.oob_cumhaz(x, offsets, units, times, aggregate_by, n_jobs)` and `Forest.oob_cumhaz_causes(...)`, mirroring `oob_mortality`.
 - Python:
-  - `_estimator.py`: `_fit_design`; `_fit` uses it; `baseline_cumhaz_` (pooled Nelson–Aalen of the fitted rows on `event_times_`); `_fit_fingerprint_`.
+  - `_estimator.py`: `_fit_design`; `_fit` uses it; `baseline_cumhaz_` (pooled Nelson–Aalen of the fitted rows on `event_times_`); `_fit_fingerprint_`; `_fit_options_` (the fit-time design options `layout`, `measured_at`, `gap_policy` and whether `block_time` was given; stored so OOB importance rebuilds with exactly these).
   - `_competing.py`: `baseline_cumhaz_` of shape `(J, K)`.
   - `metrics.py`: `piecewise_exponential_score`, `event_windows`, `PEScore`.
 - Tests: `tests/test_pe_score.py`, `tests/test_oob_cumhaz.py`; additions to `tests/test_oob.py` and `tests/test_blocks.py`.
+- Bench: `bench/tvc_deviance_followup.py`, the `tvc-deviance.md` §8 / design §7.8 checks (see Accept).
 
 **Signatures:**
 - `metrics.event_windows(estimator, n_windows=8) -> ndarray (M + 1,)`: quantiles of `event_times_` at `k / n_windows`, with `0` prepended and `τ = event_times_[-1]` as the last edge, deduplicated.
-- `metrics.piecewise_exponential_score(y, cumhaz, windows, *, null_cumhaz, alpha=0.01, cause=None, ids=None, reduce="per_event") -> PEScore`.
+- `metrics.piecewise_exponential_score(y, cumhaz, windows, *, null_cumhaz, alpha=0.01, causes=None, cause=None, ids=None, reduce="per_event") -> PEScore`.
+  - `causes`: the label vocabulary of the CR axis of `cumhaz` (pass `estimator.causes_`). It is required for CR inputs. Labels in `y` are mapped through it; a `y` label outside it raises. A fitted cause absent from `y` scores with `N = 0` (compensator only), and `cause=` must be in `causes`.
   - `cumhaz`: `(n, M + 1)` or `(n, J, M + 1)`, including the column at `w_0` (all 0 for fixed-profile predictions).
   - `null_cumhaz`: `(M + 1,)` or `(J, M + 1)`.
   - `PEScore(total, by_window, by_cause, by_id, zero_rate_share, null_total, n_truncated_events)`.
@@ -62,7 +66,7 @@ Notation: `M` windows, edges `w_0 = 0 < … < w_M = τ`; `S` = α-mixed piecewis
   - edges finite, strictly increasing and starting at 0;
   - `alpha ∈ [0, 1)`;
   - shapes consistent;
-  - `cause` a label in the CR case;
+  - `cause` a label in `causes` in the CR case;
   - rows truncated at `τ` (exposure and events after `τ` dropped and counted).
 - Attributes: `baseline_cumhaz_` `(K,)` / `(J, K)` on `event_times_`; `_fit_fingerprint_` (a hex digest string).
 
@@ -72,16 +76,37 @@ Notation: `M` windows, edges `w_0 = 0 < … < w_M = τ`; `S` = α-mixed piecewis
 - **Decompositions:** `by_window.sum() == total·ΣN` (with `reduce="sum"`), `by_cause` sums likewise, `by_id` sums likewise; per-event normalisation.
 - **Zero rates:** `alpha=0` with a zero-rate event cell → `-inf` and `zero_rate_share > 0`; `alpha > 0` stays finite; share > 1 % warns.
 - **Truncation:** a row that crosses `τ` contributes its exposure up to `τ`, and an event after `τ` is counted in `n_truncated_events`, not scored.
+- **Boundaries (hand-computed):**
+  - an event exactly at an interior edge `w_m` belongs to window `m` (right-closed), not `m + 1`;
+  - an event exactly at `τ` is scored;
+  - a row with `start == τ` or `start > τ` contributes neither exposure nor an event;
+  - a zero-exposure (row, window) cell contributes 0, including when its predicted rate is 0 (no `0·log 0` NaN);
+  - a window with no exposure at all has `by_window = 0`.
+- **CR labels:** non-consecutive labels (e.g. {2, 5}) with `causes=[2, 5]` score each cause on the right axis (checked against per-cause hand computation); an evaluation `y` lacking cause 5 scores it by compensator only; an unknown label raises.
 - **Errors:** bad edges; `windows[-1]` beyond the last event time when built for an estimator (via `event_windows`); a shape mismatch.
-- **`baseline_cumhaz_`:** equals `max_depth=0` single-tree Nelson–Aalen on the fitted rows (id mode). It is computed on the transformed rows in coarse and block modes (it equals the pooled NA of `_fit_design` rows).
+- **`baseline_cumhaz_`:** equals a pooled Nelson–Aalen computed **directly** from the `_fit_design` rows by a NumPy reference (`d(t_k) / Y(t_k)` over all fitted rows) in id, coarse and block modes. The single-tree `max_depth=0` forest is *not* the oracle: by default it sees only a subsample of units.
 - **`_fit_design`:**
   - deterministic (two calls give equal arrays);
   - no RNG (a global `np.random` state is unchanged, and `random_state` is unused);
   - `fit` results bit-identical to `main` on the S9 identity bench.
 - **`oob_cumhaz`:** `np.cumsum(H, axis=1)[:, -1]` equals `oob_mortality` bit-for-bit in id mode, block mode (with buffer), coarse mode and `bootstrap=True`. The CR twin at `event_times_[-1:]` satisfies AJ consistency with `oob_cif` (1e-12). The NaN pattern equals `oob_n_trees_ == 0`.
-- **Fingerprint:** a refit on the same data gives the same fingerprint; any change in `X`, `y`, `ids` or `block_time` changes it.
+- **Fingerprint:** a refit on the same data gives the same fingerprint. It covers `X`, `y`, `ids`, `block_time` and `_fit_options_`, so any change in any of them changes it. An OOB rebuild with `layout="stacked"` + `ntime` (each row its own chain) reproduces the fit design (regression test).
+- **T9 guard:** `score` and `oob_score_` are unchanged: still concordance, equal to `main` on the identity bench data. The PE metric is separate.
 
-**Accept:** tests green; identity bench bit-identical; `oob_cumhaz` at 100k rows and 8 edges costs ≤ 1.2× `oob_mortality` (reported).
+**Accept:**
+- tests green;
+- identity bench bit-identical;
+- `oob_cumhaz` at 100k rows and 8 edges costs ≤ 1.2× `oob_mortality` (reported);
+- PE scoring at 1M rows and M = 64 has peak memory ≤ 2× the `(n, M + 1)` prediction array (measured with `tracemalloc`, reported).
+
+**Deviance follow-up bench** (`bench/tvc_deviance_followup.py`, results in the S16 note):
+1. S3 with a Weibull baseline (shape 0.5 and 2): the score and permutation-importance stability vs M ∈ {2, 4, 8, 16}.
+2. OOB vs held-out: the PE score and the importance ranking, measured as Spearman ρ of the importances.
+3. The zero-rate share of events over n ∈ {200, 1000, 5000} ids and `min_events_leaf` ∈ {1, 3, 10}.
+
+**Decision rule for the `windows` default:** the largest M in {4, 8, 16} whose zero-rate share is ≤ 0.1 % in the worst cell of check 3 and whose importance means stay within 10 % of the M = 4 values in check 1.
+- If the rule gives M ≠ 8, the default changes, and the S16 note records it.
+- If OOB and held-out rankings disagree (ρ < 0.8), `oob=True` is documented as a quick screen only.
 
 ---
 
@@ -97,7 +122,7 @@ permutation_importance(estimator, X, y=None, *, ids=None, features=None, groups=
 ```
 - `windows` is an int (→ `event_windows`) or edges.
 - `oob=True` requires `X, y, ids` (and `block_time` if the fit used it) and verifies them against `_fit_fingerprint_`.
-- `strata`: `"time"` | `None` | array of labels. Time strata are the `n_strata` quantile bins of the evaluation rows' `start` (bin edges from unique quantiles).
+- `strata`: `"time"` | `None` | array of labels. `strata=None` (M1) emits a `UserWarning` ("naive permutation can extrapolate off the (time, value) support; prefer strata='time'"), and its docstring carries the same warning (T5). Time strata are the `n_strata` quantile bins of the evaluation rows' `start` (bin edges from unique quantiles).
 - `conditional_on`: column names/indices, crossed with `n_bins` quantile bins each. Strata with < 2 rows stay unpermuted and are counted.
 
 **Algorithm:**
@@ -114,7 +139,14 @@ permutation_importance(estimator, X, y=None, *, ids=None, features=None, groups=
 - **Reproducibility:** the same `random_state` gives the same result for `n_jobs=1` and `4`.
 - **Decomposition:** `importances_window.sum(axis=1)` equals `importances_mean·ΣN` (per-event scaling handled); CR `importances_cause` sums to the total.
 - **OOB:** a fingerprint mismatch raises. The OOB baseline score equals the PE score of `oob_cumhaz` computed directly.
-- **Bootstrap:** the SE is finite with `n_bootstrap ≥ 2`, NaN with 0 and with `oob=True`. A pure-noise column's bootstrap interval covers 0 in ≥ 90 % of 20 seeded runs (a coarse sanity check, not a coverage study).
+- **Bootstrap:** the SE is finite with `n_bootstrap ≥ 2`, NaN with 0 and with `oob=True`.
+  - The resampler is a private function `_resample_ids(ids, rng) -> (row_index, boot_ids)`, tested directly:
+    - every sampled id copy contains **all** of that id's original rows, in order;
+    - a duplicated id's copies get distinct `boot_ids`;
+    - `by_id` decomposes by `boot_ids`;
+    - strata assignment sees each copy's rows as distinct rows.
+  - A pure-noise column's bootstrap interval covers 0 in ≥ 90 % of 20 seeded runs (a coarse sanity check, not a coverage study).
+- **M1 warning:** `strata=None` warns (`pytest.warns`), and the docstring contains "extrapolat" (a doc-content assertion).
 - **Conditional:** with `conditional_on` a copy of the permuted column, the importance is exactly 0 (every stratum is constant in the column).
 - **Errors:** unknown feature, overlapping groups, `strata` of the wrong length, `oob=True` without training data, a landmark estimator (→ S19 path; S17 raises `NotImplementedError` until then, per the P2 convention of `cr-plan.md`).
 - **Slow sims:** design §7.1 (M2 part: `|mean imp(z2)| ≤ 0.1·oracle(z1)`, `mean imp(z1) ≥ 0.5·oracle(z1)`), §7.3 (Holm windows), §7.4 (CR).
@@ -151,6 +183,11 @@ drop_column_importance(estimator, X, y=None, *, ids=None, cv=5, features=None, g
 - **Consistency:** windows and null come from the fold's full model (the dropped models are scored on them).
 - **Seeds:** results are reproducible, and `n_seeds=2` averages two fits (checked through a spy `fit` count).
 - **Cost guard:** the fit count equals `(p_units + 1) × n_folds × n_seeds` (+1 unit with the noise control).
+- **DataFrame / ids column:** with a DataFrame `X` and `ids="id"` naming a column in `X`:
+  - the default units exclude the ids column;
+  - naming it in `features` or `groups` raises;
+  - dropping an ordinary column refits on a frame whose remaining names still pass `feature_names_in_` validation (the ids column is kept in every refit frame);
+  - the grouping by ids is identical across the full and dropped fits.
 - **Slow sims:** design §7.1 (LOCO part), §7.7b.
 
 **Accept:** fast tests green; sims reported against the rules; wall time for the S3 bench size is reported in the note (feeds the docs).
@@ -168,7 +205,7 @@ drop_column_importance(estimator, X, y=None, *, ids=None, cv=5, features=None, g
   - `conditional_on` crosses the landmark strata with quantile bins of the named features.
   - Predictions use `model.forest_.predict_cumulative_hazard` on stacked rows at horizon-clock edges.
 - **Scoring:**
-  - `"pe"` (windows on `(0, horizon]`, null = `forest_.baseline_cumhaz_`);
+  - `"pe"` (windows on `(0, horizon]`, null = `forest_.baseline_cumhaz_`); Brier/IBS go **per landmark** through `_score_landmark` (per-landmark censoring fits), then aggregate as `landmark_cross_validate` does, never as a pooled stacked-data IPCW;
   - `"brier"` (at `horizon`, `risk = predict_risk`-equivalent on stacked rows);
   - `"ibs"` (over `n_times` points on `(0, horizon]`).
   - IPCW `censoring_estimator` and `g_min` are passed through with the same defaults as `landmark_cross_validate`. CR models require `cause` for Brier/IBS.
@@ -181,7 +218,7 @@ drop_column_importance(estimator, X, y=None, *, ids=None, cv=5, features=None, g
 - **Landmark strata:** after permutation, each landmark's multiset of each feature group is unchanged, and rows move between ids at the same `s` only.
 - **The M3 equivalence check** (design §3): permuting the `z` group within `s` equals recomputing features from a donor id's raw history up to `s`, row-by-row, for a fixed permutation (constructed test).
 - **Level/history diagnostic:** a generator where the hazard depends on `z_mean` only → history-given-level importance > 0; a Markov control → ≈ 0 (fast, loose; strict in the slow sim §7.2).
-- **Brier/IBS scoring:** the baseline equals `landmark_cross_validate`'s held-out Brier for the same fit and data (1e-12).
+- **Brier/IBS scoring:** the Brier/IBS scoring *is* `_score_landmark`: per landmark, with the censoring model fitted on that landmark's test outcomes, then aggregated exactly as `landmark_cross_validate` does. The test uses **several landmarks with censoring** and a single train/test split expressed as a one-fold splitter; the baseline equals the CV function's fold score to 1e-12.
 - **CR:** `cause` is required for Brier; PE by cause.
 
 **Accept:** tests green; §7.2 and §7.5b reported against the rules.
@@ -219,7 +256,13 @@ drop_column_importance(estimator, X, y=None, *, ids=None, cv=5, features=None, g
 
 **Accept:**
 - tests and docs green;
-- the foundation page states only the claims of `tvc-research.md` §1 (as corrected), and the importance page says when to use M2 vs LOCO vs the landmark diagnostic;
+- the foundation page states only the claims of `tvc-research.md` §1 (as corrected), and the importance page says when to use M2 vs LOCO vs the landmark diagnostic, and warns against M1;
+- `tests/test_docs_claims.py` (T1 guard) asserts that the foundation page:
+  - contains the four assumptions;
+  - contains the functionals table;
+  - contains "no consistency result";
+  - does **not** contain "consistent estimator" / "consistency of rftvc";
+  - and that the importance page contains the M1 extrapolation warning;
 - the case study shows importance, timing and the level/history diagnostic on one dataset;
 - a bench summary table (all sims, pass/fail) is appended here as "S16–S20 results".
 
@@ -233,3 +276,18 @@ drop_column_importance(estimator, X, y=None, *, ids=None, cv=5, features=None, g
 | Declared statistical rules fail (e.g. M2 still biased) | report honestly; a failed rule blocks the merge unless the user accepts a documented deviation; the design may change default strata |
 | LOCO wall time on large data | groups, `n_jobs` over fits, timings in docs; no default change to `n_estimators` |
 | API drift before the release pass | one public module; sklearn names; the release pass reviews signatures with everything else |
+
+## Review log (Codex plan review, 2026-09-26)
+All 12 findings accepted:
+1. **Deviance follow-ups missing** → S16 bench with a decision rule for the `windows` default.
+2. **The M1 warning was not enforced** → a `UserWarning`, docstring and user-guide assertions.
+3. **T1/T9 had no regression tests** → a docs-claims test (S20) and a `score`/`oob_score_` guard (S16).
+4. **Wrong `baseline_cumhaz_` oracle** (a subsampled single tree) → a direct NumPy pooled Nelson–Aalen on the design rows.
+5. **CR label mapping in the metric** → a `causes=` vocabulary argument, and tests for non-consecutive and absent labels.
+6. **Brier equality to CV underspecified** → per-landmark `_score_landmark` with per-landmark censoring fits, and a multi-landmark censored test.
+7. **The fingerprint missed fit options** (`layout`, `measured_at`, `gap_policy`) → `_fit_options_` stored and fingerprinted, and a stacked + coarse OOB test.
+8. **Window boundary and zero-exposure cases untested** → hand-computed boundary tests.
+9. **Bootstrap tests too weak** → `_resample_ids` tested directly (whole ids, distinct copy labels).
+10. **The ids column in a DataFrame `X` under LOCO** → excluded from units, rejected when named, and refit frames keep it.
+11. **Memory of dense intermediates** → window-streamed scoring and a 1M-row memory gate.
+12. (Coverage summary of 1–3) no separate change.
