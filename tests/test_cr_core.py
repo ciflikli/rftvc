@@ -92,7 +92,7 @@ def test_one_cause_is_the_survival_forest(seed, max_features, rule):
     kw = dict(n_estimators=10, min_ids_leaf=3, max_features=max_features, random_state=seed)
     sf = SurvivalForestTV(**kw).fit(X, y, ids)
     y_cr = make_competing_risks_y(y["stop"], y["event"].astype(int), start=y["start"])
-    cr = CompetingRisksForestTV(**kw, **rule).fit(X, y_cr, ids)
+    cr = CompetingRisksForestTV(aggregate="hazard", **kw, **rule).fit(X, y_cr, ids)  # the hazard transform
     a, b = _state(sf), _state(cr)
     assert "leaf_cause_events" not in a  # SF pickles are unchanged; CR adds diagnostics
     assert a.keys() == b.keys() - {"leaf_cause_events"}
@@ -178,7 +178,7 @@ def test_aalen_johansen_invariants():
 
 def test_hazard_by_cause_and_all_causes():
     X, y, ids = _cr_data(120, seed=5)
-    m = CompetingRisksForestTV(n_estimators=8, min_ids_leaf=3, random_state=0).fit(X, y, ids)
+    m = CompetingRisksForestTV(n_estimators=8, min_ids_leaf=3, aggregate="hazard", random_state=0).fit(X, y, ids)
     H = m.predict_cumulative_hazard(X)
     assert H.shape == (len(X), 2, len(m.event_times_))
     np.testing.assert_array_equal(m.predict_cumulative_hazard(X, cause=2), H[:, 1])

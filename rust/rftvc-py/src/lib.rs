@@ -123,14 +123,20 @@ fn cause_data(
 
 /// Split rule for `n_causes` causes (cr-plan.md P4a): one cause always uses
 /// `LtrcLogRank`; otherwise `SingleCause` for `split_cause` (1-based) or the composite.
-fn criterion_for(n_causes: usize, split_cause: Option<usize>) -> PyResult<Box<dyn SplitCriterion>> {
-    match split_cause {
-        Some(k) if !(1..=n_causes).contains(&k) => Err(PyValueError::new_err(
+fn criterion_for(
+    n_causes: usize,
+    split_cause: Option<usize>,
+    criterion: &str,
+) -> PyResult<Box<dyn SplitCriterion>> {
+    match (split_cause, criterion) {
+        (Some(k), _) if !(1..=n_causes).contains(&k) => Err(PyValueError::new_err(
             "split_cause must be in [1, n_causes]",
         )),
+        // S14 bake-off: "composite" won; the challengers were removed (P5).
+        (_, c) if c != "composite" => Err(PyValueError::new_err("criterion must be 'composite'")),
         _ if n_causes == 1 => Ok(Box::new(LtrcLogRank)),
-        Some(k) => Ok(Box::new(SingleCause { cause: k - 1 })),
-        None => Ok(Box::new(CompositeCauseLogRank)),
+        (Some(k), _) => Ok(Box::new(SingleCause { cause: k - 1 })),
+        (None, _) => Ok(Box::new(CompositeCauseLogRank)),
     }
 }
 
@@ -687,7 +693,7 @@ impl PyForest {
 #[pyo3(name = "fit_forest", signature = (
     x, start, stop, event, groups, n_groups, *, n_trees, n_draw, bootstrap,
     max_depth, min_ids_leaf, min_events_leaf, max_features, max_bins, seed, n_jobs,
-    n_causes=1, split_cause=None, min_events_leaf_cause=None, leaf_events=false
+    n_causes=1, split_cause=None, min_events_leaf_cause=None, leaf_events=false, criterion="composite"
 ))]
 #[allow(clippy::too_many_arguments)]
 fn fit_forest_py(
@@ -712,6 +718,7 @@ fn fit_forest_py(
     split_cause: Option<usize>,
     min_events_leaf_cause: Option<usize>,
     leaf_events: bool,
+    criterion: &str,
 ) -> PyResult<PyForest> {
     let (v, n, p) = matrix(&x)?;
     check_lengths(
@@ -739,7 +746,7 @@ fn fit_forest_py(
         ));
     }
     let surv = cause_data(&start, &stop, &event, n_causes)?;
-    let criterion = criterion_for(n_causes, split_cause)?;
+    let criterion = criterion_for(n_causes, split_cause, criterion)?;
     let cause_floor = match (split_cause, min_events_leaf_cause) {
         (_, None) => None,
         (Some(k), Some(m)) => Some((k - 1, m)),
@@ -908,7 +915,7 @@ fn logrank_score(
 /// rule `fit_forest` would use (`LtrcLogRank` for one cause, else `SingleCause`
 /// for `split_cause` or the composite), both through the node scorer.
 #[pyfunction]
-#[pyo3(signature = (start, stop, event, left, n_causes, split_cause=None))]
+#[pyo3(signature = (start, stop, event, left, n_causes, split_cause=None, criterion="composite"))]
 fn cause_score(
     start: PyReadonlyArray1<'_, f64>,
     stop: PyReadonlyArray1<'_, f64>,
@@ -916,6 +923,7 @@ fn cause_score(
     left: PyReadonlyArray1<'_, bool>,
     n_causes: usize,
     split_cause: Option<usize>,
+    criterion: &str,
 ) -> PyResult<f64> {
     check_lengths(
         start.as_array().len(),
@@ -926,7 +934,7 @@ fn cause_score(
         ],
     )?;
     let surv = cause_data(&start, &stop, &event, n_causes)?;
-    let criterion = criterion_for(n_causes, split_cause)?;
+    let criterion = criterion_for(n_causes, split_cause, criterion)?;
     let all: Vec<u32> = (0..surv.n_rows() as u32).collect();
     let parent = node_profile(&surv, &all);
     let left_rows: Vec<u32> = vec1(&left, "left")?

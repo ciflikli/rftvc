@@ -1,0 +1,5 @@
+cause,model,brier,integrated_brier,cindex_incident
+transplant,landmark competing-risks forest,0.031,0.017,0.82
+transplant,Aalen–Johansen (no covariates),0.033,0.017,0.5
+death,landmark competing-risks forest,0.084,0.054,0.844
+death,Aalen–Johansen (no covariates),0.11,0.066,0.5

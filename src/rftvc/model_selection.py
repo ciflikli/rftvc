@@ -20,7 +20,7 @@ import polars as pl
 from sklearn.base import clone
 from sklearn.model_selection import GroupKFold
 
-from ._validation import _as_labels
+from ._validation import _as_labels, _check_causes
 from .landmark import LandmarkCompetingRisksForest, _as_polars, make_landmark_data
 from .metrics import (
     KaplanMeierCensoring,
@@ -317,9 +317,14 @@ def landmark_cross_validate(
             raise ValueError("cindex_cumulative (competing-risks AUC) is not available for competing risks")
         # One vocabulary and one scored cause for every (outer and inner) fit.
         labels = _as_labels(data.y["event"])
-        causes = np.unique(labels[labels != 0]) if model.causes is None else np.asarray(model.causes)
-        cause = int(causes.min() if model.score_cause is None else model.score_cause)
-        model = clone(model).set_params(causes=[int(c) for c in np.sort(causes)], score_cause=cause)
+        causes = np.unique(labels[labels != 0]) if model.causes is None else _check_causes(model.causes)
+        k = model.score_cause
+        if k is None:
+            k = causes[0]
+        elif not (isinstance(k, numbers.Integral) and not isinstance(k, (bool, np.bool_)) and k in causes):
+            raise ValueError(f"score_cause={k!r} is not a label in causes={causes.tolist()}")
+        cause = int(k)
+        model = clone(model).set_params(causes=causes.tolist(), score_cause=cause)
     rows, preds = [], []
     for fold, (train_idx, test_idx) in enumerate(cv.split(data.s, groups=data.groups)):
         test_s = np.unique(data.s[test_idx])

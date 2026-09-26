@@ -48,3 +48,4 @@ def aalen_johansen_ref(start, stop, codes, n_causes):
         cumhaz[i], cif[i], surv[i] = h, f, s
     return times, cumhaz, cif, surv
 
+

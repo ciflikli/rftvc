@@ -91,7 +91,7 @@ Notation: `s` landmark, `w` horizon on the reset clock, `k` the cause of interes
 - [x] Model selection: CR branch, `_censor_at` labels
 - [x] Tests + test-quality audit
 - [x] Identity bench; docs (`api.rst`); `cr-plan.md` status + "S13 done" note
-- [ ] Codex diff review; fixes
+- [x] Codex diff review; fixes (after merge; fixed on `feat/s14-cr-bench`)
 
 ## Plan review (Codex, 2026-09-26)
 1. The type-A weight `1/G(T_i−)²` contradicted the design's `1/(G(T_i−) G(T_i))` (high) → kept for exact J = 1 equality with the existing Uno C. It is recorded as a design amendment in `cr-design.md`, and a censoring-at-`T_i` fixture pins it. It is flagged for the user in the S13 summary.
@@ -105,3 +105,6 @@ Notation: `s` landmark, `w` horizon on the reset clock, `k` the cause of interes
 - Mutation check: treating competing events as censored (weight 0) fails the comprisk oracle for both causes, the boundary fixture and the brute-force C.
 - A real bug found while testing: `cause=0` was used as an internal "any labels" sentinel, so `brier_landmark(..., cause=0)` skipped validation → replaced by an explicit flag. Test added.
 - A pre-existing S10 flake (unseeded 5-tree block-OOB test, ~1.5% "no comparable pairs") failed `main` CI after the S12 merge → seeded (separate commit).
+
+## Diff review (Codex, 2026-09-26; returned after the merge, fixed on `feat/s14-cr-bench`)
+1. CR CV coerced labels with `int()`, so `score_cause=1.5` scored cause 1 and `causes=[1.5, 2]` became `[1, 2]` (medium) → the vocabulary is validated with `_check_causes`, and `score_cause` must be an integer label in it. Tests added.

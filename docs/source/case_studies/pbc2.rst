@@ -51,3 +51,38 @@ The censoring weights come from the test risk set at each landmark.
   along any specified covariate path.
 
 Reproduce with ``python -m examples.pbc2_landmark`` from the repository root.
+
+Competing risks: transplant vs death
+------------------------------------
+
+The analysis above treats transplant as censoring, which is only reasonable
+when transplant is unrelated to the risk of death. Treating transplant (1) and
+death (2) as competing causes instead gives the probability of each outcome
+within the window, ``F_k(s + w | event-free at s, H(s))``. These probabilities
+add up with the event-free probability to 1.
+
+``LandmarkCompetingRisksForest`` uses the same landmarks, horizon and history
+features. Each cause is scored with its own ``score_cause``: the cause-specific
+IPCW Brier score and integrated Brier over (0, 2y], and Wolbers' C at 2y. The
+reference uses single-leaf trees, which gives the Aalen–Johansen estimate
+without covariates.
+
+.. csv-table:: Mean over folds and landmarks, by cause and model
+   :file: generated/pbc2_cr_overall.csv
+   :header-rows: 1
+
+.. csv-table:: By landmark (counts summed over folds)
+   :file: generated/pbc2_cr_landmarks.csv
+   :header-rows: 1
+
+**Reading.**
+
+- **Death:** the forest clearly beats the covariate-free reference (Brier 0.084
+  vs 0.110) and ranks well (Wolbers' C 0.84).
+- **Transplant:** a rare cause here (7–10 per landmark over all folds). The
+  Brier gain is small, because both models predict small probabilities, but the
+  ranking is informative (C 0.82). The cause-specific C counts patients who
+  died before a transplant as controls that can no longer be transplanted.
+
+Reproduce with ``python -m examples.pbc2_competing``. The competing-risks user
+guide page explains the targets and metrics.
