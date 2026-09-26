@@ -46,7 +46,7 @@ Notation: `w` horizon (landmark reset clock), `k` cause of interest, `G` censori
 - [x] `cindex_dynamic` cumulative with `cause`; CV branch; docs
 - [x] Tests + test-quality audit (mutation)
 - [x] Identity bench; `cr-plan.md` note
-- [ ] Codex diff review; fixes
+- [x] Codex diff review; fixes
 
 ## Plan review (Codex, 2026-09-26)
 1. comprisk's control convention (`stop > t`, `G(t)`) differs from ours at `t = w`, so the oracle could not check our boundary (blocker) → our convention is stated explicitly, the oracle claim is limited to non-boundary data, and a literal boundary test pins it.
@@ -57,3 +57,6 @@ Notation: `w` horizon (landmark reset clock), `k` cause of interest, `G` censori
 ## Test-quality audit (2026-09-26)
 - Oracles: comprisk AUC (non-boundary), hand-worked literals pinning the tie convention (63/88 ours vs 73/88 comprisk's), an only-competing-controls case, and a weighted brute force (hypothesis). The one-cause equality is exact via the fast path.
 - Mutation: restricting controls to event-free (definition 1) fails 5 tests (the oracle for both causes, the boundary literal, the only-competing case and the brute force).
+
+## Diff review (Codex, 2026-09-26)
+No findings. The weighted AUC, boundary classification, undefined-metric paths, fast path and CV integration were confirmed against the plan.
