@@ -153,7 +153,7 @@ Notation: `J` causes (labels remapped to 1..J; 0 = censored), `K` grid (event) t
 - Bake-off: `composite` stays (C3); **`aggregate="cif"` becomes the default** (C4); `min_events_leaf_cause` stays `None` (C5: a rare-cause floor harms the other causes).
 - The challengers `quadratic`, `ishwaran` and `logrank_all` were removed (P5; rerun at `66ccad8`).
 - randomForestSRC's composite (Ishwaran eq. 3.2) was verified from its C source: with equal weights it sums numerators into the all-cause numerator, and it was 12–26% worse in simulation.
-- PBC parity: rftvc is better than rfsrc on transplant and similar on death, and 35× faster including R start-up.
+- PBC parity (per-fold imputation, no IPCW clipping): rftvc is better than rfsrc on transplant and similar on death, and ~35× faster including R start-up.
 - Scale: J = 2 is ≤ 1.4× and J = 4 ≤ 2.2× the single-event fit time, peak RSS ≤ 1.5×, and leaf bytes equal the `(1 + 2J)/3` bound.
 - Docs: a competing-risks user-guide page, compatibility, and a PBC2 transplant-vs-death case study (`examples/pbc2_competing.py`).
 - Out of scope, as designed: Fine–Gray / Gray splitting (C6), competing-risks AUC, multi-state.

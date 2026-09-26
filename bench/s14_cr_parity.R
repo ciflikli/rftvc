@@ -4,11 +4,11 @@ suppressMessages(library(randomForestSRC, lib.loc = Sys.getenv("RL")))
 args <- commandArgs(trailingOnly = TRUE)
 d <- read.csv(args[1])
 times <- seq(365, 3650, by = 365)
-feats <- setdiff(names(d), c("id", "time", "status", "fold"))
+feats <- setdiff(names(d), c("id", "time", "status", "fold", "cv_fold", "role"))
 out <- list()
-for (f in sort(unique(d$fold))) {
-  train <- d[d$fold != f, c("time", "status", feats)]
-  test <- d[d$fold == f, ]
+for (f in sort(unique(d$cv_fold))) {  # rows imputed per fold from the training fold (Python)
+  train <- d[d$cv_fold == f & d$role == "train", c("time", "status", feats)]
+  test <- d[d$cv_fold == f & d$role == "test", ]
   fit <- rfsrc(Surv(time, status) ~ ., data = train, ntree = 500, nodesize = 15, nsplit = 0,
                mtry = ceiling(sqrt(length(feats))), samptype = "swor",
                sampsize = function(x) x * 0.632, splitrule = "logrank", seed = -1)

@@ -65,23 +65,28 @@ Mean ISE (mean over causes):
 A floor on the rare cause stops the forest splitting where that cause is too sparse, which is where the other causes' structure is. The rule's "not worse on causes 1–2" condition fails for every `m`.
 
 ## 2. Right-censored parity: `survival::pbc` (transplant 1, death 2)
-418 ids, 17 covariates (median-imputed), 5 fixed folds shared with R. The settings match rfsrc's defaults: 0.632 subsampling without replacement, leaf size 15, `mtry = 5`, 500 trees, and rfsrc `nsplit=0` (every split point). IPCW uses a reverse KM per test fold with `g_min = 0.05`. The IBS is over 365–3650 days, pooled over folds; the intervals are a subject bootstrap (B = 500) with fixed weights. The difference is vs rftvc composite/hazard.
+418 ids and 17 covariates, with missing values median-imputed **inside each fold from the training fold only** (diff review 1). There are 5 fixed folds, shared with R, which gets the same per-fold imputed rows.
+
+The settings match rfsrc's defaults: 0.632 subsampling without replacement, leaf size 15, `mtry = 5`, 500 trees, and rfsrc `nsplit=0` (every split point).
+
+IPCW uses a reverse KM per test fold with `g_min = 0.05`. **No weight was clipped:** 0 of 6,392 weighted subject-times (`parity_clipping.csv`). The IBS is over 365–3650 days, pooled over folds; the intervals are a subject bootstrap (B = 500) with fixed weights. The difference is vs rftvc composite/hazard.
 
 | arm | cause | IBS | diff [95% interval] | Wolbers C | fit s (5 folds) |
 |---|---|---|---|---|---|
-| composite / hazard | transplant | 0.0411 | — | 0.790 | 0.15 |
-| composite / cif | transplant | 0.0412 | +0.00002 [−0.0003, 0.0003] | 0.808 | 0.15 |
-| Approach B | transplant | 0.0418 | +0.0006 [−0.0000, 0.0013] | 0.779 | 0.18 |
-| randomForestSRC 3.9 | transplant | 0.0434 | +0.0022 [0.0013, 0.0033] | 0.717 | 5.5 (incl. R start) |
+| composite / hazard | transplant | 0.0412 | — | 0.790 | 0.15 |
+| composite / cif | transplant | 0.0412 | +0.00002 [−0.0003, 0.0003] | 0.809 | 0.15 |
+| Approach B | transplant | 0.0417 | +0.0006 [−0.0001, 0.0012] | 0.788 | 0.18 |
+| randomForestSRC 3.9 | transplant | 0.0433 | +0.0021 [0.0012, 0.0032] | 0.727 | 5.4 (incl. R start) |
 | Aalen–Johansen (no covariates) | transplant | 0.0444 | +0.0032 [0.0011, 0.0055] | 0.500 | — |
-| composite / hazard | death | 0.1362 | — | 0.823 | |
-| composite / cif | death | 0.1349 | −0.0013 [−0.0037, 0.0012] | 0.825 | |
-| Approach B | death | 0.1374 | +0.0012 [0.0001, 0.0023] | 0.822 | |
-| randomForestSRC 3.9 | death | 0.1383 | +0.0021 [−0.0034, 0.0078] | 0.815 | |
-| Aalen–Johansen (no covariates) | death | 0.1960 | +0.0598 [0.0450, 0.0744] | 0.500 | |
+| composite / hazard | death | 0.1363 | — | 0.822 | |
+| composite / cif | death | 0.1351 | −0.0013 [−0.0037, 0.0012] | 0.824 | |
+| Approach B | death | 0.1373 | +0.0010 [−0.0000, 0.0020] | 0.823 | |
+| randomForestSRC 3.9 | death | 0.1385 | +0.0021 [−0.0034, 0.0079] | 0.814 | |
+| Aalen–Johansen (no covariates) | death | 0.1960 | +0.0596 [0.0449, 0.0744] | 0.500 | |
 
 - **C4:** neither `cif` interval favours `hazard`, so the switch rule holds.
 - **vs rfsrc (reported only):** rftvc is better on transplant (the interval excludes 0) and similar on death. Leaf-size semantics differ: rfsrc's `nodesize` is a node minimum, rftvc's `min_ids_leaf` a per-child minimum.
+- **Approach B:** close to the joint forest on PBC; its intervals just include 0.
 
 ## 3. Landmark simulation (reported only; 10 replications)
 Scenario A without delayed entry. Landmarks 1, 2, 3; `w = 2`; `z` (last), `x0`, `x1`. The truth is the Monte Carlo mean over the unknown next `z` (4000 draws).
@@ -93,7 +98,7 @@ Scenario A without delayed entry. Landmarks 1, 2, 3; `w = 2`; `z` (last), `x0`, 
 | hazard | 1 | 0.00475 | 0.1739 | 0.1739 | 0.0052 |
 | hazard | 2 | 0.00301 | 0.1444 | 0.1455 | 0.0061 |
 
-The cause-specific IPCW Brier is unbiased for the oracle Brier, which is computed on the true, uncensored outcomes: the means agree to 0.001. `cif` is slightly closer to the truth.
+In this simulation, the cause-specific IPCW Brier tracked the oracle Brier (on the true, uncensored outcomes): the means agree to 0.001. The per-landmark gaps average 0.005–0.006. This is 10 replications and supports the metric; it does not prove unbiasedness. `cif` is slightly closer to the truth.
 
 ## 4. Scale (100 trees, 10 threads, 5 rows per id; each fit in its own process)
 | rows | grid | J | fit s | × J = 1 | peak RSS GB | × J = 1 | leaf bytes × J = 1 (bound) |

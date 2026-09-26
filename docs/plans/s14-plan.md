@@ -125,7 +125,7 @@ The rule is **descriptive and conservative**, as in S8. Many comparisons are mad
 - [x] Decision per the rule; `docs/bench/s14-cr.md`; remove losers (P5)
 - [x] Docs: user guide, compatibility, case study + example
 - [x] Identity bench; `cr-plan.md` status + "S14 done"; `plan.md` S11–S14 line
-- [ ] Codex diff review; fixes
+- [x] Codex diff review; fixes
 
 ## Plan review (Codex, 2026-09-26)
 1. C3 was judged "under the chosen aggregation" while C4 chose it from the same runs (blocker) → C4 is decided on `composite` first; C3 is then decided under it and must not reverse under the other aggregation.
@@ -150,3 +150,8 @@ The rule is **descriptive and conservative**, as in S8. Many comparisons are mad
 - The challenger criteria were tested against independent references (a numpy pinv quadratic form with a singular fixture, an Ishwaran formula, the all-cause log-rank ref) and for J = 1 bit identity. They were removed with the criteria.
 - The simulation truth is tested against numerical integration (1e-9) and empirical CIFs of the DGP.
 - The default switch changed two tests that pin the hazard transform, which now set `aggregate="hazard"` explicitly. The J = 1 identity tests are unchanged.
+
+## Diff review (Codex, 2026-09-26)
+1. Median imputation on the full PBC data before splitting leaked test-fold information (high) → imputation inside each fold from training medians, with the same rows fed to R. Rerun: conclusions unchanged, except Approach B's death interval now includes 0 (the write-up claim was removed).
+2. The pre-registered clipping diagnostics were not reported (medium) → `parity_clipping.csv`: 0 of 6,392 weighted subject-times clipped, now in the write-up.
+3. "Unbiased" overstated a 10-replication landmark simulation (low) → reworded to "tracked the oracle in this simulation".
