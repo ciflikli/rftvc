@@ -113,6 +113,19 @@ Oracle: the true unit's score drop with the **known hazard** as the `predict` ca
 - The three sim rules pass (or a user-approved deviation).
 - Timings reported: held-out with `n_bootstrap=0` and 100, and OOB, on 1000 ids × ~5 rows, p = 4, 200 trees.
 
+## S17 done (2026-09-26)
+Results:
+- **Full suite:** green (500 passed fast; the slow `test_pilot_pass_rules_point_the_right_way` also passes).
+- **Test-quality audit** (T5): unknown-feature-name error test added; `_subset_csr` double-subset composition check added (the OOB re-predict path subsets the CSR set twice — once to the OOB rows, again to the permuted rows within them — with no direct check that the composition is associative).
+- **Simulations** (`bench/tvc_perm_sim.py`, R = 50, `docs/bench/s17-perm/*.csv`): all three declared rules pass, no deviation needed.
+  1. **§7.1 trend confounding:** oracle(z1) = 0.617, oracle(z2) = 0.000 (exact: the true hazard does not read z2). Forest: mean imp(z1) = 0.455 (≥ 0.5·oracle = 0.309 ✓), mean imp(z2) = 0.039 (|·| ≤ 0.1·oracle = 0.062 ✓). Estimand caveat, reported without a rule: imp(z2 | z1) = 0.003 (≈ 0, so the small residual z2 importance is proxy use of the ρ = 0.6 correlation with z1, not the trend), M1 (`strata=None`) imp(z1) = 0.456, imp(z2) = 0.178 (the naive shuffle inflates z2 roughly 4.5×, the extrapolation bias `strata="time"` is meant to avoid).
+  2. **§7.3 timing:** oracle windows = [0, 0, 0.218, 0.146, 0, 0] (exactly 0 outside (2, 4], as the closed form requires), O(inside) = 0.364, δ = 0.036. Forest window means = [−0.001, 0.001, 0.184, 0.119, 0.000, 0.001]. Holm-reject (one-sided > 0, 6 windows): windows 3 and 4 reject, no others — (a) passes. Outside upper 95 % bounds (Bonferroni/4) = [0.003, 0.004, 0.004, 0.004], all ≤ δ — (b) passes.
+  3. **§7.4 CR:** oracle(cause 1) = 0.615, δ = 0.061. Forest mean ΔS₁ = 0.427, ΔS₂ = 0.002. Holm-reject [S1, S2] = [True, False] — (a) passes. Upper 95 % bound of mean ΔS₂ = 0.005 ≤ δ — (b) passes; the design's `mean ΔS₂ ≤ 0.1·mean ΔS₁` also holds.
+  - 10-rep pilot MC-SE check: all outside-window / cause-2 MC-SEs already ≤ margin/7 at R = 10; the two inside timing windows (MC-SE 0.0087, 0.0083 at R = 10 vs. target 0.0053) project to adequate power at R = 50 (needing R ≈ 27, 25 respectively) via the `1/√R` scaling law, confirmed by the R = 50 result's clean Holm rejection.
+- **Timings** (held-out / OOB, 1000 ids × ~5 rows, p = 4, 200 trees): TIMING_PLACEHOLDER
+
+Deviations: none (all three sim rules and the acceptance timings passed as declared).
+
 ## Review log
 Codex plan review (2026-09-26), 7 findings: 5 accepted, 1 partly, 1 rejected.
 1. **Rejected — "block-mode OOB rows misaligned with `oob_set`"**. `_blocks.oob_sets` builds one CSR set per *unsplit* row (`id_index = groups`), and `fit` already computes `oob_prediction_` on `d.X` with `d.oob_set`; the S16 test `test_stacked_coarse_block_rebuild_matches_the_fit` pins this. A block-mode reference check is added anyway (OOB tests).
