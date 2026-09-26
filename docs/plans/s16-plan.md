@@ -15,7 +15,8 @@ Notation:
    - `_fit_options_` is a dict: `layout`, `gap_policy`, `has_measured_at`, `has_block_time`, and the design-relevant constructor params `ntime`, `resample_unit`, `block_length`, `oob_buffer`.
    - `_fit_fingerprint_` is the SHA-256 hex digest over:
      - the validated `X` (float64 C bytes), `start`, `stop` and `event` codes;
-     - `cp.unit` (int64);
+     - the **original ids**, canonicalised: integer kinds → int64, floats → float64, anything else → the UTF-8 of `str(v)` joined with `\x1f`. `ids=None` hashes as `b"none"`. Relabelling ids therefore changes the hash, while the same values given as a list or an array do not;
+     - the design topology `cp.group`, `cp.order`, `cp.offsets` (int64), which covers `split_id` chains;
      - `measured_at` (float64) or the bytes `b"-"`, and `block_time` likewise;
      - `repr(sorted(_fit_options_.items()))`.
    - A private `_rebuild_design(X, y, ids=None, measured_at=None, block_time=None)` re-runs `_fit_design` with the *stored* options and raises `ValueError("data do not match the fitted data")` on a fingerprint mismatch. S17's `oob=True` uses it.
@@ -33,8 +34,8 @@ Notation:
    - The rate is `λ̃_α = (1 − α)·ΔΛ̂/|W_m| + α·ΔΛ₀/|W_m|`.
    - The contribution is `N·log λ̃_α − λ̃_α·e`, summed into window, cause and id accumulators.
    - `0·log 0 := 0`: cells with `N = 0` never take the log.
-   - Zero rate: `λ̃ = 0` (before mixing) with `N = 1` counts toward `zero_rate_share`. With `α = 0` the contribution is `-inf`.
-   - Events with `stop > τ` or `stop ≤ 0` go to `n_truncated_events`. Exposure outside `(0, τ]` is ignored.
+   - **`zero_rate_share`** = (scored event cells whose *unmixed* rate `ΔΛ̂ = 0`) / `n_events`. Here `n_events` counts **scored** events: in `(0, τ]`, and of the selected cause when `cause=k`. It does not depend on `alpha`. With `α = 0`, such a cell contributes `-inf`.
+   - Events with `stop > τ` or `stop ≤ 0` go to `n_truncated_events` (of the selected cause when `cause=k`) and are excluded from `n_events`. Exposure outside `(0, τ]` is ignored: a row `(−2, 1]` contributes exposure on `(0, 1]` only. Negative times are legal in `y` (`check_survival_y` only requires `start < stop`).
    - `reduce="per_event"` divides every total by the number of scored events (all causes, or cause `k` when `cause=k`); `"sum"` returns raw sums. With zero scored events → `UndefinedMetricError`.
    - **Returns** `PEScore(total, by_window, by_cause, by_cause_window, by_id, id_labels, zero_rate_share, null_total, n_events, n_truncated_events)`.
      - `by_cause*` are None for survival.
@@ -85,6 +86,12 @@ Notation:
   - zero-exposure cells with zero rate give no NaN;
   - an empty window gives `by_window = 0`.
 - **Decompositions** (`reduce="sum"`): `by_window.sum() == total`; `by_cause.sum() == total`; `by_cause_window.sum(1) == by_cause`; `by_id.sum() == total`; per-event = sum / `n_events`.
+- **Negative times (literals):** `(−2, 1]` censored contributes exposure 1 in `(0, 1]` only; a censored row ending at or before 0 contributes nothing; an event at `stop ≤ 0` contributes 0, increments `n_truncated_events` and is excluded from `n_events`.
+- **`zero_rate_share` (hand counts):**
+  - mixed zero and non-zero event cells give the exact fraction;
+  - truncated events are excluded from numerator and denominator;
+  - with CR `cause=k` only cause-k events count;
+  - the value is identical for `alpha` ∈ {0, 0.01, 0.5}.
 - **Mixture:**
   - `alpha=0` with a zero-rate event → `-inf` and `zero_rate_share > 0`;
   - `alpha=0.01` is finite;
@@ -105,13 +112,19 @@ Notation:
 `tests/test_oob_cumhaz.py`:
 - `np.cumsum(H, 1)[:, -1]` of `oob_cumhaz` equals `oob_prediction_` bit-for-bit for `SurvivalForestTV` in id, block (`oob_buffer` 0 and 1), coarse (`ntime`), `bootstrap=True`, and `aggregate="survival"` modes. Rows are those of `_rebuild_design`.
 - The NaN pattern equals `oob_n_trees_ == 0` (a forced case with few trees).
-- CR: `oob_cause_cumhaz` on the full `event_times_` grid → discrete AJ in NumPy equals `oob_cif` (`aggregate="hazard"`) at the last time to 1e-12.
+- CR: evaluate `oob_cause_cumhaz` on the full `event_times_` grid and build the NumPy AJ reference on it:
+  - per-grid increments `ΔΛ_j(t_k)`;
+  - survival step `S_k = S_{k−1} · max(0, 1 − Σ_j ΔΛ_j(t_k))` (the Rust clamp);
+  - `F_j(t_k) = F_j(t_{k−1}) + S_{k−1} ΔΛ_j(t_k)`.
+
+  It must equal `oob_cif` (`aggregate="hazard"`) for CIF **at every grid time** on finite-OOB rows, to 1e-12. The fixture asserts that no clamp occurred (all `1 − ΣΔΛ ≥ 0`), which documents that the clamp path is not exercised there.
 - Full-bag control: a forest where no row is OOB for any tree gives all-NaN, like `oob_mortality`.
 
 `tests/test_fit_design.py`:
+- **Call order** (a spy subclass recording calls), for survival and CR, each with `ntime` and with block mode: `_check_y → _validate_params → check_counting_process → coarsen/_block_design → _resolve_min_ids_leaf → _resolve_n_draw → check_random_state → fit_forest`. The S16 identity bench stays the end-to-end gate.
 - `_fit_design` twice → equal arrays; the global `np.random` state is unchanged, and it runs under `random_state=None` without drawing (spy on `check_random_state`).
 - `_rebuild_design` reproduces the fit design (arrays equal) in id, block, coarse, and `layout="stacked"` + `ntime` + `block_time` modes.
-- The fingerprint changes when `X`, `y`, `ids`, `measured_at`, `block_time` or a design option (`set_params(ntime=…)` after fit) changes, and `_rebuild_design` then raises.
+- The fingerprint changes when `X`, `y`, `ids` (relabelled `[100, 200] → [7, 9]`; a changed membership), `measured_at`, `block_time` or a design option (`set_params(ntime=…)` after fit) changes, and `_rebuild_design` then raises. It is unchanged for the same ids given as a list vs an array, or int32 vs int64. A `split_id` case with two chains per id rebuilds identically.
 - `baseline_cumhaz_` equals a NumPy pooled Nelson–Aalen over the design rows (id, block, coarse, stacked). CR: per-cause, and the sum over causes equals the all-cause pooled NA.
 - **T9:** `score` equals `concordance_index_cp(y, predict(X))`, and `oob_score_` equals `concordance_index_cp` on the OOB rows (as today).
 
@@ -123,4 +136,9 @@ Notation:
 - T7 bench run, and the `windows` default decided by the `tvc-plan.md` rule; the result is recorded in the S16 note.
 
 ## Review log
-(pending: Codex plan review)
+Codex plan review (2026-09-26), all 5 findings accepted:
+1. **The fingerprint ignored id relabelling and `split_id` topology** → canonical original ids + `group`/`order`/`offsets`, with tests.
+2. **`zero_rate_share` denominator undefined** → scored events of the selected cause, independent of `alpha`, with hand counts.
+3. **Negative times untested** → literal tests for exposure crossing 0 and events at or before 0.
+4. **The CR AJ check compared the last time only** → the full-grid NumPy AJ reference with the clamp mirrored, and no clamp asserted.
+5. **Refactor call order unguarded** → a spy test of the call order for survival and CR, with ntime and block mode.
