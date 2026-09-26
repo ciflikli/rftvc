@@ -16,7 +16,7 @@ Notation:
 - **Importance that respects TVC rows.** `rftvc.inspection.permutation_importance`:
   - permutation within **time strata** (M2) is the default; the naive shuffle (M1) is available only for comparison;
   - feature **groups** are permuted jointly;
-  - results come per window and per cause, with subject-paired standard errors;
+  - results come per window and per cause, with id-cluster bootstrap standard errors;
   - it works on held-out data or out-of-bag.
 - **Landmark models:**
   - Permutation happens within each landmark's risk set, and **all history features of a raw column move together**. This equals trajectory permutation (M3) with donors from the same risk set, with no feature recomputation.
@@ -195,7 +195,7 @@ rftvc.inspection.path_effect(estimator, X, intervals, ids, *, feature, delta, fr
 ## 7. Validation strategy (feeds the plan)
 Every simulation predeclares, in the plan: the estimand, R = 50 replications (Monte Carlo SE of each mean ≤ 1/7 of the relevant margin, checked from a 10-replication pilot), and **margins relative to the oracle**. The oracle is the true unit's score drop, computed with the known hazard on a large (10⁵-subject) evaluation sample. Claims over windows or causes use Holm adjustment at 5 %. Pass rules are on Monte Carlo means, not on per-replication intervals, so wide SEs cannot make a test pass.
 1. **Trend confounding.** `z1` has an effect; `z2` has none, trends with `t` and correlates with `z1` (ρ = 0.6).
-   - M2: `|mean imp(z2)| ≤ 0.1 × oracle(z1)`, and `mean imp(z1)` is within ±25 % of the forest's own intact-vs-oracle-permuted reference.
+   - M2: `|mean imp(z2)| ≤ 0.1 × oracle(z1)`, and `mean imp(z1)` is ≥ 0.5 × oracle(z1) (the forest recovers at least half of the true signal).
    - LOCO: `|mean imp(z2)| ≤ 0.1 × oracle(z1)`.
    - M1 vs M2 is reported as the evidence on the extrapolation claim, without a pass rule.
 2. **Level vs history.** The hazard depends on `mean(z)` over the past 2 units. Pass: the mean history-given-level importance is ≥ 0.25 × the oracle history importance. In the Markov control its mean is ≤ 0.05 × the oracle level importance.
