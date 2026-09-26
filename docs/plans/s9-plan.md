@@ -40,7 +40,7 @@ Branch `feat/s9-leaf-slim`. Parent: `plan.md` S6 deferral ("leaf storage"), `doc
 - [x] Python tests: update the `leaf_profile` callers; v1-state rejection; corrupt states raise `ValueError`; `nbytes` equals the layout formula (pins "no `d`/`y`")
 - [x] Bit-identity check vs the baseline dumps (`bench/s9_identity.py`)
 - [x] Bench after → `docs/bench/s9-leaf.md`; update `docs/scratch/perf.md`, `design.md` (memory line), `plan.md` (S9 entry + "S9 done")
-- [ ] Test-quality audit of new tests; Codex diff review; fixes
+- [x] Test-quality audit of new tests (each new test fails on the pre-S9 build: no `nbytes`, no `format_version`, 4-tuple `leaf_profile`); Codex diff review; fixes
 
 ## Plan review (Codex, 2026-09-26)
 1. The loader did not validate `grid`: unsorted or NaN grid times break `cumhaz_at`'s binary search (high) → the grid must be finite and strictly increasing. Rust and Python tests.
@@ -48,5 +48,7 @@ Branch `feat/s9-leaf-slim`. Parent: `plan.md` S6 deferral ("leaf storage"), `doc
 3. `tests/test_oob.py::_manual_oob_mortality` also calls `leaf_profile` (medium) → updated.
 4. `bench/compare.py` could not measure forest size on `main` (no `nbytes` there) (medium) → `bench/s9_leaf.py`: a separate storage run (counts, pickle bytes) from the timed RSS runs, and a logical-bytes formula for the old layout (a lower bound). `nbytes` is exact because the arrays are shrunk to fit.
 
-## Diff review (Codex)
-_pending_
+## Diff review (Codex, 2026-09-26)
+1. `nbytes` counted lengths but was described as heap bytes; `shrink_to_fit` is best-effort (low) → it counts `Vec` capacities; the bench text says "allocated capacity". The layout test then caught spare capacity in the shared event-time grid (after `dedup`); `Grid` now shrinks it to fit. At 1M rows this is under 5 MB, so the bench numbers stand. Predictions re-checked: bit-identical.
+
+No panic or out-of-bounds route from a crafted state after validation, no rebasing error, no prediction change.

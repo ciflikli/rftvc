@@ -115,7 +115,7 @@ impl PyForest {
         Ok(self.tree(tree)?.n_leaves())
     }
 
-    /// Heap bytes of the fitted trees (nodes, leaves, one copy of the grid).
+    /// Allocated bytes of the fitted trees' node and leaf arrays, plus one copy of the grid.
     #[getter]
     fn nbytes(&self) -> usize {
         self.inner.nbytes()

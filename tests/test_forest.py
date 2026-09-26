@@ -135,7 +135,8 @@ def test_corrupt_state_raises_value_error(edit):
 
 def test_nbytes_counts_only_hazards_and_event_indices():
     # Per leaf entry: a u32 grid index and an f64 cumulative hazard (no d / y);
-    # per leaf a u32 offset; per node a 24-byte enum; one copy of the grid.
+    # per leaf a u32 offset; per node a 24-byte enum; one copy of the grid. The
+    # arrays are shrunk to fit, so allocated capacity equals this count.
     X, y = _data()
     model = SurvivalForestTV(n_estimators=5, random_state=0).fit(X, y)
     s = _state(model)

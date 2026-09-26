@@ -289,13 +289,13 @@ impl Forest {
         out
     }
 
-    /// Heap bytes of all trees (nodes and leaves), plus one copy of the grid.
+    /// Allocated bytes of all trees' node and leaf arrays, plus one copy of the grid.
     pub fn nbytes(&self) -> usize {
         self.trees.iter().map(Tree::nbytes).sum::<usize>()
             + self
                 .trees
                 .first()
-                .map_or(0, |t| std::mem::size_of_val(t.grid_times.as_slice()))
+                .map_or(0, |t| t.grid_times.capacity() * std::mem::size_of::<f64>())
     }
 
     /// Leaf index per (row, tree), row-major.

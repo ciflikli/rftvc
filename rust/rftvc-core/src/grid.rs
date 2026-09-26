@@ -17,6 +17,7 @@ impl Grid {
             .collect();
         times.sort_by(|a, b| a.partial_cmp(b).expect("NaN time"));
         times.dedup();
+        times.shrink_to_fit(); // fitted trees keep the grid
         Grid {
             times: Arc::new(times),
         }
@@ -58,6 +59,7 @@ impl Grid {
             (1..=k).map(|j| t[(j * n).div_ceil(k) - 1]).collect()
         };
         times.dedup();
+        times.shrink_to_fit(); // fitted trees keep the grid
         Grid {
             times: Arc::new(times),
         }

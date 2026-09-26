@@ -186,12 +186,13 @@ impl Tree {
         }
     }
 
-    /// Heap bytes of the nodes and leaf arrays (the shared grid is not counted).
+    /// Allocated bytes of the nodes and leaf arrays (capacity, not length;
+    /// the shared grid is not counted).
     pub fn nbytes(&self) -> usize {
-        use std::mem::size_of_val;
-        size_of_val(self.nodes.as_slice())
-            + size_of_val(self.leaf_offsets.as_slice())
-            + size_of_val(self.event_idx.as_slice())
-            + size_of_val(self.cumhaz.as_slice())
+        use std::mem::size_of;
+        self.nodes.capacity() * size_of::<Node>()
+            + self.leaf_offsets.capacity() * size_of::<u32>()
+            + self.event_idx.capacity() * size_of::<u32>()
+            + self.cumhaz.capacity() * size_of::<f64>()
     }
 }
