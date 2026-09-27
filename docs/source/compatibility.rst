@@ -6,6 +6,13 @@ scikit-learn compatibility
 - ``get_params`` / ``set_params`` / ``clone`` and pickling work.
 - ``n_features_in_`` is set on fit, and ``feature_names_in_`` too when ``X`` is
   a DataFrame (pandas, polars, pyarrow, via narwhals).
+
+  - This accepts a polars ``X`` directly; it does not require converting to
+    pandas first. If your own script or fixture-building code does need a
+    polars-to-pandas conversion (e.g. to hand data to another library that
+    only takes pandas), note that ``polars.DataFrame.to_pandas()`` itself
+    requires ``pyarrow``, which is not an rftvc dependency. A pyarrow-free
+    conversion: ``pd.DataFrame({c: d[c].to_numpy() for c in d.columns})``.
 - ``predict`` returns a risk score (higher is riskier), and ``score`` returns a
   concordance index, so ``Pipeline``, ``cross_validate`` and ``GridSearchCV``
   work.
