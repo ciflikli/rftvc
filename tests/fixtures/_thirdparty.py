@@ -11,6 +11,8 @@ redistributes them).
 
 import hashlib
 import os
+import tempfile
+import time
 import urllib.request
 import warnings
 from pathlib import Path
@@ -23,14 +25,45 @@ def _cache_dir():
     return Path(os.environ.get("RFTVC_DATA", Path.home() / ".cache" / "rftvc"))
 
 
-def fetch(url, sha256, cache_name):
-    """Path to the verified file, downloading it once into the shared cache."""
-    path = _cache_dir() / cache_name
+def _download(url, retries, timeout):
+    """Bytes from ``url``, retrying a network failure with backoff (not a checksum
+    mismatch, which is a data problem no retry fixes)."""
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                return r.read()
+        except OSError:
+            if attempt + 1 == retries:
+                raise
+            time.sleep(2**attempt)
+
+
+def fetch(url, sha256, cache_name, *, retries=3, timeout=60):
+    """Path to the verified file, downloading it once into the shared cache.
+
+    The cache filename embeds the expected checksum, so re-pinning ``sha256`` (a
+    source update) fetches fresh instead of silently reusing a file cached under
+    the old pin. A download is verified in memory, then written to a same-directory
+    temp file and atomically renamed into place (``os.replace``): an interrupted
+    download or a concurrent fetch of the same fixture never leaves a corrupt or
+    torn file at the final path, which would otherwise fail checksum verification
+    forever with no recovery short of a manual delete.
+    """
+    path = _cache_dir() / f"{cache_name}.{sha256}"
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(url, timeout=60) as r:
-            data = r.read()
-        path.write_bytes(data)
+        data = _download(url, retries, timeout)
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != sha256:
+            raise ValueError(f"checksum mismatch downloading {url}: got {digest}, expected {sha256}")
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.tmp-")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.replace(tmp_name, path)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     if digest != sha256:
         raise ValueError(f"checksum mismatch for {path}: {digest}; delete it to re-download")
