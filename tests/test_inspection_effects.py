@@ -394,6 +394,13 @@ def test_hazard_effect_values_validation():
         inspection.hazard_effect(FOREST, X, Y, feature=1, values=[[0.0, 1.0], [2.0, 3.0]])
 
 
+def test_hazard_effect_values_attribute_access_warns_but_still_works():
+    res = inspection.hazard_effect(FOREST, X, Y, feature=1, values=[0.0, 1.0], windows=4)
+    with pytest.warns(UserWarning, match='result\\["values"\\]'):
+        via_attribute = res.values
+    assert np.array_equal(via_attribute, res["values"])
+
+
 def test_hazard_effect_and_path_effect_reject_cause_for_survival_estimators():
     with pytest.raises(ValueError, match="competing-risks"):
         inspection.hazard_effect(FOREST, X, Y, feature=1, cause=1)

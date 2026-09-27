@@ -119,7 +119,20 @@ effects directly.
    effect["values"], effect.hazard, effect.support_mask
 
 ``effect["values"]`` (not ``effect.values`` -- see the function's docstring;
-this one field shadows ``dict.values``).
+this one field shadows ``dict.values``). ``effect.values`` still returns the
+grid rather than a bound method -- accessing it warns, so a script that used
+the wrong form fails loudly instead of silently getting a bound method back
+-- but ``effect["values"]`` is the form to use.
+
+A ``hazard_effect`` two-point contrast is comparable to a linear model's
+(e.g. ``lifelines.CoxTimeVaryingFitter``) coefficient sign only when
+``feature`` is binary or genuinely continuous. For a nominal covariate with
+more than two levels, encoded as an arbitrary integer per level, a linear
+model fits one coefficient across every level while ``hazard_effect`` makes
+no such linearity assumption -- a sign read off two contrast points need not
+agree, or disagree, with that coefficient in any meaningful way. Compare
+one contrast per level against a fixed reference instead of reading a single
+"direction" out of either method.
 
 ``path_effect``
 ------------------
