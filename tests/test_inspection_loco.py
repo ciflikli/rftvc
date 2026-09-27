@@ -11,6 +11,7 @@ from rftvc import (
     inspection,
     make_competing_risks_y,
 )
+from rftvc._inspection import _loco
 from rftvc.model_selection import RollingOriginSplit
 from tests.sim import rows, simulate
 
@@ -101,6 +102,125 @@ def test_id_splitter_every_id_scored_exactly_once():
     res = _dci(est, X, y, ids=ids, cv=4)
     assert res.n_ids == np.unique(ids).size
     assert np.isfinite(res.importances_se).all()
+
+
+def test_repeated_splitter_n_ids_counts_distinct_ids_once():
+    """A valid repeated group splitter (e.g. GroupShuffleSplit) can put the same id in more
+    than one fold's test set. ``n_ids``/the cluster SE must treat that id as one cluster,
+    not once per occurrence (regression: previously summed per-fold test-id counts)."""
+    from sklearn.model_selection import GroupShuffleSplit
+
+    X, y, ids = _data(200, 5)
+    est = SurvivalForestTV(n_estimators=10, random_state=0, n_jobs=1)
+    cv = GroupShuffleSplit(n_splits=4, test_size=0.4, random_state=0)
+    test_ids = set()
+    for _, test_idx in cv.split(X, groups=ids):
+        test_ids.update(np.unique(ids[test_idx]).tolist())
+    res = _dci(est, X, y, ids=ids, cv=cv, n_seeds=1)
+    assert res.n_ids == len(test_ids)
+    assert np.isfinite(res.importances_se).all()
+
+
+def test_se_invariant_to_duplicating_an_identical_fold(monkeypatch):
+    """Repeating a byte-identical fold must not change the reported SE: redundant,
+    duplicate data carries no new information about spread (regression: the id-cluster SE
+    was averaged per id while N still summed every fold occurrence, silently halving the
+    reported SE for an exact duplicate fold)."""
+    from sklearn.model_selection import GroupKFold
+
+    import rftvc._inspection._loco as loco_mod
+
+    X, y, ids = _data(200, 9)
+    est = SurvivalForestTV(n_estimators=10, random_state=0, n_jobs=1)
+    train_idx, test_idx = next(GroupKFold(4).split(X, groups=ids))
+    monkeypatch.setattr(loco_mod, "seed_for", lambda entropy, *keys: 0)  # every fold/seed fits identically
+    once = inspection.drop_column_importance(
+        est, X, y, ids=ids, cv=_FixedSplit([(train_idx, test_idx)]), n_seeds=1
+    )
+    twice = inspection.drop_column_importance(
+        est, X, y, ids=ids, cv=_FixedSplit([(train_idx, test_idx), (train_idx, test_idx)]), n_seeds=1
+    )
+    np.testing.assert_allclose(once.importances_se, twice.importances_se, rtol=1e-10)
+
+
+def test_id_cluster_se_centers_by_scored_event_share():
+    """An id scored on more events naturally has a larger raw total drop without being any
+    more variable per event: the cluster SE must center each id's pooled total by its own
+    share of the pooled per-event mean (mean * n_i), not treat the raw pooled total as the
+    observation (regression: summing raw per-id totals directly gave a spurious nonzero SE
+    even when every id's per-event rate was identical, merely because one id had more
+    scored events than the others).
+
+    3 ids: "a" appears in two fold-occurrences (1 scored event each, drops 1 and 3);
+    "b" and "c" appear once each (1 scored event, drop 2). Every id's rate is 2/event
+    (a: (1+3)/2 = 2; b, c: 2/1 = 2), so the true cluster spread is exactly zero.
+    """
+    id_values = [np.array(["a", "b"]), np.array(["a", "c"])]
+    id_n = [np.array([1.0, 1.0]), np.array([1.0, 1.0])]
+    id_drop = [[np.array([1.0, 2.0]), np.array([3.0, 2.0])]]  # one unit, per-fold raw drops
+    mean = np.array([2.0])  # total_drop = 8, N = 4 -> mean = 2
+    n_ids, se = _loco._id_cluster_se(id_values, id_n, id_drop, mean, N=4.0, n_units=1, time_split=False)
+    assert n_ids == 3
+    assert se[0] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_cause_breakdown_survives_disagreeing_window_edges():
+    """Cause labels are a fixed, fold-independent vocabulary, so a fold disagreement in
+    window edges should drop the window decomposition but not the (unrelated) cause
+    decomposition (regression: cause_drop's accumulation and reporting were both gated on
+    window_ok, silently discarding a valid, independently-computed cause breakdown)."""
+    import rftvc._inspection._loco as loco_mod
+
+    X, y, ids = _cr_data(150, 15)
+    est = CompetingRisksForestTV(n_estimators=10, random_state=0, n_jobs=1)
+    orig = loco_mod.event_windows
+    calls = {"n": 0}
+
+    def fake(fitted, windows):
+        edges = orig(fitted, windows)
+        if calls["n"] % 2 == 1:
+            edges = edges.copy()
+            edges[1:] *= 2.0
+        calls["n"] += 1
+        return edges
+
+    loco_mod.event_windows = fake
+    try:
+        res = _dci(est, X, y, ids=ids, cv=3, n_seeds=1)
+    finally:
+        loco_mod.event_windows = orig
+    assert res.importances_window is None
+    assert res.importances_cause is not None
+    np.testing.assert_allclose(res.importances_cause.sum(axis=1), res.importances_mean, atol=1e-8)
+
+
+def test_window_pooling_requires_matching_edges_not_just_shape():
+    """Folds with the same number of windows but different edges (expected under the
+    default int ``windows``, since each fold's own event_windows are quantiles of that
+    fold's own training data) must not be pooled by position (regression: previously only
+    the shape was checked, and the first fold's edges were reported for the pooled sum)."""
+    import rftvc._inspection._loco as loco_mod
+
+    X, y, ids = _data(150, 8)
+    est = SurvivalForestTV(n_estimators=10, random_state=0, n_jobs=1)
+    orig = loco_mod.event_windows
+    calls = {"n": 0}
+
+    def fake(fitted, windows):
+        edges = orig(fitted, windows)
+        if calls["n"] % 2 == 1:
+            edges = edges.copy()
+            edges[1:] *= 2.0  # same shape and starts at 0, but different interior edges
+        calls["n"] += 1
+        return edges
+
+    loco_mod.event_windows = fake
+    try:
+        res = _dci(est, X, y, ids=ids, cv=3, n_seeds=1)
+    finally:
+        loco_mod.event_windows = orig
+    assert res.importances_window is None
+    assert res.window_edges is None
 
 
 @pytest.mark.filterwarnings("ignore:invalid value encountered in subtract:RuntimeWarning")
@@ -259,6 +379,45 @@ def test_dataframe_ids_column():
 
 
 # --- competing risks -----------------------------------------------------------------------
+
+
+class _FixedSplit:
+    """A splitter yielding pre-set ``(train_idx, test_idx)`` pairs, to force a fold whose
+    training data lacks a cause entirely (a CV/`GroupKFold` split could do this by chance
+    with a rare cause; here it's forced for a deterministic regression test)."""
+
+    def __init__(self, folds):
+        self._folds = folds
+
+    def split(self, X, y=None, groups=None):
+        yield from self._folds
+
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return len(self._folds)
+
+
+def test_competing_risks_loco_survives_a_cause_absent_from_a_training_fold():
+    """A cause vocabulary fixed from the fold's own training data (rather than the full
+    data, as ``landmark_cross_validate`` already does) makes scoring raise once a fold's
+    test set contains a cause its training fold never saw (regression: this used to crash
+    with "y has cause labels [...] not in causes")."""
+    n_ids = 6
+    ids = np.repeat(np.arange(n_ids), 4)
+    start = np.tile([0.0, 1.0, 2.0, 3.0], n_ids)
+    stop = start + 1.0
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(n_ids * 4, 2))
+    labels = np.zeros(n_ids * 4, dtype=int)
+    labels[3::4] = [1, 1, 1, 1, 1, 2]  # only id 5 ever has a cause-2 event
+    y = make_competing_risks_y(stop, labels, start=start)
+
+    train_idx = np.flatnonzero(np.isin(ids, np.arange(5)))  # ids 0-4: cause 1 only
+    test_idx = np.flatnonzero(ids == 5)  # id 5: the only cause-2 event
+    cv = _FixedSplit([(train_idx, test_idx)])
+
+    est = CompetingRisksForestTV(n_estimators=10, random_state=0, n_jobs=1)
+    res = inspection.drop_column_importance(est, X, y, ids=ids, cv=cv, n_seeds=1)
+    assert res.n_events > 0
 
 
 def test_competing_risks_cause_selection():

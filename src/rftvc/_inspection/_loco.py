@@ -8,6 +8,7 @@ import polars as pl
 from joblib import Parallel, delayed
 from sklearn.base import clone
 
+from .._validation import competing_risks_labels
 from ..landmark import _feature_specs
 from ..metrics import _baseline_at, _check_windows, event_windows, piecewise_exponential_score
 from ..model_selection import RollingOriginSplit, _cv_folds, _censor_at, _disjoint_check, _split_checks
@@ -37,6 +38,51 @@ def _predict(fitted, competing, Xr, w, n_jobs):
     if competing:
         return forest.predict_cause_cumhaz(Xr, w, n_jobs)
     return forest.predict_cumhaz(Xr, w, fitted.aggregate, n_jobs)
+
+
+def _fix_causes(estimator, ye):
+    """Fix a competing-risks estimator's cause vocabulary from the full data before
+    cross-fitting, as ``landmark_cross_validate`` already does: otherwise a fold whose
+    training or test split happens to omit a rare cause fits (or scores) against a
+    different vocabulary than the other folds, and scoring raises."""
+    if estimator.causes is not None:
+        return estimator
+    _, _, labels = competing_risks_labels(ye)
+    causes = np.unique(labels[labels != 0])
+    return clone(estimator).set_params(causes=causes.tolist())
+
+
+def _fix_landmark_causes(stack_template, data):
+    """As ``_fix_causes``, for a landmark stack's ``forest`` sub-estimator."""
+    if stack_template.forest.causes is not None:
+        return stack_template
+    _, _, labels = competing_risks_labels(data.y)
+    causes = np.unique(labels[labels != 0])
+    return clone(stack_template).set_params(forest__causes=causes.tolist())
+
+
+def _id_cluster_se(id_values, id_n, id_drop, mean, N, n_units, time_split):
+    """Cluster-robust SE of each unit's ``importances_mean = total_drop / N`` (a per-event
+    ratio): sums a repeated id's per-fold raw drop and scored-event count into one cluster
+    total (so SE is invariant to a splitter literally duplicating a fold), then centers
+    each id's total by its own scored-event share of the pooled mean (``mean * n_i``)
+    before taking the cluster std. An id scored on more events naturally has a larger raw
+    total without being any more variable per event, so a plain std of the raw pooled
+    totals would mistake that scale difference for spread (NaN under a time splitter,
+    whose folds are not id-independent clusters)."""
+    all_ids = np.concatenate(id_values)
+    unique_ids, fold_pos = np.unique(all_ids, return_inverse=True)
+    n_ids = unique_ids.shape[0]
+    n_i = np.zeros(n_ids)
+    np.add.at(n_i, fold_pos, np.concatenate(id_n))
+    se = np.full(n_units, np.nan)
+    if not time_split:
+        for j in range(n_units):
+            pooled = np.zeros(n_ids)
+            np.add.at(pooled, fold_pos, np.concatenate(id_drop[j]))
+            resid = pooled - mean[j] * n_i
+            se[j] = float(np.std(resid, ddof=1)) * np.sqrt(n_ids) / N
+    return n_ids, se
 
 
 def _windows_for(fitted, windows):
@@ -70,6 +116,8 @@ def run(estimator, Xnum, ye, ids_values, units, cv, windows, alpha, cause, compe
     dropped unit in a single batch (parallel over fits, ``n_jobs``), scores them on the
     fold's test rows with the full model's own windows and training null, and pools the
     per-event drops across folds (``importances_mean``) and ids (``importances_se``)."""
+    if competing:
+        estimator = _fix_causes(estimator, ye)
     time_split = isinstance(cv, RollingOriginSplit)
     if time_split and isinstance(windows, numbers.Integral) and not isinstance(windows, (bool, np.bool_)):
         raise ValueError(
@@ -86,7 +134,7 @@ def run(estimator, Xnum, ye, ids_values, units, cv, windows, alpha, cause, compe
     total_drop = np.zeros(n_units)  # raw (sum-reduce) drop, seed- and fold-pooled
     window_drop, cause_drop, window_edges = None, None, None
     window_ok = True
-    id_values, id_drop = [], [[] for _ in range(n_units)]  # per-unit list of (ids, raw drop) per fold
+    id_values, id_drop, id_n = [], [[] for _ in range(n_units)], []
     baseline_sum = null_sum = 0.0
     N = 0
 
@@ -119,6 +167,7 @@ def run(estimator, Xnum, ye, ids_values, units, cv, windows, alpha, cause, compe
             )
             if fold_N is None:
                 fold_N, fold_ids, fold_w = S_full.n_events, S_full.id_labels, w
+                fold_n_events = S_full.n_events_by_id
                 # null_total depends only on the training null and the (deterministic) fold
                 # design, not on forest randomness, so it is the same for every seed here.
                 fold_null_total = S_full.null_total
@@ -153,6 +202,7 @@ def run(estimator, Xnum, ye, ids_values, units, cv, windows, alpha, cause, compe
         null_sum += fold_null_total
         N += fold_N
         id_values.append(fold_ids)
+        id_n.append(fold_n_events)
         for j in range(n_units):
             id_drop[j].append(seed_by_id[j] / n_seeds)
 
@@ -160,26 +210,22 @@ def run(estimator, Xnum, ye, ids_values, units, cv, windows, alpha, cause, compe
             window_edges, window_drop = fold_w, np.zeros((n_units,) + seed_window.shape[1:])
             if seed_cause is not None:
                 cause_drop = np.zeros((n_units,) + seed_cause.shape[1:])
-        if seed_window.shape[1:] != window_drop.shape[1:]:
-            window_ok = False  # folds disagree on M (heavy ties); drop the decomposition
+        if seed_window.shape[1:] != window_drop.shape[1:] or not np.array_equal(fold_w, window_edges):
+            window_ok = False  # folds disagree on M or on the edges themselves; drop the decomposition
         elif window_ok:
             window_drop += seed_window
-            if cause_drop is not None:
-                cause_drop += seed_cause
+        if cause_drop is not None:  # independent of window_ok: causes are fixed vocabulary-wide
+            cause_drop += seed_cause
 
-    n_ids = sum(v.shape[0] for v in id_values)
-    se = np.full(n_units, np.nan)
-    if not time_split:
-        for j in range(n_units):
-            pooled = np.concatenate(id_drop[j])
-            se[j] = float(np.std(pooled, ddof=1)) * np.sqrt(n_ids) / N
+    mean = total_drop / N
+    n_ids, se = _id_cluster_se(id_values, id_n, id_drop, mean, N, n_units, time_split)
 
     return LocoResult(
         importances=per_fold_imp,
         fold_scores=fold_scores,
-        importances_mean=total_drop / N,
+        importances_mean=mean,
         importances_window=(window_drop / N) if window_ok else None,
-        importances_cause=(cause_drop / N) if (window_ok and cause_drop is not None) else None,
+        importances_cause=(cause_drop / N) if cause_drop is not None else None,
         importances_se=se,
         window_edges=window_edges if window_ok else None,
         baseline_score=baseline_sum / N,
@@ -237,6 +283,8 @@ def run_landmark(stack_template, df, data, units, cv, windows, alpha, cause, com
     """PE-scored LOCO refit loop for a landmark model (decision 8): a dropped unit's clone
     is fit with every ``history_features`` entry of its column set removed; train/test rows
     come from the top-level stacked ``data`` (sliced per fold), not a fresh stacking pass."""
+    if competing:
+        stack_template = _fix_landmark_causes(stack_template, data)
     time_split, folds = _landmark_folds(stack_template, df, data, cv)
     if time_split and isinstance(windows, numbers.Integral) and not isinstance(windows, (bool, np.bool_)):
         raise ValueError(
@@ -254,7 +302,7 @@ def run_landmark(stack_template, df, data, units, cv, windows, alpha, cause, com
     total_drop = np.zeros(n_units)
     window_drop = cause_drop = window_edges = None
     window_ok = True
-    id_values, id_drop = [], [[] for _ in range(n_units)]
+    id_values, id_drop, id_n = [], [[] for _ in range(n_units)], []
     baseline_sum = null_sum = 0.0
     N = 0
 
@@ -286,6 +334,7 @@ def run_landmark(stack_template, df, data, units, cv, windows, alpha, cause, com
             )
             if fold_N is None:
                 fold_N, fold_ids, fold_w = S_full.n_events, S_full.id_labels, w
+                fold_n_events = S_full.n_events_by_id
                 fold_null_total = S_full.null_total
                 seed_window = np.zeros((n_units,) + S_full.by_window.shape)
                 if S_full.by_cause is not None:
@@ -318,6 +367,7 @@ def run_landmark(stack_template, df, data, units, cv, windows, alpha, cause, com
         null_sum += fold_null_total
         N += fold_N
         id_values.append(fold_ids)
+        id_n.append(fold_n_events)
         for j in range(n_units):
             id_drop[j].append(seed_by_id[j] / n_seeds)
 
@@ -325,26 +375,22 @@ def run_landmark(stack_template, df, data, units, cv, windows, alpha, cause, com
             window_edges, window_drop = fold_w, np.zeros((n_units,) + seed_window.shape[1:])
             if seed_cause is not None:
                 cause_drop = np.zeros((n_units,) + seed_cause.shape[1:])
-        if seed_window.shape[1:] != window_drop.shape[1:]:
-            window_ok = False
+        if seed_window.shape[1:] != window_drop.shape[1:] or not np.array_equal(fold_w, window_edges):
+            window_ok = False  # folds disagree on M or on the edges themselves; drop the decomposition
         elif window_ok:
             window_drop += seed_window
-            if cause_drop is not None:
-                cause_drop += seed_cause
+        if cause_drop is not None:  # independent of window_ok: causes are fixed vocabulary-wide
+            cause_drop += seed_cause
 
-    n_ids = sum(v.shape[0] for v in id_values)
-    se = np.full(n_units, np.nan)
-    if not time_split:
-        for j in range(n_units):
-            pooled = np.concatenate(id_drop[j])
-            se[j] = float(np.std(pooled, ddof=1)) * np.sqrt(n_ids) / N
+    mean = total_drop / N
+    n_ids, se = _id_cluster_se(id_values, id_n, id_drop, mean, N, n_units, time_split)
 
     return LocoResult(
         importances=per_fold_imp,
         fold_scores=fold_scores,
-        importances_mean=total_drop / N,
+        importances_mean=mean,
         importances_window=(window_drop / N) if window_ok else None,
-        importances_cause=(cause_drop / N) if (window_ok and cause_drop is not None) else None,
+        importances_cause=(cause_drop / N) if cause_drop is not None else None,
         importances_se=se,
         window_edges=window_edges if window_ok else None,
         baseline_score=baseline_sum / N,
@@ -372,6 +418,8 @@ def run_landmark_loss(stack_template, df, data, units, cv, scoring, cause, n_see
     ``permutation_importance``'s bootstrap SE is the loss-scored standard error."""
     if competing and cause is None:
         raise ValueError("cause is required for Brier/IBS importance of a competing-risks landmark model")
+    if competing:
+        stack_template = _fix_landmark_causes(stack_template, data)
     _, folds = _landmark_folds(stack_template, df, data, cv)
     names = data.feature_names
     n_units = len(units)

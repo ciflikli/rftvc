@@ -568,7 +568,8 @@ class PEScore(NamedTuple):
 
     With ``reduce="per_event"`` every score field is divided by ``n_events``.
     ``by_cause`` / ``by_cause_window`` are ``None`` for survival data and when
-    one ``cause`` is selected; ``by_id`` / ``id_labels`` are ``None`` without ``ids``.
+    one ``cause`` is selected; ``by_id`` / ``id_labels`` / ``n_events_by_id`` are
+    ``None`` without ``ids``.
     """
 
     total: float
@@ -577,6 +578,7 @@ class PEScore(NamedTuple):
     by_cause_window: object
     by_id: object
     id_labels: object
+    n_events_by_id: object
     zero_rate_share: float
     null_total: float
     n_events: int
@@ -755,6 +757,8 @@ def piecewise_exponential_score(
     scored = event & (stop > 0) & (stop <= tau)
     n_events = int(scored.sum())
     n_truncated = int((event & ~scored).sum())
+    if ids is not None:
+        n_events_by_id = np.bincount(inv, weights=scored.astype(float), minlength=id_labels.size)
     if n_events == 0:
         raise UndefinedMetricError("no events in (0, windows[-1]] to score")
     J = H.shape[1]
@@ -798,6 +802,7 @@ def piecewise_exponential_score(
         by_cause_window=cw / div if competing else None,
         by_id=None if ids is None else by_id / div,
         id_labels=None if ids is None else id_labels,
+        n_events_by_id=None if ids is None else n_events_by_id,
         zero_rate_share=float(share),
         null_total=float(null_sum / div),
         n_events=n_events,
