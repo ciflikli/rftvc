@@ -126,11 +126,13 @@ output can easily mistake either for one.
   either way rather than as a negative or blown-up ratio.
 - ``UserWarning: ...% of events fall in windows where the predicted rate is
   0; the windows are too fine for this model`` (:func:`~rftvc.inspection.permutation_importance`,
-  :func:`~rftvc.inspection.drop_column_importance`): the warning means too few
-  events fall in some window for the model being scored (a cause, a subset, or
-  a cross-fitted fold's own training data can all be causes). A smaller
-  ``windows`` than the default 8 is the first thing to try for a rarer cause
-  or an imbalanced competing-risks split, but it is not guaranteed to be the
+  :func:`~rftvc.inspection.drop_column_importance`): fires when more than 1%
+  of scored events land in a window (for their cause) where the fitted
+  model's own predicted hazard increment is exactly zero there -- not "too
+  few events in a window" in general, but the model having no signal at all
+  for the specific window an event actually fell in. A smaller ``windows``
+  than the default 8 is the first thing to try for a rarer cause or an
+  imbalanced competing-risks split, but it is not guaranteed to be the
   culprit -- a genuinely small fold or subset can trigger this regardless of
   ``windows``, so treat it as a starting guess to check, not a fix to assume.
 
