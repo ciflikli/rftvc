@@ -43,8 +43,8 @@ Picked from a wider domain search (political science leader tenure, business/rel
 7. **Findings report.** `docs/plans/rc-validation-findings.md` (new file): the two fits' numbers (relevance rankings, `hazard_effect` contrast directions, forest-vs-Cox agreement), the Decision 4 checks' verdicts, and a bulleted "API friction / possible release-pass follow-ups" list. This is the plan's actual deliverable.
 
 ## Tasks
-- [ ] T1 One-time R exports: `tests/fixtures/rossi.csv` (from `carData::Rossi`), `tests/fixtures/ebmt4.csv` (from `mstate::ebmt4`). Committed.
-- [ ] T2 `tests/fixtures/rossi.py` (Decision 2) + tests.
+- [x] T1 One-time R exports: `tests/fixtures/rossi.csv` (from `carData::Rossi`), `tests/fixtures/ebmt4.csv` (from `mstate::ebmt4`). Committed. `mstate` was already installed in this session's scratch R lib from earlier work (no reinstall needed).
+- [x] T2 `tests/fixtures/rossi.py` (Decision 2) + tests. 432 subjects, 1405 counting-process rows; id=1 gives exactly `(0, 20, event=True, employed=0)` as the plan's worked example predicted.
 - [ ] T3 `tests/fixtures/ebmt4.py` (Decision 3) + tests, including the `rel==srv`/`ae<rel` invariant assertions.
 - [ ] T4 `examples/rc_validation.py` (Decision 4): both fits, both Cox benchmarks, `oob=True` permutation/drop-column importance, `hazard_effect` contrasts, printed/CSV'd results.
 - [ ] T5 Run it; write `docs/plans/rc-validation-findings.md` (Decision 7). If a Decision 4 internal-consistency check fails, stop and report rather than writing it up as a pass.
