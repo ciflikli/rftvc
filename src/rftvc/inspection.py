@@ -447,9 +447,34 @@ def _pe_landmark(model, df, features, groups, strata, n_strata, conditional_on, 
             Xe, ye, start, row_ids, predict, H, causes, cause, w, null, alpha, units, unit_names,
             n_repeats, n_bootstrap, random_state, 0, st,
         )
-    return _score.landmark_loss_importance(
-        model, Xe, ye, row_ids, s, units, unit_names, scoring, cause, n_repeats, n_bootstrap,
-        random_state, n_times, censoring_estimator, g_min, competing, st,
+    n_times = _strata.check_count(n_times, "n_times")
+    if scoring == "ibs" and n_times < 2:
+        raise ValueError(f"n_times must be an integer >= 2 with scoring='ibs', got {n_times!r}")
+    entropy = _entropy(random_state)
+    res = _score.landmark_loss_importance(
+        model, Xe, ye, row_ids, s, units, scoring, cause, n_repeats, n_bootstrap,
+        entropy, n_times, censoring_estimator, g_min, competing, st,
+    )
+    return Bunch(
+        importances=res.importances,
+        importances_mean=res.importances_mean,
+        importances_std=res.importances_std,
+        importances_se=res.importances_se,
+        importances_window=None,
+        window_edges=None,
+        importances_cause=None,
+        importances_id=None,
+        id_labels=None,
+        share_of_gain=None,
+        baseline_score=res.baseline_score,
+        null_score=None,
+        zero_rate_share=None,
+        n_events=None,
+        n_truncated_events=None,
+        n_rows_excluded=None,
+        n_unpermuted=None,
+        feature_names=np.array(unit_names, dtype=object),
+        units=units,
     )
 
 

@@ -187,3 +187,76 @@ def test_censoring_kwargs_only_valid_for_brier_ibs():
         _pi(g_min=0.2)
     with pytest.raises(ValueError, match="only used with scoring"):
         _pi(n_times=5)
+
+
+def test_censoring_kwargs_reject_counting_process_estimators():
+    rng = np.random.default_rng(0)
+    x0, z, U, ev = simulate(100, rng)
+    Xn, yn, idn = rows(x0, z, U, ev)
+    forest = SurvivalForestTV(n_estimators=5, random_state=0).fit(Xn, yn, idn)
+    with pytest.raises(ValueError, match="only used with scoring"):
+        inspection.permutation_importance(forest, Xn, yn, ids=idn, g_min=0.2)
+
+
+# --- Brier / IBS scoring path (T4) ---------------------------------------------------------
+
+
+def test_brier_baseline_equals_landmark_cross_validate_pooled_by_n():
+    """tvc-design's explicit requirement: the same per-landmark censoring fit, pooled the
+    same way, for a fold refit exactly as ``landmark_cross_validate`` does its own."""
+    from sklearn.base import clone
+    from sklearn.model_selection import GroupKFold
+
+    from rftvc.model_selection import landmark_cross_validate
+
+    template = LandmarkSurvivalForest(
+        horizon=2.0, step=1.0, history_features=["x0", ("z", "mean")], forest=SurvivalForestTV(n_estimators=30, random_state=0)
+    )
+    cv = GroupKFold(2)
+    ref = landmark_cross_validate(template, DF, cv, ("brier",))
+    n_ref, b_ref = ref["n"].to_numpy(), ref["brier"].to_numpy()
+    pooled_ref = float((n_ref * b_ref).sum() / n_ref.sum())
+
+    data = template._landmark_data(DF)
+    total_n = total_nb = 0.0
+    for train_idx, test_idx in cv.split(data.s, groups=data.groups):
+        train_ids, test_ids = np.unique(data.ids[train_idx]), np.unique(data.ids[test_idx])
+        df_train = DF.filter(pl.col("id").is_in(train_ids))
+        df_test = DF.filter(pl.col("id").is_in(test_ids))
+        m_fold = clone(template).set_params(landmarks=np.unique(data.s[train_idx]), step=None).fit(df_train)
+        r = inspection.permutation_importance(m_fold, df_test, scoring="brier", n_bootstrap=0)
+        # r.baseline_score is already the n-weighted pool of this fold's own landmarks;
+        # its total n is the sum of landmark_cross_validate's own risk-set sizes for this fold's landmarks.
+        fold_n = ref.filter(pl.col("landmark").is_in(np.unique(m_fold._landmark_data(df_test).s).tolist()))["n"].sum()
+        total_n += fold_n
+        total_nb += fold_n * r.baseline_score
+    pooled_mine = total_nb / total_n
+    np.testing.assert_allclose(pooled_mine, pooled_ref, rtol=1e-9)
+
+
+def test_sign_convention_positive_when_permuting_hurts():
+    r = _pi(scoring="brier", features=["z_mean"], n_repeats=3)
+    assert (r.importances > 0).all()
+    r_ibs = _pi(scoring="ibs", features=["z_mean"], n_times=6, n_repeats=2)
+    assert (r_ibs.importances > 0).all()
+
+
+def test_cr_requires_a_cause_for_brier_ibs():
+    with pytest.raises(ValueError, match="cause is required"):
+        _pi(LM_CR, CR_DF, scoring="brier")
+    r = _pi(LM_CR, CR_DF, scoring="brier", cause=1)
+    assert r.share_of_gain is None
+    assert np.isfinite(r.baseline_score)
+
+
+def test_brier_bootstrap_se_finite():
+    r = _pi(scoring="brier", features=["x0"], n_bootstrap=5, n_repeats=2)
+    assert np.isfinite(r.importances_se).all()
+    assert np.isnan(_pi(scoring="brier", features=["x0"], n_bootstrap=0).importances_se).all()
+
+
+def test_brier_result_omits_pe_only_fields():
+    r = _pi(scoring="brier")
+    for field in ("importances_window", "importances_cause", "importances_id", "id_labels", "zero_rate_share",
+                  "n_truncated_events", "n_unpermuted", "window_edges", "null_score", "n_events"):
+        assert r[field] is None
