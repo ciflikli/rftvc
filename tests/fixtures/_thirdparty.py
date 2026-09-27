@@ -26,7 +26,7 @@ def _cache_dir():
     return Path(os.environ.get("RFTVC_DATA", Path.home() / ".cache" / "rftvc"))
 
 
-_RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}  # rate limit / transient server error
+_RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}  # timeout / rate limit / transient server error
 
 
 def _retryable(exc):
