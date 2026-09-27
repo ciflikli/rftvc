@@ -552,3 +552,43 @@ def test_loco_brier_ibs_pooled_and_se_nan():
     assert np.isfinite(r.baseline_score)
     assert np.isnan(r.importances_se).all()
     assert r.share_of_gain is None and r.importances_window is None
+
+
+class _GroupFixedSplit:
+    """A splitter yielding one pre-set train/test split by group (id) membership: forces a
+    fold whose training data lacks a cause entirely, for a deterministic regression test."""
+
+    def __init__(self, train_ids, test_ids):
+        self._train_ids = np.asarray(train_ids)
+        self._test_ids = np.asarray(test_ids)
+
+    def split(self, X, y=None, groups=None):
+        groups = np.asarray(groups)
+        yield np.flatnonzero(np.isin(groups, self._train_ids)), np.flatnonzero(np.isin(groups, self._test_ids))
+
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return 1
+
+
+def test_loco_brier_survives_a_cause_absent_from_a_training_fold():
+    """As the counting-process LOCO fix: a landmark competing-risks Brier/IBS refit
+    (``run_landmark_loss``) must fix the cause vocabulary from the full data before
+    cross-fitting, not leave each fold to infer its own (regression: this used to raise
+    "cause=... is not a fitted cause label" when a fold's training ids never saw a cause)."""
+    n_ids = 6
+    id_ = np.repeat(np.arange(n_ids), 4)
+    start = np.tile([0.0, 1.0, 2.0, 3.0], n_ids)
+    stop = start + 1.0
+    event = np.zeros(n_ids * 4, dtype=int)
+    event[3::4] = [1, 1, 1, 1, 1, 2]  # only id 5 ever has a cause-2 event
+    rng = np.random.default_rng(0)
+    x0 = rng.normal(size=n_ids * 4)
+    x1 = rng.normal(size=n_ids * 4)
+    df = pl.DataFrame({"id": id_, "start": start, "stop": stop, "event": event, "x0": x0, "x1": x1})
+    model = LandmarkCompetingRisksForest(
+        horizon=1.0, step=1.0, history_features=["x0", "x1"],
+        forest=CompetingRisksForestTV(n_estimators=5, random_state=0),
+    )
+    cv = _GroupFixedSplit(train_ids=np.arange(5), test_ids=[5])
+    r = inspection.drop_column_importance(model, df, cv=cv, scoring="brier", cause=2, n_seeds=1)
+    assert np.isfinite(r.baseline_score)

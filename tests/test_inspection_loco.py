@@ -120,6 +120,57 @@ def test_repeated_splitter_n_ids_counts_distinct_ids_once():
     assert np.isfinite(res.importances_se).all()
 
 
+def test_se_invariant_to_duplicating_an_identical_fold(monkeypatch):
+    """Repeating a byte-identical fold must not change the reported SE: redundant,
+    duplicate data carries no new information about spread (regression: the id-cluster SE
+    was averaged per id while N still summed every fold occurrence, silently halving the
+    reported SE for an exact duplicate fold)."""
+    from sklearn.model_selection import GroupKFold
+
+    import rftvc._inspection._loco as loco_mod
+
+    X, y, ids = _data(200, 9)
+    est = SurvivalForestTV(n_estimators=10, random_state=0, n_jobs=1)
+    train_idx, test_idx = next(GroupKFold(4).split(X, groups=ids))
+    monkeypatch.setattr(loco_mod, "seed_for", lambda entropy, *keys: 0)  # every fold/seed fits identically
+    once = inspection.drop_column_importance(
+        est, X, y, ids=ids, cv=_FixedSplit([(train_idx, test_idx)]), n_seeds=1
+    )
+    twice = inspection.drop_column_importance(
+        est, X, y, ids=ids, cv=_FixedSplit([(train_idx, test_idx), (train_idx, test_idx)]), n_seeds=1
+    )
+    np.testing.assert_allclose(once.importances_se, twice.importances_se, rtol=1e-10)
+
+
+def test_cause_breakdown_survives_disagreeing_window_edges():
+    """Cause labels are a fixed, fold-independent vocabulary, so a fold disagreement in
+    window edges should drop the window decomposition but not the (unrelated) cause
+    decomposition (regression: cause_drop's accumulation and reporting were both gated on
+    window_ok, silently discarding a valid, independently-computed cause breakdown)."""
+    import rftvc._inspection._loco as loco_mod
+
+    X, y, ids = _cr_data(150, 15)
+    est = CompetingRisksForestTV(n_estimators=10, random_state=0, n_jobs=1)
+    orig = loco_mod.event_windows
+    calls = {"n": 0}
+
+    def fake(fitted, windows):
+        edges = orig(fitted, windows)
+        if calls["n"] % 2 == 1:
+            edges = edges.copy()
+            edges[1:] *= 2.0
+        calls["n"] += 1
+        return edges
+
+    loco_mod.event_windows = fake
+    try:
+        res = _dci(est, X, y, ids=ids, cv=3, n_seeds=1)
+    finally:
+        loco_mod.event_windows = orig
+    assert res.importances_window is None
+    assert res.importances_cause is not None
+
+
 def test_window_pooling_requires_matching_edges_not_just_shape():
     """Folds with the same number of windows but different edges (expected under the
     default int ``windows``, since each fold's own event_windows are quantiles of that
