@@ -55,9 +55,9 @@ Branch `feat/s20-effects-docs`. Parent: `tvc-plan.md` S20; `tvc-design.md` §1 (
 
 ## Tasks
 - [x] T1 `metrics.py`: extract `_window_exposure_1` (decision 4, corrected — a single-window helper, not a dense `(n, M)` array); `piecewise_exponential_score` calls it once per `m` inside its existing loop, existing tests green unchanged (a pure refactor — no new test needed beyond the existing suite passing, since behaviour and memory shape are both provably identical: same clip-and-subtract arithmetic, same one-window-at-a-time loop, only the expression itself is named and shared).
-- [ ] T2 `_inspection/_effects.py`: `_hazard_grid` (decision 2's computation), `_split_at` (decision 3's row splitting). `inspection.py`: `hazard_effect` (dispatch: counting-process via `_heldout`, landmark via `model._landmark_data`/`model.forest_` as `_pe_landmark`'s PE branch does).
-- [ ] T3 `inspection.py`/`_inspection/_effects.py`: `path_effect` (decision 3 in full: validation, splitting, the shifted-path predict calls, CR shape, the `TypeError` for landmark estimators).
-- [ ] T4 Tests `tests/test_inspection_effects.py` (below).
+- [x] T2 `_inspection/_effects.py`: `_hazard_grid` (decision 2's computation), `_split_at` (decision 3's row splitting). `inspection.py`: `hazard_effect` (dispatch: counting-process via `_heldout`, landmark via `model._landmark_data`/`model.forest_` as `_pe_landmark`'s PE branch does).
+- [x] T3 `inspection.py`/`_inspection/_effects.py`: `path_effect` (decision 3 in full: validation, splitting, the shifted-path predict calls, CR shape, the `TypeError` for landmark estimators).
+- [x] T4 Tests `tests/test_inspection_effects.py` (below).
 - [ ] T5 Test-quality audit of T4 (as S17/S18/S19's own audit task).
 - [ ] T6 Foundation page `docs/source/user_guide/foundation.rst` (decision 7); estimator docstring `.. seealso::` links; `tests/test_docs_claims.py` (decision 10).
 - [ ] T7 Importance/effects user-guide page `docs/source/user_guide/importance.rst` (decision 8); `docs_claims` test's importance-page assertion; `sphinx -W` clean build.

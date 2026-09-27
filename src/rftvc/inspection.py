@@ -10,11 +10,19 @@ from sklearn.utils.validation import check_is_fitted
 
 from ._competing import CompetingRisksForestTV
 from ._estimator import _BaseForestTV
-from ._inspection import _loco, _score, _strata, _units
-from ._validation import check_survival_y, competing_risks_labels, make_competing_risks_y, make_survival_y, split_frame
+from ._inspection import _effects, _loco, _score, _strata, _units
+from ._validation import (
+    check_counting_process,
+    check_intervals,
+    check_survival_y,
+    competing_risks_labels,
+    make_competing_risks_y,
+    make_survival_y,
+    split_frame,
+)
 from .metrics import _baseline_at, _check_windows, event_windows
 
-__all__ = ["drop_column_importance", "permutation_importance"]
+__all__ = ["drop_column_importance", "hazard_effect", "path_effect", "permutation_importance"]
 
 
 def _family(estimator, fn="permutation_importance", fitted=True):
@@ -475,6 +483,222 @@ def _pe_landmark(model, df, features, groups, strata, n_strata, conditional_on, 
         n_unpermuted=None,
         feature_names=np.array(unit_names, dtype=object),
         units=units,
+    )
+
+
+def hazard_effect(estimator, X, y, *, feature, values=None, windows=8, kind="average", ids=None, cause=None):
+    """Time-stratified partial dependence of window hazards on one covariate.
+
+    For each scoring window ``W_m`` and grid value ``v``, the estimand is the
+    exposure-weighted average of the fixed-profile window hazard
+    ``lambda~_m(x_r with x_j = v)`` over the rows at risk in ``W_m`` (weight:
+    the row's exposure ``e_rm`` in that window, as in ``metrics.piecewise_exponential_score``).
+    A window with no row at risk gives ``NaN`` for every grid value.
+
+    This is valid for internal and external covariates alike (it is
+    associational on the hazard scale) and shows non-proportional
+    (time-varying) effects directly, unlike a single marginal partial
+    dependence curve.
+
+    For a fitted ``LandmarkSurvivalForest`` / ``LandmarkCompetingRisksForest``,
+    ``X`` is the raw long frame and ``y``/``ids`` must be ``None``; the windows
+    are on the horizon clock, as in ``permutation_importance``'s landmark dispatch.
+
+    Parameters
+    ----------
+    estimator : fitted SurvivalForestTV, CompetingRisksForestTV, LandmarkSurvivalForest or LandmarkCompetingRisksForest
+    X : array-like or DataFrame of shape (n_rows, n_features)
+        Held-out counting-process rows, or the raw long frame for a landmark estimator.
+    y : survival or competing-risks target of the rows. Must be ``None`` for a landmark estimator.
+    feature : str or int
+        The covariate to vary. Not the ids column; not ``"landmark"`` for a landmark estimator.
+    values : array-like, default=None
+        Grid of values; default 20 quantiles of the observed column (deduplicated).
+    windows : int or array-like, default=8
+        Number of scoring windows (``metrics.event_windows``) or their edges.
+    kind : "average" or "individual", default="average"
+        ``"individual"`` also returns per-row rates (ICE); they exposure-weighted-average to
+        the ``"average"`` result.
+    ids : array-like of shape (n_rows,) or str, default=None
+        Subject of each row (or a column of a DataFrame ``X``). Must be ``None`` for a landmark estimator.
+    cause : int, default=None
+        Competing risks: one cause's hazard; ``None`` returns every cause.
+
+    Returns
+    -------
+    Bunch with ``values``, ``hazard`` (``(n_values, M)`` or CR ``(n_values, J, M)``),
+    ``window_edges``, ``support_mask`` (``(n_values, M)``), ``individual``
+    (``None`` unless ``kind="individual"``), ``feature_name``.
+
+    ``values`` shadows ``dict.values``: access it as ``result["values"]``, not
+    ``result.values`` (as ``sklearn.inspection.partial_dependence``'s own
+    ``"values"`` entry must be).
+    """
+    if kind not in ("average", "individual"):
+        raise ValueError(f"kind must be 'average' or 'individual', got {kind!r}")
+    is_landmark, competing = _family(estimator, fn="hazard_effect")
+    if is_landmark:
+        if y is not None:
+            raise ValueError("y must be None for a landmark estimator: outcomes come from X's own event/stop columns")
+        if ids is not None:
+            raise ValueError("ids must be None for a landmark estimator: ids come from X's own id column (model.id)")
+        data = estimator._landmark_data(X)
+        Xe, ye, s = data.X, data.y, data.s
+        names = data.feature_names
+        n_features = Xe.shape[1]
+        landmark_idx = n_features - 1
+        is_landmark_col = isinstance(feature, numbers.Integral) and not isinstance(feature, (bool, np.bool_)) and int(feature) == landmark_idx
+        if feature == "landmark" or is_landmark_col:
+            raise ValueError("'landmark' is constant within a landmark stratum and is not a permutable feature")
+        feature_idx = _units._column(feature, names, n_features, None)
+        w = _windows(estimator.forest_, windows)
+        inner = estimator.forest_.forest_
+        threads = effective_n_jobs(None)
+        if competing:
+            def predict(Xr, rows):
+                return inner.predict_cause_cumhaz(np.ascontiguousarray(Xr), w, threads)
+        else:
+            def predict(Xr, rows):
+                return inner.predict_cumhaz(np.ascontiguousarray(Xr), w, estimator.forest_.aggregate, threads)
+        start = np.zeros(Xe.shape[0])
+        if competing:
+            stop = competing_risks_labels(ye)[1]
+        else:
+            stop = check_survival_y(ye, require_events=False)[1]
+        cause_idx = None if cause is None else estimator.forest_._cause_index(cause)
+    else:
+        if y is None:
+            raise ValueError("y is required for counting-process estimators")
+        w = _windows(estimator, windows)
+        threads = effective_n_jobs(None)
+        Xe, ye, start, row_ids, predict, _, _ = _heldout(estimator, X, y, ids, competing, w, threads)
+        names = getattr(estimator, "feature_names_in_", None)
+        ids_column = getattr(estimator, "ids_column_", None)
+        feature_idx = _units._column(feature, names, Xe.shape[1], ids_column)
+        if competing:
+            stop = competing_risks_labels(ye)[1]
+        else:
+            stop = check_survival_y(ye, require_events=False)[1]
+        cause_idx = None if cause is None else estimator._cause_index(cause)
+    values = _effects.default_values(Xe[:, feature_idx]) if values is None else np.asarray(values, dtype=float)
+    hazard, support_mask, individual = _effects.hazard_grid(
+        Xe, start, stop, predict, w, feature_idx, values, kind, competing, cause_idx
+    )
+    feature_name = str(names[feature_idx]) if names is not None else str(feature_idx)
+    return Bunch(
+        values=values,
+        hazard=hazard,
+        window_edges=w,
+        support_mask=support_mask,
+        individual=individual,
+        feature_name=feature_name,
+    )
+
+
+def path_effect(
+    estimator, X, intervals, ids, *, feature, delta, from_time, horizons, origin=None, cause=None, extrapolate="none"
+):
+    """Prediction contrast along a specified covariate path.
+
+    Compares the supplied path to the same path with ``feature`` shifted by
+    ``delta`` from ``from_time`` onward, as the change in
+    ``P(T <= h | T > origin, path)`` (or ``F_k(h | origin)``) at each ``h`` in
+    ``horizons``. Rows straddling ``from_time`` are split there first
+    (covariates copied to both halves).
+
+    This is a prediction under a specified covariate path (Kalbfleisch-Prentice),
+    valid when ``feature`` is external. It is **not a causal effect** unless
+    ``feature``'s effect on the hazard is unconfounded given the other covariates
+    (Keogh & van Geloven 2024).
+
+    Not defined for landmark estimators (paths are a counting-process concept):
+    ``LandmarkSurvivalForest`` / ``LandmarkCompetingRisksForest`` raise ``TypeError``.
+
+    Parameters
+    ----------
+    estimator : fitted SurvivalForestTV or CompetingRisksForestTV
+    X : array-like or DataFrame of shape (n_rows, n_features)
+        Covariate-path rows (one row per ``(subject, interval)``), as ``predict_cumulative_hazard(intervals=...)``.
+    intervals : structured array or DataFrame with ``start``, ``stop``
+        Each row's interval; grouped into subjects by ``ids``.
+    ids : array-like of shape (n_rows,) or str
+        Subject of each row (or a column of a DataFrame ``X``). Required (paths need subject grouping).
+    feature : str or int
+        The covariate to shift.
+    delta : float or callable
+        The shift from ``from_time`` onward: a constant, or ``f(values, start) -> values``.
+    from_time : float
+        Absolute analysis time the shift starts at, on the same clock as ``intervals``.
+    horizons : array-like of float
+        Absolute analysis times to evaluate the contrast at; each must be ``>= from_time``.
+    origin : float or array-like, default=None
+        Per ``predict_cumulative_hazard``; defaults to each subject's first ``start``.
+    cause : int, default=None
+        Competing risks: one cause's ``F_k``; ``None`` returns every cause.
+    extrapolate : "none" or "locf", default="none"
+        Covariate behaviour past a subject's last observed ``stop``, for horizons beyond it.
+
+    Returns
+    -------
+    Bunch with ``per_subject`` (``(n_subjects, n_horizons)`` or CR
+    ``(n_subjects, n_causes, n_horizons)``/``(n_subjects, n_horizons)`` for one
+    ``cause``), ``mean``, ``horizons``, ``id_labels``.
+    """
+    is_landmark, competing = _family(estimator, fn="path_effect")
+    if is_landmark:
+        raise TypeError("path_effect is not defined for landmark estimators: paths are a counting-process concept")
+    Xc, _, idsc = estimator._check_predict(X, None, ids)
+    if idsc is None:
+        raise ValueError("ids is required (paths are grouped into subjects by id)")
+    horizons = np.asarray(horizons, dtype=float)
+    if horizons.ndim != 1 or horizons.size == 0:
+        raise ValueError("horizons must be a non-empty 1-D array")
+    if (horizons < from_time).any():
+        raise ValueError(f"horizons must all be >= from_time ({from_time}); got {horizons.tolist()}")
+    Xo, start, stop, offsets, origin_r = estimator._path_args(Xc, intervals, idsc, origin, extrapolate)
+    start0, stop0 = check_intervals(intervals)
+    cp = check_counting_process(start0, stop0, None, idsc)
+    id_labels = np.asarray(idsc)[cp.order][cp.offsets[:-1]]
+    first_start = start[offsets[:-1]]
+    last_stop = stop[offsets[1:] - 1]
+    bad_origin = from_time < first_start
+    if bad_origin.any():
+        raise ValueError(f"from_time ({from_time}) is before the first start for ids {id_labels[bad_origin].tolist()}")
+    unreached = from_time > last_stop
+    if unreached.any():
+        raise ValueError(f"from_time ({from_time}) is beyond the last stop for ids {id_labels[unreached].tolist()}")
+    if extrapolate != "locf":
+        beyond = horizons.max() > last_stop
+        if beyond.any():
+            raise ValueError(
+                f"horizons extend beyond the last stop for ids {id_labels[beyond].tolist()}; "
+                "pass extrapolate='locf' or supply the future path as extra rows"
+            )
+    Xs, start_s, stop_s, offsets_s = _effects.split_at(Xo, start, stop, offsets, from_time)
+    feature_idx = _units._column(feature, getattr(estimator, "feature_names_in_", None), Xs.shape[1], None)
+    Xshift = _effects.shift_from(Xs, start_s, feature_idx, from_time, delta)
+    path_ids = np.repeat(np.arange(offsets_s.size - 1), np.diff(offsets_s))
+    iv = make_survival_y(stop_s, np.zeros(stop_s.shape[0], dtype=bool), start=start_s)
+    if competing:
+        original = estimator.predict_cumulative_incidence(
+            Xs, horizons, cause=cause, intervals=iv, ids=path_ids, origin=origin_r, extrapolate=extrapolate
+        )
+        shifted = estimator.predict_cumulative_incidence(
+            Xshift, horizons, cause=cause, intervals=iv, ids=path_ids, origin=origin_r, extrapolate=extrapolate
+        )
+    else:
+        original = 1.0 - estimator.predict_survival_function(
+            Xs, horizons, intervals=iv, ids=path_ids, origin=origin_r, extrapolate=extrapolate
+        )
+        shifted = 1.0 - estimator.predict_survival_function(
+            Xshift, horizons, intervals=iv, ids=path_ids, origin=origin_r, extrapolate=extrapolate
+        )
+    per_subject = shifted - original
+    return Bunch(
+        per_subject=per_subject,
+        mean=per_subject.mean(axis=0),
+        horizons=horizons,
+        id_labels=id_labels,
     )
 
 
