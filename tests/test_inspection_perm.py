@@ -277,6 +277,26 @@ def test_user_strata_labels_reject_nan_in_an_object_array():
         _strata.user_labels(np.array([1.0, 2.0, float("nan")], dtype=object), 3)
 
 
+def test_user_strata_labels_reject_nat_datetime64():
+    """A datetime64/timedelta64 array's own NaT (regression: an earlier fix's dtype-kind
+    dispatch only special-cased "f"/"c"/"O", leaving datetime64's "M" kind unhandled, so a
+    NaT silently got its own stratum code instead of raising)."""
+    d = np.array(["2020-01-01", "NaT"], dtype="datetime64[D]")
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(d, 2)
+
+
+def test_user_strata_labels_reject_boxed_nat_and_decimal_nan():
+    """NaT or Decimal("NaN") boxed in an object array (regression: an earlier fix's
+    object-array branch only special-cased None and float/np.floating NaN)."""
+    import decimal
+
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([np.datetime64("2020-01-01"), np.datetime64("NaT")], dtype=object), 2)
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([decimal.Decimal("1"), decimal.Decimal("NaN")], dtype=object), 2)
+
+
 def test_user_strata_restrict_the_permutation():
     labels = (XT[:, 0] > 0).astype(int)
     ev, calls = _recording_eval(XT, YT)
