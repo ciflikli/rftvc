@@ -307,6 +307,29 @@ def test_user_strata_labels_reject_pandas_na():
         _strata.user_labels(np.array([1, pd.NA], dtype=object), 2)
 
 
+def test_user_strata_labels_other_typeerror_is_not_treated_as_missing():
+    """A label type whose own ``__ne__`` happens to raise ``TypeError`` for an unrelated
+    reason must not be silently reclassified as "missing": only ``pd.NA``'s deliberately
+    ambiguous truthiness is caught (regression: a bare ``except TypeError: return True``
+    would misclassify any such label and hide its real, unrelated bug)."""
+
+    class _BrokenNe:
+        def __eq__(self, other):
+            return self is other
+
+        def __ne__(self, other):
+            if self is other:
+                raise TypeError("boom: unrelated to missingness")
+            return not (self == other)
+
+        def __lt__(self, other):
+            return id(self) < id(other)
+
+    a, b = _BrokenNe(), _BrokenNe()
+    with pytest.raises(TypeError, match="boom"):
+        _strata.user_labels(np.array([a, b], dtype=object), 2)
+
+
 def test_user_strata_restrict_the_permutation():
     labels = (XT[:, 0] > 0).astype(int)
     ev, calls = _recording_eval(XT, YT)

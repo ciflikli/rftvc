@@ -1,22 +1,27 @@
 """Stratum labels and within-stratum permutation."""
 
 import numbers
+import sys
 
 import numpy as np
 
 
 def _scalar_isna(x):
     """Whether one object-array element is missing: ``None``, or not equal to itself (the
-    universal NaN/``NaT``/``Decimal("NaN")`` idiom). A pandas nullable scalar such as
-    ``pd.NA`` makes ``x != x`` itself an ``NA`` rather than a bool, so ``bool(...)``
-    deliberately raises there (pandas' own way of forcing explicit missing-value handling);
-    caught and treated as missing, which is exactly what it means."""
+    universal NaN/``NaT``/``Decimal("NaN")`` idiom). ``x != x`` itself raises for pandas'
+    nullable ``pd.NA`` (its ``bool()`` deliberately raises to force explicit missing-value
+    handling, pandas' own way of saying "this is missing"), so that's checked for and
+    treated as missing; any other ``TypeError`` (a label type with its own, unrelated
+    comparison bug) is a real error and must not be silently swallowed as "missing"."""
     if x is None:
         return True
     try:
         return bool(x != x)
     except TypeError:
-        return True
+        pd = sys.modules.get("pandas")  # already imported if the caller could have a pd.NA
+        if pd is not None and x is pd.NA:
+            return True
+        raise
 
 
 def _isna(s):
