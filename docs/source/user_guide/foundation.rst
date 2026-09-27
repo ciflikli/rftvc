@@ -65,6 +65,13 @@ Prediction functionals
        ``H(s)`` and ``s``, adequate support, and a model that transports to
        the prediction population
 
+``predict_*`` and ``Λ`` stand for whichever call and quantity fit the
+estimator: ``predict_cumulative_hazard`` (``Λ``) or ``predict_survival_function``
+(``S = exp(-Λ)``) for ``SurvivalForestTV``; ``predict_cumulative_hazard``,
+``predict_cumulative_incidence`` (``F_k``) or ``predict_survival_function``
+for ``CompetingRisksForestTV``. The validity conditions in the table's third
+column are the same regardless of which of these is called.
+
 For **internal** covariates, the hazard map is still estimable and
 interpretable, but a path-based survival curve is not a probability for any
 real subject: the future path depends on outcomes the intervention would

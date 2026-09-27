@@ -339,14 +339,68 @@ def test_path_effect_straddling_row_is_split_correctly():
 def test_path_effect_validation_errors():
     Xp, iv, ids = _path_fixture()
     m = _stubbed(FOREST, PathOracle())
-    with pytest.raises(ValueError, match="before the first start"):
+    with pytest.raises(ValueError, match="before origin"):
         inspection.path_effect(m, Xp, iv, ids, feature=1, delta=1.0, from_time=-1.0, horizons=[1.0])
+    with pytest.raises(ValueError, match="before origin"):
+        # from_time before an explicit, non-default origin (not just before the first start)
+        inspection.path_effect(m, Xp, iv, ids, feature=1, delta=1.0, from_time=3.0, horizons=[5.0], origin=4.0)
     with pytest.raises(ValueError, match="beyond the last stop"):
         inspection.path_effect(m, Xp, iv, ids, feature=1, delta=1.0, from_time=3.0, horizons=[20.0])
+    with pytest.raises(ValueError, match="from_time must be a finite number"):
+        inspection.path_effect(m, Xp, iv, ids, feature=1, delta=1.0, from_time=np.nan, horizons=[1.0])
     res = inspection.path_effect(
         m, Xp, iv, ids, feature=1, delta=1.0, from_time=3.0, horizons=[20.0], extrapolate="locf"
     )
     assert np.isfinite(res.per_subject).all()
+
+
+def test_path_effect_locf_at_the_last_stop_boundary_raises_rather_than_silently_dropping_the_shift():
+    # a subject whose last observed row ends exactly at from_time has no row with start
+    # >= from_time to shift; extrapolate="locf" alone cannot apply the shift to the
+    # extrapolated future without silently changing the row's covariates before from_time
+    # too (shifting the whole last row) -- ambiguous, so this must raise, not guess.
+    ids = np.array([0, 0])
+    start = np.array([0.0, 1.0])
+    stop = np.array([1.0, 3.0])  # last_stop = 3.0 = from_time
+    z = np.array([1.0, 1.0])
+    Xp = np.column_stack([np.zeros(2), z])
+    iv = make_survival_y(stop, np.zeros(2, dtype=bool), start=start)
+    m = _stubbed(FOREST, PathOracle())
+    with pytest.raises(ValueError, match="equals the last observed stop"):
+        inspection.path_effect(m, Xp, iv, ids, feature=1, delta=1.0, from_time=3.0, horizons=[5.0], extrapolate="locf")
+    # the documented alternative works: an explicit future row carries the shift correctly
+    ids2 = np.array([0, 0, 0])
+    start2 = np.array([0.0, 1.0, 3.0])
+    stop2 = np.array([1.0, 3.0, 5.0])
+    z2 = np.array([1.0, 1.0, 1.0])
+    Xp2 = np.column_stack([np.zeros(3), z2])
+    iv2 = make_survival_y(stop2, np.zeros(3, dtype=bool), start=start2)
+    res_explicit = inspection.path_effect(m, Xp2, iv2, ids2, feature=1, delta=1.0, from_time=3.0, horizons=[5.0])
+    assert res_explicit.per_subject[0, 0] != 0.0
+    # a horizon that does not go past from_time itself is fine even at the boundary (no
+    # extrapolated shift is ever needed)
+    res_at_boundary = inspection.path_effect(
+        m, Xp, iv, ids, feature=1, delta=1.0, from_time=3.0, horizons=[3.0], extrapolate="locf"
+    )
+    assert np.isfinite(res_at_boundary.per_subject).all()
+
+
+def test_hazard_effect_values_validation():
+    with pytest.raises(ValueError, match="values"):
+        inspection.hazard_effect(FOREST, X, Y, feature=1, values=[])
+    with pytest.raises(ValueError, match="values"):
+        inspection.hazard_effect(FOREST, X, Y, feature=1, values=[np.nan])
+    with pytest.raises(ValueError, match="values"):
+        inspection.hazard_effect(FOREST, X, Y, feature=1, values=[[0.0, 1.0], [2.0, 3.0]])
+
+
+def test_hazard_effect_and_path_effect_reject_cause_for_survival_estimators():
+    with pytest.raises(ValueError, match="competing-risks"):
+        inspection.hazard_effect(FOREST, X, Y, feature=1, cause=1)
+    Xp, iv, ids = _path_fixture()
+    m = _stubbed(FOREST, PathOracle())
+    with pytest.raises(ValueError, match="competing-risks"):
+        inspection.path_effect(m, Xp, iv, ids, feature=1, delta=1.0, from_time=3.0, horizons=[4.0], cause=1)
 
 
 def test_path_effect_competing_risks_shape_and_cause():

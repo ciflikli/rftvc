@@ -30,13 +30,12 @@ def hazard_grid(Xe, start, stop, predict, w, feature, values, kind, competing, c
     M = w.size - 1
     n_values = len(values)
     x = Xe[:, feature]
-    # exposure and observed-support bounds, one window at a time (O(n) per window, not O(n*M))
-    exposures = []
+    # observed-support bounds: one window's exposure array alive at a time (O(n), not O(n*M) --
+    # the array itself is not retained; recomputed per (value, window) below for the same reason).
     support_lo = np.full(M, np.nan)
     support_hi = np.full(M, np.nan)
     for m in range(M):
         e = _window_exposure_1(start, stop, w[m], w[m + 1])
-        exposures.append(e)
         at_risk = e > 0
         if at_risk.any():
             support_lo[m], support_hi[m] = np.quantile(x[at_risk], [0.05, 0.95])
@@ -62,7 +61,7 @@ def hazard_grid(Xe, start, stop, predict, w, feature, values, kind, competing, c
                 if kind == "individual":
                     individual = np.full((n, n_values, M), np.nan)
         for m in range(M):
-            e = exposures[m]
+            e = _window_exposure_1(start, stop, w[m], w[m + 1])
             width = w[m + 1] - w[m]
             at_risk = e > 0
             if competing and cause_idx is None:

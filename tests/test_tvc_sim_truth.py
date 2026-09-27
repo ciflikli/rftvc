@@ -195,3 +195,4 @@ def test_pilot_pass_rules_point_the_right_way():
     mean_est = est.mean(axis=0)
     assert (mean_est > 0).all()
     assert (mean_est >= 0.5 * true_d).all()
+    assert (mean_est <= 1.5 * true_d).all()  # the known deviation is ~0.8x truth; catches an unrelated inflation bug

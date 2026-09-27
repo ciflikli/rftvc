@@ -54,8 +54,9 @@ conditional (subgroup) importance.
 -----------------------------------
 
 Refits the estimator with and without each unit, cross-fitted over folds, and
-scores the drop in held-out loss. This is the predictive value of a covariate
-for *new* subjects, given everything else the model can learn from --
+scores the drop in the held-out piecewise-exponential score (higher is
+better, so a positive drop means the unit helped). This is the predictive
+value of a covariate for *new* subjects, given everything else the model can learn from --
 **unlike permutation importance, two strongly correlated covariates can
 compensate for each other and both show low LOCO importance.** Report both
 measures when covariates are correlated.
@@ -131,8 +132,9 @@ effect** unless the covariate's effect on the hazard is unconfounded given
 everything else in the model (Keogh & van Geloven, 2024). A large ``delta``
 into a much higher-hazard region can **understate** the true risk change --
 the forest's ensemble-averaging shrinks predictions toward the training
-distribution's bulk, more so at elevated hazard levels -- so the sign is
-reliable but the magnitude may be conservative for a large shift.
+distribution's bulk, more so at elevated hazard levels -- checked on the
+*mean* over many subjects (an individual subject's own estimate can still
+have the wrong sign, as any per-subject estimate can).
 
 .. code-block:: python
 

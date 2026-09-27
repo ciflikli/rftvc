@@ -537,6 +537,8 @@ def hazard_effect(estimator, X, y, *, feature, values=None, windows=8, kind="ave
     if kind not in ("average", "individual"):
         raise ValueError(f"kind must be 'average' or 'individual', got {kind!r}")
     is_landmark, competing = _family(estimator, fn="hazard_effect")
+    if cause is not None and not competing:
+        raise ValueError("cause is only for competing-risks estimators")
     if is_landmark:
         if y is not None:
             raise ValueError("y must be None for a landmark estimator: outcomes come from X's own event/stop columns")
@@ -580,7 +582,12 @@ def hazard_effect(estimator, X, y, *, feature, values=None, windows=8, kind="ave
         else:
             stop = check_survival_y(ye, require_events=False)[1]
         cause_idx = None if cause is None else estimator._cause_index(cause)
-    values = _effects.default_values(Xe[:, feature_idx]) if values is None else np.asarray(values, dtype=float)
+    if values is None:
+        values = _effects.default_values(Xe[:, feature_idx])
+    else:
+        values = np.asarray(values, dtype=float)
+        if values.ndim != 1 or values.size == 0 or not np.isfinite(values).all():
+            raise ValueError("values must be a non-empty 1-D array of finite numbers")
     hazard, support_mask, individual = _effects.hazard_grid(
         Xe, start, stop, predict, w, feature_idx, values, kind, competing, cause_idx
     )
@@ -615,8 +622,9 @@ def path_effect(
     **understate** the true risk change: like any random forest, this one
     shrinks its predictions toward the bulk of the training distribution, and
     that shrinkage is stronger where the shifted path's hazard is elevated
-    (confirmed on the S3 simulation, `docs/plans/s20-plan.md` T9). The sign is
-    reliable; the magnitude for a large shift may be conservative.
+    (confirmed on the S3 simulation, `docs/plans/s20-plan.md` T9). This was
+    checked on the *mean* over many subjects; an individual subject's own
+    estimate can still have the wrong sign, as any per-subject estimate can.
 
     Not defined for landmark estimators (paths are a counting-process concept):
     ``LandmarkSurvivalForest`` / ``LandmarkCompetingRisksForest`` raise ``TypeError``.
@@ -654,9 +662,13 @@ def path_effect(
     is_landmark, competing = _family(estimator, fn="path_effect")
     if is_landmark:
         raise TypeError("path_effect is not defined for landmark estimators: paths are a counting-process concept")
+    if cause is not None and not competing:
+        raise ValueError("cause is only for competing-risks estimators")
     Xc, _, idsc = estimator._check_predict(X, None, ids)
     if idsc is None:
         raise ValueError("ids is required (paths are grouped into subjects by id)")
+    if not isinstance(from_time, numbers.Real) or isinstance(from_time, (bool, np.bool_)) or not np.isfinite(from_time):
+        raise ValueError(f"from_time must be a finite number, got {from_time!r}")
     horizons = np.asarray(horizons, dtype=float)
     if horizons.ndim != 1 or horizons.size == 0:
         raise ValueError("horizons must be a non-empty 1-D array")
@@ -666,20 +678,32 @@ def path_effect(
     start0, stop0 = check_intervals(intervals)
     cp = check_counting_process(start0, stop0, None, idsc)
     id_labels = np.asarray(idsc)[cp.order][cp.offsets[:-1]]
-    first_start = start[offsets[:-1]]
     last_stop = stop[offsets[1:] - 1]
-    bad_origin = from_time < first_start
+    bad_origin = from_time < origin_r
     if bad_origin.any():
-        raise ValueError(f"from_time ({from_time}) is before the first start for ids {id_labels[bad_origin].tolist()}")
+        raise ValueError(f"from_time ({from_time}) is before origin for ids {id_labels[bad_origin].tolist()}")
     unreached = from_time > last_stop
     if unreached.any():
         raise ValueError(f"from_time ({from_time}) is beyond the last stop for ids {id_labels[unreached].tolist()}")
+    beyond = horizons.max() > last_stop
     if extrapolate != "locf":
-        beyond = horizons.max() > last_stop
         if beyond.any():
             raise ValueError(
                 f"horizons extend beyond the last stop for ids {id_labels[beyond].tolist()}; "
                 "pass extrapolate='locf' or supply the future path as extra rows"
+            )
+    elif beyond.any():
+        # from_time <= last_stop is already guaranteed (the `unreached` check above); if it lands
+        # exactly at the last stop, no row satisfies `start >= from_time` to carry the shift into
+        # the LOCF-extrapolated future, and shifting the last row itself would wrongly change its
+        # covariates before from_time too. Ambiguous: reject rather than silently drop the shift.
+        at_boundary = last_stop == from_time
+        if at_boundary.any():
+            raise ValueError(
+                f"from_time ({from_time}) equals the last observed stop for ids "
+                f"{id_labels[at_boundary & beyond].tolist()}, and a horizon extends beyond it: "
+                "extrapolate='locf' cannot apply the shift to the extrapolated future from exactly "
+                "the last stop; supply the future path as extra rows instead"
             )
     Xs, start_s, stop_s, offsets_s = _effects.split_at(Xo, start, stop, offsets, from_time)
     feature_idx = _units._column(feature, getattr(estimator, "feature_names_in_", None), Xs.shape[1], None)
