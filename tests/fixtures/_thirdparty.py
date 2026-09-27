@@ -11,6 +11,9 @@ redistributes them).
 
 import hashlib
 import os
+import tempfile
+import time
+import urllib.error
 import urllib.request
 import warnings
 from pathlib import Path
@@ -23,14 +26,63 @@ def _cache_dir():
     return Path(os.environ.get("RFTVC_DATA", Path.home() / ".cache" / "rftvc"))
 
 
-def fetch(url, sha256, cache_name):
-    """Path to the verified file, downloading it once into the shared cache."""
-    path = _cache_dir() / cache_name
+_RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}  # timeout / rate limit / transient server error
+
+
+def _retryable(exc):
+    """Whether a download failure is worth retrying: any non-HTTP ``OSError``
+    (connection reset, timeout, DNS, ...) is transient; an ``HTTPError`` is only
+    transient for a rate-limit or server-side status -- a URL that 404s (or other
+    4xx) will keep 404ing, so retrying it just wastes the backoff delay."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in _RETRYABLE_HTTP_STATUS
+    return True
+
+
+def _download(url, retries, timeout):
+    """Bytes from ``url``, retrying a transient failure (see ``_retryable``) with
+    backoff. Not retried: a checksum mismatch, a data problem no retry fixes."""
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                return r.read()
+        except OSError as exc:
+            if not _retryable(exc) or attempt + 1 == retries:
+                raise
+            time.sleep(2**attempt)
+
+
+def fetch(url, sha256, cache_name, *, retries=3, timeout=60):
+    """Path to the verified file, downloading it once into the shared cache.
+
+    The cache filename embeds the expected checksum, so re-pinning ``sha256`` (a
+    source update) fetches fresh instead of silently reusing a file cached under
+    the old pin. A download is verified in memory, then written to a same-directory
+    temp file and atomically renamed into place (``os.replace``): an interrupted
+    download or a concurrent fetch of the same fixture never leaves a corrupt or
+    torn file at the final path, which would otherwise fail checksum verification
+    forever with no recovery short of a manual delete.
+    """
+    path = _cache_dir() / f"{cache_name}.{sha256}"
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(url, timeout=60) as r:
-            data = r.read()
-        path.write_bytes(data)
+        data = _download(url, retries, timeout)
+        digest = hashlib.sha256(data).hexdigest()
+        if digest != sha256:
+            raise ValueError(f"checksum mismatch downloading {url}: got {digest}, expected {sha256}")
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.tmp-")
+        try:
+            try:
+                f = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)  # fdopen failed before taking ownership of fd; it won't be closed by "with" below
+                raise
+            with f:
+                f.write(data)
+            os.replace(tmp_name, path)
+        except BaseException:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     if digest != sha256:
         raise ValueError(f"checksum mismatch for {path}: {digest}; delete it to re-download")
