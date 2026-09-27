@@ -297,6 +297,20 @@ def test_user_strata_labels_reject_boxed_nat_and_decimal_nan():
         _strata.user_labels(np.array([decimal.Decimal("1"), decimal.Decimal("NaN")], dtype=object), 2)
 
 
+def test_user_strata_labels_reject_masked_and_signaling_nan():
+    """numpy's masked-array sentinel (regression: ``np.ma.masked != np.ma.masked`` returns
+    the masked constant itself, and ``bool(...)`` of that is False, not an exception, so
+    ``x != x`` alone silently treats it as a normal, distinct label) and a signaling
+    Decimal NaN (regression: comparing it raises ``decimal.InvalidOperation``, not handled
+    by the ``pd.NA``-only ``except TypeError``)."""
+    import decimal
+
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([1, np.ma.masked], dtype=object), 2)
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([decimal.Decimal("1"), decimal.Decimal("sNaN")], dtype=object), 2)
+
+
 def test_user_strata_labels_reject_pandas_na():
     """pandas' pd.NA (a nullable-dtype missing marker) boxed in an object array (regression:
     ``x != x`` is itself an ``NA``, not a bool, for ``pd.NA``, so ``bool(x != x)`` raises

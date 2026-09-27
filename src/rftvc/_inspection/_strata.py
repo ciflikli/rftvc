@@ -1,5 +1,6 @@
 """Stratum labels and within-stratum permutation."""
 
+import decimal
 import numbers
 import sys
 
@@ -7,16 +8,21 @@ import numpy as np
 
 
 def _scalar_isna(x):
-    """Whether one object-array element is missing: ``None``, or not equal to itself (the
-    universal NaN/``NaT``/``Decimal("NaN")`` idiom). ``x != x`` itself raises for pandas'
-    nullable ``pd.NA`` (its ``bool()`` deliberately raises to force explicit missing-value
-    handling, pandas' own way of saying "this is missing"), so that's checked for and
-    treated as missing; any other ``TypeError`` (a label type with its own, unrelated
-    comparison bug) is a real error and must not be silently swallowed as "missing"."""
-    if x is None:
+    """Whether one object-array element is missing: ``None``, ``numpy.ma.masked`` (numpy's
+    own masked-array sentinel; it compares equal to itself, so ``x != x`` alone misses it),
+    or not equal to itself (the universal NaN/``NaT``/``Decimal("NaN")`` idiom). ``x != x``
+    itself raises for pandas' nullable ``pd.NA`` (its ``bool()`` deliberately raises to
+    force explicit missing-value handling, pandas' own way of saying "this is missing") and
+    for a signaling ``Decimal`` NaN (``decimal.InvalidOperation``, still a NaN, just one
+    that traps on comparison); both are checked for and treated as missing. Any other
+    ``TypeError`` (a label type with its own, unrelated comparison bug) is a real error and
+    must not be silently swallowed as "missing"."""
+    if x is None or x is np.ma.masked:
         return True
     try:
         return bool(x != x)
+    except decimal.InvalidOperation:
+        return True
     except TypeError:
         pd = sys.modules.get("pandas")  # already imported if the caller could have a pd.NA
         if pd is not None and x is getattr(pd, "NA", None):
