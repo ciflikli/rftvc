@@ -97,7 +97,13 @@ def _agg_expr(name, column, agg, start, time):
         "max": col.max(),
         "sum": col.sum(),
         "count": pl.len().cast(pl.Float64),
-        "slope": pl.when(t.n_unique() < 2).then(None).otherwise(pl.cov(t, col) / t.var()),
+        # cov(t, col) is pairwise-complete (polars drops a row where either is null), so
+        # the denominator must be the variance of t over that same non-null-col subset,
+        # not every row's t: otherwise a null col value still contributes its own t to the
+        # denominator alone, silently changing the OLS slope.
+        "slope": pl.when(t.filter(col.is_not_null()).n_unique() < 2)
+        .then(None)
+        .otherwise(pl.cov(t, col) / t.filter(col.is_not_null()).var()),
         "std": col.std(),
     }
     return exprs[agg].alias(name)

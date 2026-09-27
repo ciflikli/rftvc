@@ -90,6 +90,24 @@ def test_slope_nan_with_one_distinct_time_std_nan_with_one_row():
     assert np.isnan(data.X[0, 0]) and np.isnan(data.X[0, 1])
 
 
+def test_slope_ignores_a_null_covariate_row_denominator_too():
+    """cov(t, z) is pairwise-complete (a null z drops that row), so the denominator must be
+    the variance of t over that same non-null-z subset, not every known row's t (regression:
+    a null z at one row still contributed its own t to t.var() alone, silently changing the
+    OLS slope: true slope of (0, 0), (2, 4) is 2, but a null z at t=1 made it 4)."""
+    df = pl.DataFrame(
+        {
+            "id": ["a", "a", "a"],
+            "start": [0.0, 1.0, 2.0],
+            "stop": [1.0, 2.0, 3.0],
+            "event": [False, False, True],
+            "z": [0.0, None, 4.0],
+        }
+    )
+    data = make_landmark_data(df, horizon=1.0, landmarks=[2.5], history_features=[("z", "slope")])
+    np.testing.assert_allclose(data.X[0, 0], 2.0)
+
+
 def test_slope_uses_measured_at_when_given_else_start():
     df = pl.DataFrame(
         {
