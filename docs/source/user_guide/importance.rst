@@ -128,7 +128,11 @@ A prediction contrast along a covariate path: "shift ``z`` by ``delta`` from
 **prediction under a specified path**, valid only for external covariates
 (:doc:`foundation`'s internal/external distinction) -- it is **not a causal
 effect** unless the covariate's effect on the hazard is unconfounded given
-everything else in the model (Keogh & van Geloven, 2024).
+everything else in the model (Keogh & van Geloven, 2024). A large ``delta``
+into a much higher-hazard region can **understate** the true risk change --
+the forest's ensemble-averaging shrinks predictions toward the training
+distribution's bulk, more so at elevated hazard levels -- so the sign is
+reliable but the magnitude may be conservative for a large shift.
 
 .. code-block:: python
 

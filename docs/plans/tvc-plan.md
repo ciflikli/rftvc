@@ -290,7 +290,7 @@ All predeclared simulation/gate results across the TVC foundation/importance tra
 | S19 | §7.2 level-vs-history, history scenario | **fails as declared, deviation (user-approved):** the diagnostic's own history-featurization (cumulative mean, not a windowed rolling mean) is a deliberate mismatch with the generator's true rolling-2 driver, diluting more at later landmarks; not a defect in the importance machinery, which the Markov control confirms |
 | S19 | §7.5b repeated landmark copies (SE does not shrink with more copies) | pass |
 | S19 | §7.5b heavy censoring (PE vs Brier importance rank agreement) | pass |
-| S20 | §7.5 `path_effect` vs the true Δ risk | **fails as declared, well-powered (MC-SE ≪ margin/7), at both R=10 and R=50 — awaiting a user decision** (docs/bench/s20-effects/path_effect.csv; not a code defect, checked against an exact-hazard stub; not yet accepted as a deviation, unlike the S18/S19 rows above) |
+| S20 | §7.5 `path_effect` vs the true Δ risk | **fails as declared, deviation (user-approved):** well-powered (MC-SE ≪ margin/7) at both R=10 and R=50 (docs/bench/s20-effects/path_effect.csv). Not a code defect (estimand verified exact against an oracle stub); investigated and traced to an inherited, previously-undocumented property of the base estimator's path prediction: bias grows with horizon even with no covariate shift, and shrinks toward the training bulk more at the elevated hazard level a shift creates — the two cancel to ≈0 bias at a half-interval horizon and open up from a full interval onward (s20-plan.md §7.5 has the full decomposition). A caution is added to `path_effect`'s docstring and `importance.rst` |
 
 ## Risks (plan-level)
 | Risk | Mitigation |

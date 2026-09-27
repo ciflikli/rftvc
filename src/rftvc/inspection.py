@@ -611,6 +611,13 @@ def path_effect(
     ``feature``'s effect on the hazard is unconfounded given the other covariates
     (Keogh & van Geloven 2024).
 
+    A large ``delta`` that shifts the path into a much higher-hazard region can
+    **understate** the true risk change: like any random forest, this one
+    shrinks its predictions toward the bulk of the training distribution, and
+    that shrinkage is stronger where the shifted path's hazard is elevated
+    (confirmed on the S3 simulation, `docs/plans/s20-plan.md` T9). The sign is
+    reliable; the magnitude for a large shift may be conservative.
+
     Not defined for landmark estimators (paths are a counting-process concept):
     ``LandmarkSurvivalForest`` / ``LandmarkCompetingRisksForest`` raise ``TypeError``.
 
