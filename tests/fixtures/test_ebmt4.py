@@ -1,8 +1,15 @@
-"""Fixture-correctness tests for the EBMT4 reshape (docs/plans/rc-validation-plan.md T3)."""
+"""Fixture-correctness tests for the EBMT4 reshape (docs/plans/rc-validation-plan.md T3).
+
+Downloads mstate::ebmt4 on first run (tests/fixtures/ebmt4.py); marked
+``network`` and excluded from the default test run.
+"""
 
 import polars as pl
+import pytest
 
 from tests.fixtures.ebmt4 import _read, ebmt4_competing_risks
+
+pytestmark = pytest.mark.network
 
 
 def test_rel_equals_srv_whenever_censored_for_relapse_but_not_survival():

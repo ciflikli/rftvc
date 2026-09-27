@@ -1,15 +1,27 @@
-"""EBMT4 (R mstate) competing-risks registry extract -> counting-process rows."""
+"""EBMT4 (R mstate) competing-risks registry extract -> counting-process rows.
 
-from pathlib import Path
+``mstate`` is GPL >= 2 with no separate data-specific licence (see
+``docs/plans/rc-validation-findings.md``'s licence discussion), so rather
+than committing the data under rftvc's MIT licence, ``_read`` downloads it
+on demand from the package author's own upstream GitHub repository -- pinned
+to a specific commit and SHA-256-verified, cached locally, never
+redistributed with rftvc -- following ``examples/data/cunningham_lemke.py``'s
+precedent. Requires network on first use only (cached after); the
+fixture-correctness tests that exercise this are marked ``network`` and
+excluded from the default test run, same as the ``slow`` marker.
+"""
 
 import polars as pl
 
-EBMT4 = Path(__file__).with_name("ebmt4.csv")
+from ._thirdparty import fetch, read_rda
+
+URL = "https://raw.githubusercontent.com/hputter/mstate/406e5856790c1649a7bcf03fff9a0afa247e7265/data/ebmt4.RData"
+SHA256 = "cf93cf94c038eb6d70a6c7f6573c1de7b43ecd09c20f9d7cf808e775ead0b91c"
 STATIC = ["id", "year", "agecl", "proph", "match"]
 
 
 def _read():
-    return pl.read_csv(EBMT4, infer_schema_length=None)
+    return read_rda(fetch(URL, SHA256, "mstate_ebmt4.RData"), "ebmt4")
 
 
 def ebmt4_competing_risks():
