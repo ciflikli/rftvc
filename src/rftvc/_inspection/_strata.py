@@ -3,6 +3,7 @@
 import numbers
 
 import numpy as np
+import pandas as pd
 
 
 def check_count(value, name):
@@ -28,7 +29,7 @@ def user_labels(strata, n):
     s = np.asarray(strata)
     if s.shape != (n,):
         raise ValueError(f"strata must have {n} entries (one per row), got shape {s.shape}")
-    if s.dtype.kind == "f" and np.isnan(s).any():
+    if pd.isna(s).any():
         raise ValueError("strata labels must not be NaN")
     try:
         _, codes = np.unique(s, return_inverse=True)

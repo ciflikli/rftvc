@@ -243,7 +243,17 @@ def test_user_strata_labels():
     with pytest.raises(ValueError, match="3 entries"):
         _strata.user_labels(np.array([0, 1]), 3)
     with pytest.raises(ValueError, match="sortable"):
+        _strata.user_labels(np.array([1, "a", 2], dtype=object), 3)
+
+
+def test_user_strata_labels_reject_nan_in_an_object_array():
+    """NaN detection must not be skipped for object-dtype strata (regression: the check
+    used to look at ``s.dtype.kind == "f"`` only, so a float NaN or a None boxed in an
+    object array silently got its own distinct stratum instead of raising)."""
+    with pytest.raises(ValueError, match="NaN"):
         _strata.user_labels(np.array([1, "a", None], dtype=object), 3)
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([1.0, 2.0, float("nan")], dtype=object), 3)
 
 
 def test_user_strata_restrict_the_permutation():
