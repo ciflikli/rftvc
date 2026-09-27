@@ -61,10 +61,17 @@ def bin_codes(v, n):
 
 def user_labels(strata, n):
     """Integer codes of user-supplied stratum labels (one per row)."""
+    # a masked array's mask marks missing entries independently of the underlying data
+    # (e.g. a masked int 0 is not the label 0); np.asarray below drops it, so it must be
+    # read first and combined with _isna's own per-value check.
+    mask = np.ma.getmaskarray(strata) if isinstance(strata, np.ma.MaskedArray) else None
     s = np.asarray(strata)
     if s.shape != (n,):
         raise ValueError(f"strata must have {n} entries (one per row), got shape {s.shape}")
-    if _isna(s).any():
+    missing = _isna(s)
+    if mask is not None:
+        missing = missing | mask
+    if missing.any():
         raise ValueError("strata labels must not be NaN")
     try:
         _, codes = np.unique(s, return_inverse=True)

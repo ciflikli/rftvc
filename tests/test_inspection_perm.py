@@ -311,6 +311,16 @@ def test_user_strata_labels_reject_masked_and_signaling_nan():
         _strata.user_labels(np.array([decimal.Decimal("1"), decimal.Decimal("sNaN")], dtype=object), 2)
 
 
+def test_user_strata_labels_reject_a_masked_array_entry():
+    """A genuine ``numpy.ma.MaskedArray``'s mask marks an entry missing independently of
+    its underlying data value (regression: ``np.asarray`` drops the mask, so a masked
+    entry silently kept whatever placeholder value the array holds underneath, e.g. a
+    masked ``1`` joining the same stratum as a real, unmasked ``1``)."""
+    labels = np.ma.array([1, 1, 2], mask=[False, True, False])
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(labels, 3)
+
+
 def test_user_strata_labels_reject_pandas_na():
     """pandas' pd.NA (a nullable-dtype missing marker) boxed in an object array (regression:
     ``x != x`` is itself an ``NA``, not a bool, for ``pd.NA``, so ``bool(x != x)`` raises
