@@ -117,15 +117,25 @@ output can easily mistake either for one.
   :func:`~rftvc.inspection.drop_column_importance`): normal for a
   weaker-signal cause or covariate on real, moderate-sized data -- expect it
   for at least one cause/covariate combination in a typical real analysis.
-  ``importances_mean``/``importances_se`` are still meaningful; only the
-  ratio ``share_of_gain`` is undefined when there is no gain over the null to
-  divide by.
+  ``importances_mean``/``importances_se`` are still meaningful. ``NaN`` fires
+  whenever the model's gain over the training null is at or below a rounding
+  tolerance, which includes the model doing genuinely *worse* than the null,
+  not only "exactly no gain": a negative gain would still give a mathematically
+  defined (negative) ratio, but a "share of gain" isn't a meaningful figure to
+  report when there is no real gain to share, so it is reported as ``NaN``
+  either way rather than as a negative or blown-up ratio.
 - ``UserWarning: ...% of events fall in windows where the predicted rate is
   0; the windows are too fine for this model`` (:func:`~rftvc.inspection.permutation_importance`,
-  :func:`~rftvc.inspection.drop_column_importance`): the default ``windows=8``
-  can be too fine for a cause or subset with fewer events -- expect to need a
-  smaller ``windows`` for the rarer cause in an imbalanced competing-risks
-  split.
+  :func:`~rftvc.inspection.drop_column_importance`): fires when more than 1%
+  of scored events land in a window (for their cause) where the fitted
+  model's own predicted hazard increment is zero or negative there -- not
+  "too few events in a window" in general, but the model assigning that
+  window no positive hazard increment for the specific window an event
+  actually fell in. A smaller ``windows`` than the default 8 is the first
+  thing to try for a rarer cause or an imbalanced competing-risks split, but
+  it is not guaranteed to be the
+  culprit -- a genuinely small fold or subset can trigger this regardless of
+  ``windows``, so treat it as a starting guess to check, not a fix to assume.
 
 ``hazard_effect``
 -------------------
@@ -153,9 +163,14 @@ A ``hazard_effect`` two-point contrast is comparable to a linear model's
 more than two levels, encoded as an arbitrary integer per level, a linear
 model fits one coefficient across every level while ``hazard_effect`` makes
 no such linearity assumption -- a sign read off two contrast points need not
-agree, or disagree, with that coefficient in any meaningful way. Compare
-one contrast per level against a fixed reference instead of reading a single
-"direction" out of either method.
+agree, or disagree, with that coefficient in any meaningful way. Comparing
+the contrast against a linear model still fit on the original, ordinally-coded
+column is not a like-for-like comparison; to compare them meaningfully,
+re-encode the covariate for the linear fit as one reference-level indicator
+per non-reference level (drop a baseline level, one dummy per remaining
+level), refit, and compare each dummy's coefficient sign against
+``hazard_effect``'s own two-point contrast for that same level against that
+same reference.
 
 ``path_effect``
 ------------------

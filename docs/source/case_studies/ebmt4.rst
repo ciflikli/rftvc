@@ -29,8 +29,9 @@ covariates (``year``, ``agecl``, ``proph``, ``match``) are ordinal-coded for
 both fits with an explicit, fixed level order (the R factor levels
 themselves, already ordinal for ``year``/``agecl``).
 
-**Relevance, per cause** (``permutation_importance``/``drop_column_importance``,
-``oob=True`` -- a score-drop magnitude, not a signed effect):
+**Relevance, per cause** (``permutation_importance`` (``oob=True``) and
+``drop_column_importance`` (5-fold cross-fitted, ``cv=5``) -- both a
+score-drop magnitude, not a signed effect):
 
 .. csv-table::
    :file: generated/ebmt4_relevance.csv
@@ -59,11 +60,18 @@ Cox coefficient's sign):
 
 ``year`` and ``agecl`` are 3-level *nominal* categories: Cox fits one linear
 coefficient across all three levels, while the forest's ``hazard_effect``
-makes no such linearity assumption, so a sign read at the two extreme codes
-is not a same-contrast comparison for either (:doc:`../user_guide/importance`'s
-caveat) -- ``gated`` marks the rows excluded from the agreement check for
-exactly this reason, not hidden, just not counted. Every genuinely **binary**
-covariate agrees between the forest and Cox.
+makes no such linearity assumption. Both models are evaluated at the same
+two codes (0 vs. 2), so a sign disagreement there is a real, comparable
+disagreement, not a case where no comparison can be made -- but the two
+models' differing assumptions about the levels in between mean it need not
+indicate anything wrong with either fit (:doc:`../user_guide/importance`'s
+caveat). ``gated`` marks these rows as excluded from the agreement-rate
+check for that reason, not hidden, just not counted toward it. The one
+disagreement actually found this way (``agecl`` at cause 1) is numerically
+tiny -- mean hazards of 0.0003000 vs. 0.0003356 at the two codes, a Cox
+coefficient of -0.0009 -- consistent with reading too much into a sign at
+the extremes of a variable Cox is forcing into a single linear trend. Every
+genuinely **binary** covariate agrees between the forest and Cox.
 
 **Is the forest picking up cause-specific structure at all?** ``ae``'s
 ``hazard_effect`` contrast (``ae=1`` minus ``ae=0``), per scoring window, for
@@ -77,13 +85,16 @@ each cause:
 
 - Every binary covariate checked agrees in direction between the forest and
   Cox, on both causes. The one *disagreement* found (``agecl`` at cause 1) is
-  exactly the kind the caveat above predicts for a >2-level nominal
-  covariate, not a forest-vs-Cox modelling conflict.
-- ``ae``'s per-window contrast is small and slightly negative for cause 1
-  (relapse), and consistently positive and larger for cause 2 (death without
-  relapse) -- clear evidence the forest is picking up genuinely
-  cause-specific structure from the same shared trees, not evidence about
-  ``ae``'s real clinical meaning (there is none claimed here).
+  numerically tiny and exactly the kind the caveat above predicts for a
+  >2-level nominal covariate compared against a linear model forced through
+  all its levels, not a sign of a bug in either fit.
+- ``ae``'s per-window contrast for cause 1 (relapse) is small and mixed in
+  sign (three of the eight windows are tiny positive, rounding to ``0.0`` in
+  the table above; the rest are negative or zero), not simply "negative".
+  Cause 2 (death without relapse)'s contrast is consistently positive and an
+  order of magnitude larger -- clear evidence the forest is picking up
+  genuinely cause-specific structure from the same shared trees, not evidence
+  about ``ae``'s real clinical meaning (there is none claimed here).
 
 Reproduce with ``python -m examples.ebmt4_case_study`` from the repository
 root (downloads a small file on first run).
