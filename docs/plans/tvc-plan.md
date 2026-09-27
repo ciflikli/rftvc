@@ -268,6 +268,30 @@ drop_column_importance(estimator, X, y=None, *, ids=None, cv=5, features=None, g
 
 ---
 
+## S16–S20 results
+
+All predeclared simulation/gate results across the TVC foundation/importance track, from each slice's own "done" note (`sN-plan.md`).
+
+| Slice | Check | Result |
+|---|---|---|
+| S16 | Identity bench (S9 cases + block + CR, 80 arrays) | pass (bit-identical) |
+| S16 | `oob_cumhaz` vs `oob_mortality` (id/aggregate/coarse/block/bootstrap) | pass (bit-identical) |
+| S16 | Memory gate (1M rows, M=64) | pass (0.20× ≤ 1× gate) |
+| S16 | Deviance follow-up: OOB vs held-out importance agreement | pass (Spearman ρ=0.98 ≥ 0.8) |
+| S16 | Deviance follow-up: zero-rate share (n × min_events_leaf × M grid) | pass (0 in every cell) |
+| S16 | Deviance follow-up: `windows` default selection rule | **deviation (user-approved):** the declared rule picked M=4, but M=4 itself attenuates importances under a steep time-varying baseline; M=8 kept as the default |
+| S17 | §7.1 trend confounding (M2 vs M1) | pass |
+| S17 | §7.3 timing (windowed importance localises to the true window) | pass |
+| S17 | §7.4 competing risks (cause-specific importance) | pass |
+| S18 | §7.1 LOCO part | pass |
+| S18 | §7.7b null control (mean importance of a pure-noise unit ≈ 0) | **fails as declared, deviation (user-approved):** a real, cited, finite-sample bias of cross-fitted LOCO at n=1000 ids (shrinks with n, not with n_estimators); not re-run at larger n |
+| S18 | §7.7b grouped LOCO > single-copy LOCO | pass |
+| S19 | §7.2 level-vs-history, Markov control | pass |
+| S19 | §7.2 level-vs-history, history scenario | **fails as declared, deviation (user-approved):** the diagnostic's own history-featurization (cumulative mean, not a windowed rolling mean) is a deliberate mismatch with the generator's true rolling-2 driver, diluting more at later landmarks; not a defect in the importance machinery, which the Markov control confirms |
+| S19 | §7.5b repeated landmark copies (SE does not shrink with more copies) | pass |
+| S19 | §7.5b heavy censoring (PE vs Brier importance rank agreement) | pass |
+| S20 | §7.5 `path_effect` vs the true Δ risk | **fails as declared, well-powered (MC-SE ≪ margin/7), at both R=10 and R=50 — awaiting a user decision** (docs/bench/s20-effects/path_effect.csv; not a code defect, checked against an exact-hazard stub; not yet accepted as a deviation, unlike the S18/S19 rows above) |
+
 ## Risks (plan-level)
 | Risk | Mitigation |
 |---|---|

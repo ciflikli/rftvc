@@ -55,6 +55,8 @@ Inspection
 
    permutation_importance
    drop_column_importance
+   hazard_effect
+   path_effect
 
 Metrics
 -------
