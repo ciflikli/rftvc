@@ -56,8 +56,8 @@ coefficient's sign; only meaningful for a binary or continuous covariate,
 - This is a real, if informal, sanity check that ``hazard_effect`` on real
   data recovers the same qualitative story a standard Cox fit does, on a
   genuine time-varying covariate (employment status) -- not a claim that the
-  forest improves on Cox here: with these covariates and this sample size,
-  discrimination is close between the two (out-of-bag concordance 0.687).
+  forest improves on Cox here: no Cox concordance is computed on this page to
+  compare against, only the forest's own out-of-bag concordance (0.687).
 
 Reproduce with ``python -m examples.rossi_case_study`` from the repository
 root (downloads a small file on first run).

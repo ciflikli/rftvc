@@ -541,9 +541,13 @@ def hazard_effect(estimator, X, y, *, feature, values=None, windows=8, kind="ave
     linear model fits one coefficient across every level while ``hazard_effect`` makes
     no linearity assumption; a sign read off two contrast points need not agree with,
     or disagree with, the linear coefficient in any meaningful sense for that covariate.
-    Encode such covariates with care (e.g. one contrast per level against a fixed
-    reference) and don't expect a single "direction" out of either method to be
-    comparable to the other.
+    Comparing this contrast against a linear model still fit on the original,
+    ordinally-coded column (one coefficient across every level) is not a like-for-like
+    comparison. To compare them meaningfully, re-encode the covariate for the linear fit
+    as one reference-level indicator per non-reference level (drop a baseline level, one
+    dummy per remaining level) and refit; then compare each dummy's coefficient sign
+    against ``hazard_effect``'s own two-point contrast for that same level against that
+    same reference.
     """
     if kind not in ("average", "individual"):
         raise ValueError(f"kind must be 'average' or 'individual', got {kind!r}")
