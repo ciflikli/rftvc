@@ -26,3 +26,9 @@ def test_foundation_page_states_no_consistency_result_without_overclaiming():
     assert "no consistency result was found" in text
     assert "consistent estimator" not in text
     assert "consistency of rftvc" not in text
+
+
+def test_importance_page_warns_against_naive_m1_extrapolation():
+    text = _text("importance.rst")
+    assert "extrapolat" in text
+    assert "m1" in text or "naive" in text

@@ -10,3 +10,4 @@ User guide
    prediction
    evaluation
    competing_risks
+   importance
