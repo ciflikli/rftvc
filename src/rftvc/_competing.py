@@ -32,6 +32,9 @@ class CompetingRisksForestTV(_BaseForestTV):
     is valid for external (or specified) covariates only. For dynamic
     prediction with internal covariates, use landmarking.
 
+    .. seealso:: :doc:`/user_guide/foundation` for what this estimates, its
+       assumptions and the validity of each prediction call.
+
     Parameters
     ----------
     n_estimators, max_features, max_depth, min_ids_leaf, max_bins, ntime, resample_unit, block_length, oob_buffer, \

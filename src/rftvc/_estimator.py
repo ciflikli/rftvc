@@ -424,6 +424,9 @@ class SurvivalForestTV(_BaseForestTV):
     Resampling, leaf sizes and OOB count resampling units (ids, or id × time
     blocks with ``resample_unit="block"``), not rows.
 
+    .. seealso:: :doc:`/user_guide/foundation` for what this estimates, its
+       assumptions and the validity of each prediction call.
+
     Parameters
     ----------
     n_estimators : int, default=500

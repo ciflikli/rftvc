@@ -310,6 +310,9 @@ class LandmarkSurvivalForest(_LandmarkBase):
     This is a meta-estimator that owns the joint transformation of rows,
     outcomes and ids; it is not a scikit-learn ``Pipeline``.
 
+    .. seealso:: :doc:`/user_guide/foundation` for what this estimates, its
+       assumptions and the validity of each prediction call.
+
     Parameters
     ----------
     horizon : float
@@ -394,6 +397,9 @@ class LandmarkCompetingRisksForest(_LandmarkBase):
     landmark ``s``. The clock is reset at ``s``, so the Aalen–Johansen estimate
     in each leaf is a direct estimate of this target. The event column holds
     cause labels (0 = censored).
+
+    .. seealso:: :doc:`/user_guide/foundation` for what this estimates, its
+       assumptions and the validity of each prediction call.
 
     Parameters
     ----------

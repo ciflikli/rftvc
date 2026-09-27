@@ -33,6 +33,9 @@ from bench.tvc_perm_sim import (
     upper_bound,
 )
 from bench.s14_cr_sim import hazards as cr_hazards
+from bench.tvc_path_effect_sim import HORIZONS as PE_HORIZONS
+from bench.tvc_path_effect_sim import oracle as path_effect_oracle
+from bench.tvc_path_effect_sim import replicate as path_effect_replicate
 
 pytestmark = [
     pytest.mark.filterwarnings("ignore:.*extrapolate:UserWarning"),
@@ -146,6 +149,13 @@ def test_replicate_smoke(fn):
     assert all(np.isfinite(v) for v in r.values())
 
 
+@pytest.mark.filterwarnings("ignore::UserWarning", "ignore::RuntimeWarning")
+def test_path_effect_replicate_smoke():
+    r = path_effect_replicate(0, n_train=200, n_test=100, n_estimators=20)
+    assert len(r) == len(PE_HORIZONS)
+    assert all(np.isfinite(v) for v in r.values())
+
+
 @pytest.mark.slow
 def test_pilot_pass_rules_point_the_right_way():
     n_reps = 10
@@ -170,3 +180,19 @@ def test_pilot_pass_rules_point_the_right_way():
     d_s2 = np.array([r["d_s2"] for r in cr])
     assert holm_reject([one_sided_t(d_s1), one_sided_t(d_s2)])[0]
     assert upper_bound(d_s2, 0.05) <= 0.3 * O1  # loose at R=10 (design rule: <= 0.1*oracle at R=50)
+
+    # path_effect: FAILS the design's tight |mean bias| <= 0.1*|true_delta| rule even at the
+    # full R=50 run (docs/bench/s20-effects/path_effect.csv; s20-plan.md T9) -- a real,
+    # well-powered (MC-SE << margin/7) finite-sample forest bias, not a code defect (checked
+    # against an exact-hazard stub separately). As S19 did for its own accepted §7.2 deviation
+    # (this same file's sibling test_landmark_sim_truth.py: "assert hist.mean() > 0", not the
+    # real rule's tight bound), this pilot-regression check only confirms the machinery points
+    # the right way -- positive, same order of magnitude as the truth -- not the tight margin,
+    # so a known, documented, user-pending deviation doesn't leave the suite permanently red.
+    pe = [path_effect_replicate(s) for s in range(n_reps)]
+    true_d = path_effect_oracle()
+    est = np.array([[r[f"m_h{i}"] for i in range(len(PE_HORIZONS))] for r in pe])
+    mean_est = est.mean(axis=0)
+    assert (mean_est > 0).all()
+    assert (mean_est >= 0.5 * true_d).all()
+    assert (mean_est <= 1.5 * true_d).all()  # the known deviation is ~0.8x truth; catches an unrelated inflation bug
