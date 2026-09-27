@@ -11,6 +11,7 @@ from rftvc import (
     inspection,
     make_competing_risks_y,
 )
+from rftvc._inspection import _loco
 from rftvc.model_selection import RollingOriginSplit
 from tests.sim import rows, simulate
 
@@ -142,6 +143,27 @@ def test_se_invariant_to_duplicating_an_identical_fold(monkeypatch):
     np.testing.assert_allclose(once.importances_se, twice.importances_se, rtol=1e-10)
 
 
+def test_id_cluster_se_centers_by_scored_event_share():
+    """An id scored on more events naturally has a larger raw total drop without being any
+    more variable per event: the cluster SE must center each id's pooled total by its own
+    share of the pooled per-event mean (mean * n_i), not treat the raw pooled total as the
+    observation (regression: summing raw per-id totals directly gave a spurious nonzero SE
+    even when every id's per-event rate was identical, merely because one id had more
+    scored events than the others).
+
+    3 ids: "a" appears in two fold-occurrences (1 scored event each, drops 1 and 3);
+    "b" and "c" appear once each (1 scored event, drop 2). Every id's rate is 2/event
+    (a: (1+3)/2 = 2; b, c: 2/1 = 2), so the true cluster spread is exactly zero.
+    """
+    id_values = [np.array(["a", "b"]), np.array(["a", "c"])]
+    id_n = [np.array([1.0, 1.0]), np.array([1.0, 1.0])]
+    id_drop = [[np.array([1.0, 2.0]), np.array([3.0, 2.0])]]  # one unit, per-fold raw drops
+    mean = np.array([2.0])  # total_drop = 8, N = 4 -> mean = 2
+    n_ids, se = _loco._id_cluster_se(id_values, id_n, id_drop, mean, N=4.0, n_units=1, time_split=False)
+    assert n_ids == 3
+    assert se[0] == pytest.approx(0.0, abs=1e-12)
+
+
 def test_cause_breakdown_survives_disagreeing_window_edges():
     """Cause labels are a fixed, fold-independent vocabulary, so a fold disagreement in
     window edges should drop the window decomposition but not the (unrelated) cause
@@ -169,6 +191,7 @@ def test_cause_breakdown_survives_disagreeing_window_edges():
         loco_mod.event_windows = orig
     assert res.importances_window is None
     assert res.importances_cause is not None
+    np.testing.assert_allclose(res.importances_cause.sum(axis=1), res.importances_mean, atol=1e-8)
 
 
 def test_window_pooling_requires_matching_edges_not_just_shape():

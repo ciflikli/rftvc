@@ -61,6 +61,30 @@ def _fix_landmark_causes(stack_template, data):
     return clone(stack_template).set_params(forest__causes=causes.tolist())
 
 
+def _id_cluster_se(id_values, id_n, id_drop, mean, N, n_units, time_split):
+    """Cluster-robust SE of each unit's ``importances_mean = total_drop / N`` (a per-event
+    ratio): sums a repeated id's per-fold raw drop and scored-event count into one cluster
+    total (so SE is invariant to a splitter literally duplicating a fold), then centers
+    each id's total by its own scored-event share of the pooled mean (``mean * n_i``)
+    before taking the cluster std. An id scored on more events naturally has a larger raw
+    total without being any more variable per event, so a plain std of the raw pooled
+    totals would mistake that scale difference for spread (NaN under a time splitter,
+    whose folds are not id-independent clusters)."""
+    all_ids = np.concatenate(id_values)
+    unique_ids, fold_pos = np.unique(all_ids, return_inverse=True)
+    n_ids = unique_ids.shape[0]
+    n_i = np.zeros(n_ids)
+    np.add.at(n_i, fold_pos, np.concatenate(id_n))
+    se = np.full(n_units, np.nan)
+    if not time_split:
+        for j in range(n_units):
+            pooled = np.zeros(n_ids)
+            np.add.at(pooled, fold_pos, np.concatenate(id_drop[j]))
+            resid = pooled - mean[j] * n_i
+            se[j] = float(np.std(resid, ddof=1)) * np.sqrt(n_ids) / N
+    return n_ids, se
+
+
 def _windows_for(fitted, windows):
     """Windows for one fold's full model: ``event_windows(fitted, windows)`` for an int,
     else validated edges. Unlike ``permutation_importance``, this is not checked against
@@ -110,7 +134,7 @@ def run(estimator, Xnum, ye, ids_values, units, cv, windows, alpha, cause, compe
     total_drop = np.zeros(n_units)  # raw (sum-reduce) drop, seed- and fold-pooled
     window_drop, cause_drop, window_edges = None, None, None
     window_ok = True
-    id_values, id_drop = [], [[] for _ in range(n_units)]  # per-unit list of (ids, raw drop) per fold
+    id_values, id_drop, id_n = [], [[] for _ in range(n_units)], []
     baseline_sum = null_sum = 0.0
     N = 0
 
@@ -143,6 +167,7 @@ def run(estimator, Xnum, ye, ids_values, units, cv, windows, alpha, cause, compe
             )
             if fold_N is None:
                 fold_N, fold_ids, fold_w = S_full.n_events, S_full.id_labels, w
+                fold_n_events = S_full.n_events_by_id
                 # null_total depends only on the training null and the (deterministic) fold
                 # design, not on forest randomness, so it is the same for every seed here.
                 fold_null_total = S_full.null_total
@@ -177,6 +202,7 @@ def run(estimator, Xnum, ye, ids_values, units, cv, windows, alpha, cause, compe
         null_sum += fold_null_total
         N += fold_N
         id_values.append(fold_ids)
+        id_n.append(fold_n_events)
         for j in range(n_units):
             id_drop[j].append(seed_by_id[j] / n_seeds)
 
@@ -191,26 +217,13 @@ def run(estimator, Xnum, ye, ids_values, units, cv, windows, alpha, cause, compe
         if cause_drop is not None:  # independent of window_ok: causes are fixed vocabulary-wide
             cause_drop += seed_cause
 
-    all_ids = np.concatenate(id_values)
-    unique_ids, fold_pos = np.unique(all_ids, return_inverse=True)
-    n_ids = unique_ids.shape[0]
-    se = np.full(n_units, np.nan)
-    if not time_split:
-        for j in range(n_units):
-            raw = np.concatenate(id_drop[j])
-            # an id repeated across folds (a repeated/shuffled splitter) is one cluster, not
-            # one observation per occurrence: sum its per-fold drops into a single value
-            # before treating each id as an independent observation for the SE (summing,
-            # not averaging, keeps SE invariant to literally duplicating a fold, since N
-            # below also sums every fold occurrence's event count).
-            pooled = np.zeros(n_ids)
-            np.add.at(pooled, fold_pos, raw)
-            se[j] = float(np.std(pooled, ddof=1)) * np.sqrt(n_ids) / N
+    mean = total_drop / N
+    n_ids, se = _id_cluster_se(id_values, id_n, id_drop, mean, N, n_units, time_split)
 
     return LocoResult(
         importances=per_fold_imp,
         fold_scores=fold_scores,
-        importances_mean=total_drop / N,
+        importances_mean=mean,
         importances_window=(window_drop / N) if window_ok else None,
         importances_cause=(cause_drop / N) if cause_drop is not None else None,
         importances_se=se,
@@ -289,7 +302,7 @@ def run_landmark(stack_template, df, data, units, cv, windows, alpha, cause, com
     total_drop = np.zeros(n_units)
     window_drop = cause_drop = window_edges = None
     window_ok = True
-    id_values, id_drop = [], [[] for _ in range(n_units)]
+    id_values, id_drop, id_n = [], [[] for _ in range(n_units)], []
     baseline_sum = null_sum = 0.0
     N = 0
 
@@ -321,6 +334,7 @@ def run_landmark(stack_template, df, data, units, cv, windows, alpha, cause, com
             )
             if fold_N is None:
                 fold_N, fold_ids, fold_w = S_full.n_events, S_full.id_labels, w
+                fold_n_events = S_full.n_events_by_id
                 fold_null_total = S_full.null_total
                 seed_window = np.zeros((n_units,) + S_full.by_window.shape)
                 if S_full.by_cause is not None:
@@ -353,6 +367,7 @@ def run_landmark(stack_template, df, data, units, cv, windows, alpha, cause, com
         null_sum += fold_null_total
         N += fold_N
         id_values.append(fold_ids)
+        id_n.append(fold_n_events)
         for j in range(n_units):
             id_drop[j].append(seed_by_id[j] / n_seeds)
 
@@ -367,23 +382,13 @@ def run_landmark(stack_template, df, data, units, cv, windows, alpha, cause, com
         if cause_drop is not None:  # independent of window_ok: causes are fixed vocabulary-wide
             cause_drop += seed_cause
 
-    all_ids = np.concatenate(id_values)
-    unique_ids, fold_pos = np.unique(all_ids, return_inverse=True)
-    n_ids = unique_ids.shape[0]
-    se = np.full(n_units, np.nan)
-    if not time_split:
-        for j in range(n_units):
-            raw = np.concatenate(id_drop[j])
-            # sum (not average) a repeated id's per-fold drops: keeps SE invariant to
-            # literally duplicating a fold, since N below also sums every occurrence.
-            pooled = np.zeros(n_ids)
-            np.add.at(pooled, fold_pos, raw)
-            se[j] = float(np.std(pooled, ddof=1)) * np.sqrt(n_ids) / N
+    mean = total_drop / N
+    n_ids, se = _id_cluster_se(id_values, id_n, id_drop, mean, N, n_units, time_split)
 
     return LocoResult(
         importances=per_fold_imp,
         fold_scores=fold_scores,
-        importances_mean=total_drop / N,
+        importances_mean=mean,
         importances_window=(window_drop / N) if window_ok else None,
         importances_cause=(cause_drop / N) if cause_drop is not None else None,
         importances_se=se,
