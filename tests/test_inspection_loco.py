@@ -103,6 +103,52 @@ def test_id_splitter_every_id_scored_exactly_once():
     assert np.isfinite(res.importances_se).all()
 
 
+def test_repeated_splitter_n_ids_counts_distinct_ids_once():
+    """A valid repeated group splitter (e.g. GroupShuffleSplit) can put the same id in more
+    than one fold's test set. ``n_ids``/the cluster SE must treat that id as one cluster,
+    not once per occurrence (regression: previously summed per-fold test-id counts)."""
+    from sklearn.model_selection import GroupShuffleSplit
+
+    X, y, ids = _data(200, 5)
+    est = SurvivalForestTV(n_estimators=10, random_state=0, n_jobs=1)
+    cv = GroupShuffleSplit(n_splits=4, test_size=0.4, random_state=0)
+    test_ids = set()
+    for _, test_idx in cv.split(X, groups=ids):
+        test_ids.update(np.unique(ids[test_idx]).tolist())
+    res = _dci(est, X, y, ids=ids, cv=cv, n_seeds=1)
+    assert res.n_ids == len(test_ids)
+    assert np.isfinite(res.importances_se).all()
+
+
+def test_window_pooling_requires_matching_edges_not_just_shape():
+    """Folds with the same number of windows but different edges (expected under the
+    default int ``windows``, since each fold's own event_windows are quantiles of that
+    fold's own training data) must not be pooled by position (regression: previously only
+    the shape was checked, and the first fold's edges were reported for the pooled sum)."""
+    import rftvc._inspection._loco as loco_mod
+
+    X, y, ids = _data(150, 8)
+    est = SurvivalForestTV(n_estimators=10, random_state=0, n_jobs=1)
+    orig = loco_mod.event_windows
+    calls = {"n": 0}
+
+    def fake(fitted, windows):
+        edges = orig(fitted, windows)
+        if calls["n"] % 2 == 1:
+            edges = edges.copy()
+            edges[1:] *= 2.0  # same shape and starts at 0, but different interior edges
+        calls["n"] += 1
+        return edges
+
+    loco_mod.event_windows = fake
+    try:
+        res = _dci(est, X, y, ids=ids, cv=3, n_seeds=1)
+    finally:
+        loco_mod.event_windows = orig
+    assert res.importances_window is None
+    assert res.window_edges is None
+
+
 @pytest.mark.filterwarnings("ignore:invalid value encountered in subtract:RuntimeWarning")
 def test_time_splitter_censors_training_and_gives_nan_se():
     X, y, ids = _data(400, 3)
@@ -259,6 +305,45 @@ def test_dataframe_ids_column():
 
 
 # --- competing risks -----------------------------------------------------------------------
+
+
+class _FixedSplit:
+    """A splitter yielding pre-set ``(train_idx, test_idx)`` pairs, to force a fold whose
+    training data lacks a cause entirely (a CV/`GroupKFold` split could do this by chance
+    with a rare cause; here it's forced for a deterministic regression test)."""
+
+    def __init__(self, folds):
+        self._folds = folds
+
+    def split(self, X, y=None, groups=None):
+        yield from self._folds
+
+    def get_n_splits(self, X=None, y=None, groups=None):
+        return len(self._folds)
+
+
+def test_competing_risks_loco_survives_a_cause_absent_from_a_training_fold():
+    """A cause vocabulary fixed from the fold's own training data (rather than the full
+    data, as ``landmark_cross_validate`` already does) makes scoring raise once a fold's
+    test set contains a cause its training fold never saw (regression: this used to crash
+    with "y has cause labels [...] not in causes")."""
+    n_ids = 6
+    ids = np.repeat(np.arange(n_ids), 4)
+    start = np.tile([0.0, 1.0, 2.0, 3.0], n_ids)
+    stop = start + 1.0
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(n_ids * 4, 2))
+    labels = np.zeros(n_ids * 4, dtype=int)
+    labels[3::4] = [1, 1, 1, 1, 1, 2]  # only id 5 ever has a cause-2 event
+    y = make_competing_risks_y(stop, labels, start=start)
+
+    train_idx = np.flatnonzero(np.isin(ids, np.arange(5)))  # ids 0-4: cause 1 only
+    test_idx = np.flatnonzero(ids == 5)  # id 5: the only cause-2 event
+    cv = _FixedSplit([(train_idx, test_idx)])
+
+    est = CompetingRisksForestTV(n_estimators=10, random_state=0, n_jobs=1)
+    res = inspection.drop_column_importance(est, X, y, ids=ids, cv=cv, n_seeds=1)
+    assert res.n_events > 0
 
 
 def test_competing_risks_cause_selection():
