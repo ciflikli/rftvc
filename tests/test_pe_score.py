@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from rftvc import SurvivalForestTV, make_competing_risks_y, make_survival_y
-from rftvc.metrics import UndefinedMetricError, _baseline_at, event_windows, piecewise_exponential_score
+from rftvc.metrics import UndefinedMetricError, _baseline_at, _window_exposure_1, event_windows, piecewise_exponential_score
 
 A, B = 0.3, 0.7
 W = np.array([0.0, 1.0, 2.0])
@@ -218,6 +218,25 @@ def test_event_windows_inverse_cdf_and_ties():
         event_windows(types.SimpleNamespace(event_times_=np.array([1.0])))
     with pytest.raises(ValueError, match="n_windows"):
         event_windows(est, 0)
+
+
+def test_window_exposure_matches_hand_computation():
+    start = np.array([0.0, 0.5, 1.5, 2.0])
+    stop = np.array([1.0, 2.0, 3.0, 2.0])
+    # window (0.5, 1.5]: row 0 contributes (1.0-0.5)=0.5; row 1 (1.5-0.5)=1.0;
+    # row 2 has start=1.5 == hi, no exposure; row 3 (stop==start) is a zero-length row, no exposure.
+    e = _window_exposure_1(start, stop, 0.5, 1.5)
+    np.testing.assert_allclose(e, [0.5, 1.0, 0.0, 0.0])
+
+
+def test_window_exposure_feeds_the_score_identically_to_the_pre_refactor_loop():
+    # a direct per-window scalar computation, as the loop wrote inline before extraction
+    rng = np.random.default_rng(0)
+    start = rng.uniform(0, 2, size=50)
+    stop = start + rng.uniform(0.1, 2, size=50)
+    for lo, hi in [(0.0, 1.0), (1.0, 2.5), (2.5, 4.0)]:
+        expected = np.clip(np.minimum(stop, hi) - np.maximum(start, lo), 0.0, None)
+        np.testing.assert_allclose(_window_exposure_1(start, stop, lo, hi), expected)
 
 
 def test_baseline_at_is_a_step_function():

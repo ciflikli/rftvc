@@ -617,6 +617,15 @@ def _baseline_at(estimator, windows):
     return padded[..., idx + 1]
 
 
+def _window_exposure_1(start, stop, lo, hi):
+    """Each row's exposure in one window ``(lo, hi]``: ``clip(min(stop, hi) - max(start, lo), 0, None)``.
+
+    One window at a time, so callers with many windows (``piecewise_exponential_score``'s
+    own loop, ``inspection.hazard_effect``) stay at ``O(n)`` memory rather than ``O(n * M)``.
+    """
+    return np.clip(np.minimum(stop, hi) - np.maximum(start, lo), 0.0, None)
+
+
 def _check_windows(windows):
     w = np.asarray(windows, dtype=float)
     if w.ndim != 1 or w.size < 2 or not np.isfinite(w).all() or w[0] != 0 or np.any(np.diff(w) <= 0):
@@ -756,7 +765,7 @@ def piecewise_exponential_score(
         for m in range(M):
             lo, hi = w[m], w[m + 1]
             width = hi - lo
-            e = np.clip(np.minimum(stop, hi) - np.maximum(start, lo), 0.0, None)
+            e = _window_exposure_1(start, stop, lo, hi)
             in_window = scored & (stop > lo)
             in_window &= stop <= hi
             for j in range(J):
