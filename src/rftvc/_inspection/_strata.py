@@ -5,14 +5,28 @@ import numbers
 import numpy as np
 
 
+def _scalar_isna(x):
+    """Whether one object-array element is missing: ``None``, or not equal to itself (the
+    universal NaN/``NaT``/``Decimal("NaN")`` idiom). A pandas nullable scalar such as
+    ``pd.NA`` makes ``x != x`` itself an ``NA`` rather than a bool, so ``bool(...)``
+    deliberately raises there (pandas' own way of forcing explicit missing-value handling);
+    caught and treated as missing, which is exactly what it means."""
+    if x is None:
+        return True
+    try:
+        return bool(x != x)
+    except TypeError:
+        return True
+
+
 def _isna(s):
-    """NaN/``NaT``/``None`` mask, dtype-agnostic: for object arrays, ``None`` or anything
-    not equal to itself (the universal NaN/NaT/``Decimal("NaN")`` idiom, since none of
-    them compare equal to their own value); for every other dtype (numeric, ``datetime64``,
-    ``timedelta64``, bool, string), ``s != s`` alone already gives this (a normal value of
-    those dtypes always equals itself, so no dtype-kind dispatch is needed there)."""
+    """NaN/``NaT``/``None``/``pd.NA`` mask, dtype-agnostic: for object arrays, elementwise
+    ``_scalar_isna``; for every other dtype (numeric, ``datetime64``, ``timedelta64``,
+    bool, string), ``s != s`` alone already gives this (float/complex/``NaT`` all compare
+    unequal to their own value by design, and a normal value of any other dtype always
+    equals itself, so no dtype-kind dispatch is needed there)."""
     if s.dtype.kind == "O":
-        return np.fromiter((x is None or x != x for x in s.ravel()), dtype=bool, count=s.size).reshape(s.shape)
+        return np.fromiter((_scalar_isna(x) for x in s.ravel()), dtype=bool, count=s.size).reshape(s.shape)
     return s != s
 
 

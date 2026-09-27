@@ -297,6 +297,16 @@ def test_user_strata_labels_reject_boxed_nat_and_decimal_nan():
         _strata.user_labels(np.array([decimal.Decimal("1"), decimal.Decimal("NaN")], dtype=object), 2)
 
 
+def test_user_strata_labels_reject_pandas_na():
+    """pandas' pd.NA (a nullable-dtype missing marker) boxed in an object array (regression:
+    ``x != x`` is itself an ``NA``, not a bool, for ``pd.NA``, so ``bool(x != x)`` raises
+    TypeError there by design rather than returning True/False; must be treated as missing,
+    not left to propagate as an opaque TypeError)."""
+    _strata.user_labels(np.array([1, 2], dtype=object), 2)  # sanity: no false positive
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([1, pd.NA], dtype=object), 2)
+
+
 def test_user_strata_restrict_the_permutation():
     labels = (XT[:, 0] > 0).astype(int)
     ev, calls = _recording_eval(XT, YT)
