@@ -39,10 +39,16 @@ themselves, already ordinal for ``year``/``agecl``).
 ``agecl`` is the strongest baseline covariate for cause 2 (death without
 relapse) by both measures -- plausible, since age at transplant is a
 well-known driver of transplant-related mortality. ``ae``'s permutation
-importance is ~0 for both causes but its LOCO importance is clearly
-positive: the two measures can legitimately disagree (LOCO answers
-"predictive value for a new patient given everything else"; permutation
-answers "reliance holding time fixed"; :doc:`../user_guide/importance`).
+importance is exactly ``0.0`` for both causes, while its LOCO importance is
+clearly positive -- but this is not the general "permutation and LOCO can
+legitimately disagree" case (:doc:`../user_guide/importance`). ``ae`` is a
+start-time indicator here (every ``ae=0`` row has ``start=0``, every
+``ae=1`` row has ``start>0``), so the default time-stratified permutation
+(``strata="time"``) puts every row into a stratum that is homogeneous in
+``ae``: within-stratum permutation can never actually change a row's
+``ae`` value. The ``0.0`` reflects that structural confound, not the
+model's real reliance on ``ae`` -- LOCO is the informative measure for
+this covariate here.
 
 **Direction** (``hazard_effect`` two-point contrasts vs. each cause-specific
 Cox coefficient's sign):

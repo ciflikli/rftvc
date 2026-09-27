@@ -41,6 +41,10 @@ def test_last_row_stop_equals_week_and_event_only_there():
     # no event on a non-last row
     per_id_event_rows = d.filter(pl.col("event")).group_by("id").len()
     assert (per_id_event_rows["len"] == 1).all()
+    # every event row is that id's last row (not just: at most one event row per id -- an
+    # implementation that moved an event to an earlier interval for an arrested subject
+    # would still pass the two checks above alone)
+    assert not (d["event"] & ~is_last).any()
 
 
 def test_id_one_is_never_employed_and_arrested_at_week_20():
