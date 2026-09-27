@@ -26,19 +26,28 @@ def _cache_dir():
     return Path(os.environ.get("RFTVC_DATA", Path.home() / ".cache" / "rftvc"))
 
 
+_RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}  # rate limit / transient server error
+
+
+def _retryable(exc):
+    """Whether a download failure is worth retrying: any non-HTTP ``OSError``
+    (connection reset, timeout, DNS, ...) is transient; an ``HTTPError`` is only
+    transient for a rate-limit or server-side status -- a URL that 404s (or other
+    4xx) will keep 404ing, so retrying it just wastes the backoff delay."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in _RETRYABLE_HTTP_STATUS
+    return True
+
+
 def _download(url, retries, timeout):
-    """Bytes from ``url``, retrying a transient network failure with backoff. Not
-    retried: a checksum mismatch (a data problem no retry fixes) or an ``HTTPError``
-    (a definite server response, e.g. 404 -- a URL that returns one will keep
-    returning it, so retrying only wastes the backoff delay)."""
+    """Bytes from ``url``, retrying a transient failure (see ``_retryable``) with
+    backoff. Not retried: a checksum mismatch, a data problem no retry fixes."""
     for attempt in range(retries):
         try:
             with urllib.request.urlopen(url, timeout=timeout) as r:
                 return r.read()
-        except urllib.error.HTTPError:
-            raise
-        except OSError:
-            if attempt + 1 == retries:
+        except OSError as exc:
+            if not _retryable(exc) or attempt + 1 == retries:
                 raise
             time.sleep(2**attempt)
 

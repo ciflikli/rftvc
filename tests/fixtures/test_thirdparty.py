@@ -157,6 +157,27 @@ def test_fetch_does_not_retry_a_permanent_http_error(monkeypatch):
     assert calls["n"] == 1
 
 
+def test_fetch_retries_a_transient_http_status_then_succeeds(monkeypatch):
+    """A 503 (or 429/5xx) is a transient server condition, unlike a 404: it must still be
+    retried (regression: an earlier fix excluded every HTTPError from retry, including
+    ones worth retrying, since it couldn't tell a permanent 4xx from a transient 5xx)."""
+    data = b"eventually works"
+    sha = _sha256(data)
+    calls = {"n": 0}
+
+    def flaky_503(url, timeout):
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise urllib.error.HTTPError(url, 503, "Service Unavailable", hdrs=None, fp=None)
+        return _FakeResponse(data)
+
+    monkeypatch.setattr(_thirdparty.urllib.request, "urlopen", flaky_503)
+    monkeypatch.setattr(_thirdparty.time, "sleep", lambda s: None)
+    path = _thirdparty.fetch("http://example.invalid/f", sha, "f.rda", retries=3)
+    assert path.read_bytes() == data
+    assert calls["n"] == 2
+
+
 def test_fetch_does_not_leak_the_fd_when_fdopen_fails(monkeypatch):
     """If ``os.fdopen`` itself raises before wrapping the raw descriptor, the descriptor
     must still be closed explicitly (regression: it stayed open, since ``with
