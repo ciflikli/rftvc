@@ -1,5 +1,8 @@
 """S19: landmark permutation and drop-column importance."""
 
+import contextlib
+import warnings
+
 import numpy as np
 import polars as pl
 import pytest
@@ -15,6 +18,13 @@ from rftvc import (
 from rftvc._inspection._units import resolve_landmark_units
 from rftvc.landmark import _raw_groups
 from tests.sim import rows, simulate
+
+
+@contextlib.contextmanager
+def _no_warn():
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        yield
 
 # --- units (T2) -------------------------------------------------------------------------
 
@@ -55,6 +65,11 @@ def test_landmark_is_not_a_permutable_unit(ref):
 def test_overlapping_features_raise():
     with pytest.raises(ValueError, match="named by both"):
         resolve_landmark_units(["z", "z_mean"], None, RAW, NAMES, len(NAMES))
+
+
+def test_unknown_feature_name_raises():
+    with pytest.raises(ValueError, match="unknown feature"):
+        resolve_landmark_units(["bogus"], None, RAW, NAMES, len(NAMES))
 
 
 def test_groups_naming_landmark_raises():
@@ -125,6 +140,13 @@ def test_own_column_conditioning_is_a_no_op():
     a = _pi(features=["z_mean"], random_state=3)
     b = _pi(features=["z_mean"], conditional_on=["z_mean"], random_state=3)
     np.testing.assert_array_equal(a.importances, b.importances)
+
+
+def test_conditioning_on_landmark_itself_is_allowed():
+    """decision 5: conditioning on 's' is meaningful (unlike permuting it); it must not be
+    rejected the way naming 'landmark' as a *unit* is."""
+    r = _pi(features=["z_mean"], conditional_on=["landmark"], random_state=3)
+    assert np.isfinite(r.importances_mean).all()
 
 
 def test_decompositions_sum_to_the_mean():
@@ -262,6 +284,132 @@ def test_brier_result_omits_pe_only_fields():
         assert r[field] is None
 
 
+# --- strata / groups / M3 equivalence, level-history diagnostic (T6 audit) --------------
+
+from rftvc._inspection import _score as _sc  # noqa: E402
+
+
+def test_permutation_stays_within_each_landmark_and_groups_move_jointly():
+    data = LM._landmark_data(DF)
+    Xe = data.X.copy()
+    Xe[:, 2] = Xe[:, 0] * 3 + 1  # n1 := f(x0): the pair must survive a joint permutation
+    codes = np.unique(data.s, return_inverse=True)[1]
+    st = _sc.Strata("user", codes, 10, [], 4)
+    cols = np.array([0, 2])
+    lab = _sc.labels(Xe, np.zeros(Xe.shape[0]), st, cols)
+    calls = []
+    w = np.array([0.0, LM.horizon])
+
+    def predict(Xr, rows):
+        calls.append((Xr.copy(), rows.copy()))
+        return LM.forest_.forest_.predict_cumhaz(np.ascontiguousarray(Xr), w, LM.forest_.aggregate, 1)
+
+    H = predict(Xe, np.arange(Xe.shape[0]))
+    ev = _sc.Evaluation(Xe, data.y, np.zeros(Xe.shape[0]), data.ids, w, np.zeros(2), 0.01, None, None, predict)
+    _sc._permuted(ev, H, Xe, cols, lab, np.random.default_rng(0), np.arange(Xe.shape[0]))
+    Xc, rows_ = calls[-1]
+    np.testing.assert_array_equal(Xc[:, 2], Xc[:, 0] * 3 + 1)  # joint
+    np.testing.assert_array_equal(Xc[:, 1], Xe[rows_, 1])  # untouched column
+    for lm in np.unique(codes):  # a received value comes from a row at the same landmark
+        inside = codes[rows_] == lm
+        assert np.isin(Xc[inside, 0], Xe[codes == lm, 0]).all()
+    assert np.unique(codes).size >= 2 and np.bincount(codes).min() != np.bincount(codes).max()  # distinct risk-set sizes
+
+
+def test_m3_equivalence_permutation_equals_recomputing_from_the_donor_raw_history():
+    """tvc-design §3's constructed test: a 2-subject risk set where permuting the ``z``
+    group with a forced donor gives the same row as recomputing ``z``/``z_mean`` by hand
+    from the donor's raw history up to ``s``."""
+    df = pl.DataFrame(
+        {
+            "id": ["a", "a", "b", "b"],
+            "start": [0.0, 1.0, 0.0, 1.0],
+            "stop": [1.0, 2.0, 1.0, 2.0],
+            "event": [False, False, False, True],
+            "z": [1.0, 3.0, 10.0, 20.0],
+        }
+    )
+    lm = LandmarkSurvivalForest(
+        horizon=1.0, landmarks=[1.5], history_features=["z", ("z", "mean")], forest=SurvivalForestTV(n_estimators=5, random_state=0)
+    ).fit(df)
+    data = lm._landmark_data(df)  # rows known at 1.5: a's [1,3] -> z=3, mean=2; b's [10,20] -> z=20, mean=15
+    row_a, row_b = np.flatnonzero(data.ids == "a")[0], np.flatnonzero(data.ids == "b")[0]
+    np.testing.assert_allclose(data.X[row_a, :2], [3.0, 2.0])
+    np.testing.assert_allclose(data.X[row_b, :2], [20.0, 15.0])
+    codes = np.zeros(2, dtype=np.intp)  # one landmark: one stratum
+    st = _sc.Strata("user", codes, 10, [], 4)
+    cols = np.array([0, 1])
+    lab = _sc.labels(data.X, np.zeros(2), st, cols)
+
+    class _ForcedSwap:
+        """A fake RNG that forces ``_strata.donors`` (one stratum, ``lexsort`` on this key) to
+        swap the two rows: ascending order of ``[1.0, 0.0]`` puts row 1 first, row 0 second."""
+
+        def random(self, n):
+            return np.array([1.0, 0.0])
+
+    src = _sc._strata.donors(lab, _ForcedSwap())
+    assert src[row_a] == row_b and src[row_b] == row_a  # a receives b's group, and vice versa
+    Xp = data.X.copy()
+    Xp[row_a, cols] = data.X[row_b, cols]
+    np.testing.assert_allclose(Xp[row_a, :2], [20.0, 15.0])  # a's permuted row equals b's own (z, z_mean)
+
+
+def test_level_history_diagnostic_fast_loose():
+    """A generator whose hazard depends on ``z_mean`` (history) only: history-given-level
+    importance is positive and level-given-history is small (fast, loose; the strict version
+    is the §7.2 sim)."""
+    rng = np.random.default_rng(0)
+    n, K = 500, 8
+    z = rng.normal(size=(n, K))
+    zmean = np.cumsum(z, axis=1) / np.arange(1, K + 1)
+    lam = 0.15 * np.exp(0.8 * zmean)
+    e = rng.exponential(size=n)
+    cum = np.cumsum(lam, axis=1)
+    k_evt = (cum < e[:, None]).sum(axis=1)
+    prev = np.where(k_evt > 0, cum[np.arange(n), np.maximum(k_evt - 1, 0)], 0.0)
+    within = (e - prev) / lam[np.arange(n), np.minimum(k_evt, K - 1)]
+    T = np.where(k_evt < K, k_evt + within, np.inf)
+    C = np.minimum(rng.uniform(2, 8, size=n), 8.0)
+    U, ev = np.minimum(T, C), T <= C
+    rows_, ids_ = [], []
+    for i in range(n):
+        k = 0
+        while k < U[i]:
+            rows_.append((i, float(k), min(k + 1.0, U[i]), bool(ev[i] and k + 1.0 >= U[i]), z[i, k]))
+            k += 1
+    df = pl.DataFrame(rows_, schema=["id", "start", "stop", "event", "z"], orient="row")
+    # a single, later landmark: at k=0 a cumulative mean equals the instantaneous z exactly,
+    # which would confound "level" and "history" by construction, not by a modelling failure.
+    lm = LandmarkSurvivalForest(
+        horizon=2.0, landmarks=[4.0], history_features=["z", ("z", "mean")], forest=SurvivalForestTV(n_estimators=80, random_state=0)
+    ).fit(df)
+    with _no_warn():
+        history_given_level = inspection.permutation_importance(
+            lm, df, features=["z_mean"], conditional_on=["z"], n_bootstrap=0, random_state=0
+        ).importances_mean[0]
+        level_given_history = inspection.permutation_importance(
+            lm, df, features=["z"], conditional_on=["z_mean"], n_bootstrap=0, random_state=0
+        ).importances_mean[0]
+    # fast/loose sanity only (small n, one landmark): the true history effect is detected;
+    # the strict history-vs-level comparison, with enough power to bound the confound, is §7.2.
+    assert history_given_level > 0
+    assert np.isfinite(level_given_history)
+
+
+def test_bootstrap_resample_spans_every_landmark_a_subject_is_at_risk_at():
+    data = LM._landmark_data(DF)
+    a_id = data.ids[0]
+    a_rows = np.flatnonzero(data.ids == a_id)
+    ri, boot_ids = _sc._boot._resample_ids(data.ids, np.random.default_rng(0))
+    first_copy_rows = ri[boot_ids == 0]
+    a_landmarks_in_data = set(data.s[a_rows].tolist())
+    # whichever id copy 0 corresponds to, its rows span exactly that id's own landmarks
+    copy_id = data.ids[first_copy_rows[0]]
+    expected = set(data.s[data.ids == copy_id].tolist())
+    assert set(data.s[first_copy_rows].tolist()) == expected
+
+
 # --- LOCO (T5) --------------------------------------------------------------------------
 
 from rftvc._inspection import _loco  # noqa: E402
@@ -303,6 +451,19 @@ def test_loco_dropping_removes_every_derived_feature_of_its_raw_column(monkeypat
     for h in z_dropped_calls:
         assert "z" not in h and ("z", "mean") not in h and ("z", "max") not in h
         assert "x0" in h and "n1" in h
+
+
+def test_loco_windows_and_null_come_from_the_folds_own_full_model(monkeypatch):
+    seen = []
+    orig = _loco._windows_for
+
+    def spy(fitted, windows):
+        seen.append(fitted)
+        return orig(fitted, windows)
+
+    monkeypatch.setattr(_loco, "_windows_for", spy)
+    inspection.drop_column_importance(LM, DF, **_loco_kw())
+    assert seen and all(hasattr(f, "event_times_") for f in seen)  # the inner counting-process forest
 
 
 def test_loco_folds_reuse_split_checks_and_disjoint_check(monkeypatch):
