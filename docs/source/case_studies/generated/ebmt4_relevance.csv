@@ -1,0 +1,11 @@
+cause,feature,perm_importance,loco_importance
+1,ae,0.0,0.012
+1,year,0.0229,-0.0316
+1,agecl,0.0157,-0.0252
+1,proph,0.0099,0.0182
+1,match,-0.022,-0.0344
+2,ae,0.0,0.087
+2,year,0.0762,0.0289
+2,agecl,0.1067,0.0376
+2,proph,0.0162,0.0254
+2,match,0.0339,0.0018

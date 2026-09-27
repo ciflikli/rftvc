@@ -1,0 +1,5 @@
+feature,low,high,hazard(low),hazard(high),forest_direction,cox_coef,cox_direction,agree
+fin,0.0,1.0,0.0068,0.0055,-,-0.3356,-,True
+age,20.0,30.0,0.0068,0.0054,-,-0.0476,-,True
+prio,0.0,10.0,0.0063,0.0084,+,0.0775,+,True
+employed,0.0,1.0,0.0085,0.0037,-,-1.336,-,True

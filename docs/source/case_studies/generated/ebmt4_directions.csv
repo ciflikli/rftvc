@@ -1,0 +1,11 @@
+cause,feature,n_levels,low,high,hazard(low),hazard(high),forest_direction,cox_coef,cox_direction,agree,gated
+1,ae,2,0.0,1.0,0.0004,0.0003,-,-0.1731,-,True,True
+1,year,3,0.0,2.0,0.0003,0.0003,-,-0.0201,-,True,False
+1,agecl,3,0.0,2.0,0.0003,0.0003,+,-0.0009,-,False,False
+1,proph,2,0.0,1.0,0.0003,0.0004,+,0.2315,+,True,True
+1,match,2,0.0,1.0,0.0003,0.0003,+,0.0476,+,True,True
+2,ae,2,0.0,1.0,0.0004,0.0008,+,0.7666,+,True,True
+2,year,3,0.0,2.0,0.0008,0.0005,-,-0.2946,-,True,False
+2,agecl,3,0.0,2.0,0.0004,0.0008,+,0.4499,+,True,False
+2,proph,2,0.0,1.0,0.0006,0.0007,+,0.1488,+,True,True
+2,match,2,0.0,1.0,0.0006,0.0006,+,0.2076,+,True,True
