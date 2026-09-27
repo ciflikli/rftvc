@@ -316,7 +316,8 @@ class LandmarkSurvivalForest(_LandmarkBase):
         Prediction window ``w`` (outcomes are administratively censored at ``s + w``).
     history_features : list
         Column names (last value at ``s``) or ``(column, agg)`` pairs, ``agg`` in
-        ``"last", "first", "mean", "min", "max", "sum", "count"``.
+        ``"last", "first", "mean", "min", "max", "sum", "count", "slope", "std"``
+        (``"slope"``: the OLS slope on ``measured_at``, else ``start``).
     landmarks : array-like or None
         Training landmarks. Exactly one of ``landmarks`` and ``step``.
     step : float or None

@@ -63,15 +63,15 @@ Notation: `p` units (raw columns by default), `M` PE windows, `J` causes, `S` la
 12. **Public surface.** No new exported names (`permutation_importance`/`drop_column_importance` already exported); `api.rst`'s existing `rftvc.inspection` section needs no new `autofunction` entries, only prose (deferred to S20's user guide per tvc-plan; this slice's `api.rst` touch is limited to the two functions' updated docstrings rendering correctly and `landmark.AGGREGATIONS`'s new entries appearing in `LandmarkSurvivalForest`'s `history_features` parameter doc, which already references `AGGREGATIONS` by value rather than listing it literally — checked, not edited).
 
 ## Tasks
-- [ ] T1 `landmark.py`: `AGGREGATIONS += ("slope", "std")`; `_agg_expr`/`_history_features` gain the `time`/`measured_at` threading (decision 2); `_raw_groups(history_features)` (decision 3). Tests in `tests/test_landmark.py` (aggregations, NaN rules, lookahead rule still applies, `_raw_groups` worked example).
-- [ ] T2 `_inspection/_units.py`: `resolve_landmark_units` (decision 4). Tests: raw-column default, feature-name expansion, `"landmark"` rejection, overlap.
-- [ ] T3 `inspection.py`: `_family` third branch; PE-path landmark dispatch in `permutation_importance` (decisions 5, 6, 9-10) reusing `_score.unit_importance`/`score` unmodified.
-- [ ] T4 `_inspection/_score.py`: the Brier/IBS scoring core (decision 7) — per-landmark `_score_landmark` calls, n-weighted pooling, the sign flip, permutation/bootstrap loops parallel to `unit_importance`/`_bootstrap_se`. `inspection.py` dispatches `scoring` to the PE or Brier/IBS path.
-- [ ] T5 `_inspection/_loco.py`: `run_landmark` (decision 8); `inspection.drop_column_importance` landmark dispatch (parsing, validation, noise control, result `Bunch`, decision 11).
-- [ ] T6 Tests `tests/test_inspection_landmark.py` (below).
-- [ ] T7 Test-quality audit of T6 (as S17/S18's own T5).
-- [ ] T8 Sims `bench/tvc_landmark_sim.py` (§7.2, §7.5b). Results in the S19 note.
-- [ ] T9 Timings, `api.rst` (docstring render check only, per decision 12), `tvc-plan.md` tick + "S19 done" note.
+- [x] T1 `landmark.py`: `AGGREGATIONS += ("slope", "std")`; `_agg_expr`/`_history_features` gain the `time`/`measured_at` threading (decision 2); `_raw_groups(history_features)` (decision 3). Tests in `tests/test_landmark.py` (aggregations, NaN rules, lookahead rule still applies, `_raw_groups` worked example).
+- [x] T2 `_inspection/_units.py`: `resolve_landmark_units` (decision 4). Tests: raw-column default, feature-name expansion, `"landmark"` rejection, overlap.
+- [x] T3 `inspection.py`: `_family` third branch; PE-path landmark dispatch in `permutation_importance` (decisions 5, 6, 9-10) reusing `_score.unit_importance`/`score` unmodified.
+- [x] T4 `_inspection/_score.py`: the Brier/IBS scoring core (decision 7) — per-landmark `_score_landmark` calls, n-weighted pooling, the sign flip, permutation/bootstrap loops parallel to `unit_importance`/`_bootstrap_se`. `inspection.py` dispatches `scoring` to the PE or Brier/IBS path.
+- [x] T5 `_inspection/_loco.py`: `run_landmark` (decision 8); `inspection.drop_column_importance` landmark dispatch (parsing, validation, noise control, result `Bunch`, decision 11).
+- [x] T6 Tests `tests/test_inspection_landmark.py` (below).
+- [x] T7 Test-quality audit of T6 (as S17/S18's own T5).
+- [x] T8 Sims `bench/tvc_landmark_sim.py` (§7.2, §7.5b). Results in the S19 note.
+- [x] T9 Timings, `api.rst` (docstring render check only, per decision 12), `tvc-plan.md` tick + "S19 done" note.
 
 ## Tests (`tests/test_inspection_landmark.py`, plus `tests/test_landmark.py` additions for T1)
 - **Aggregations (T1, `test_landmark.py`):** `slope`/`std` against a hand-built history and a NumPy `np.polyfit`/`np.std(ddof=1)` reference; NaN with < 2 distinct times (`slope`) / < 2 rows (`std`); the lookahead rule (`start > s` excluded) still holds for the new aggregations; `slope` uses `measured_at` when given, `start` otherwise (two fits of the same data differing only in whether `measured_at` is passed, differing `slope` values on a fixture where the two clocks disagree).
@@ -111,6 +111,23 @@ Reuses the R = 50 / 10-rep-pilot convention of S17/S18 (`bench/tvc_landmark_sim.
 - Fast tests green (T6 + T7 audit).
 - The §7.2 and §7.5b sim rules pass, or a user-approved deviation is recorded.
 - Timings reported: PE-path permutation importance and Brier/IBS-path permutation importance on the same landmark fixture (the IPCW path's per-landmark censoring fits are expected to be markedly slower — reported, not gated); LOCO at `n_seeds=1`.
+
+## S19 done (2026-09-27)
+Results:
+- **Full suite:** green (fast suite; the slow `test_pilot_pass_rules_point_the_right_way` in both `tests/test_inspection_landmark.py`'s siblings and `tests/test_landmark_sim_truth.py` also pass). 46 tests in `tests/test_inspection_landmark.py`.
+- **Doc fix found in T9:** decision 12 assumed `LandmarkSurvivalForest`'s `history_features` docstring referenced `AGGREGATIONS` by value rather than listing it literally — it does not; it hard-codes the tuple. Fixed to include `"slope"`/`"std"` (`docs build -W` is clean).
+- **Simulations** (`bench/tvc_landmark_sim.py`, R = 50, `docs/bench/s19-landmark/*.csv`):
+  1. **§7.2 level vs history:** oracle(history) = 0.1052, oracle(markov-level) = 0.1789.
+     - History scenario: mean history-given-level = 0.0251, needed ≥ 0.25·oracle = 0.0263 — **fails** (94% of the threshold). A follow-up combined run at R = 100 (the original 50 plus 50 more seeds) gives mean = 0.0254, SE = 0.0012 — the shortfall does not resolve with more precision, so it is a real (if narrow) effect, not sampling noise sitting on the boundary.
+     - Markov scenario: mean history-given-level = −0.0099, needed ≤ 0.05·oracle_level = 0.0089 — passes comfortably.
+  2. **§7.5b copies:** `se(step=0.5)` mean 0.0206 vs `se(step=4.0)` mean 0.0276, ratio 0.745 ≥ 0.5 — passes (the id-cluster bootstrap does not shrink with more landmark copies per subject, confirming it clusters by subject, not by row).
+  3. **§7.5b censoring:** mean PE importance z1 = 0.2547 ≫ z2 = 0.0156; mean Brier importance z1 = 0.0078 ≫ z2 = −0.0003 — both scoring families rank z1 (the real signal) above z2 (noise); passes.
+- **Timings** (1000 ids, 200 trees, `history_features=["x0", ("z", "mean"), "n1"]`, 3340 stacked rows): PE permutation (`n_bootstrap=0`) 2.20 s; Brier permutation 0.52 s; IBS permutation 0.95 s (Brier/IBS are cheaper here since they score once per landmark's risk set rather than every stacked row's cumhaz at every window); PE LOCO (`n_seeds=1`, `cv=5`) 3.24 s; Brier LOCO 2.92 s.
+
+**Deviation (documented, not yet user-approved — flag before merge): the §7.2 "history" rule is accepted as failed by design, not by a bug.**
+- The generator's hazard depends on the *true* rolling 2-unit mean of `z` (`(z_{k-1} + z_k) / 2`), a deliberate mismatch with what the fitted model can see: `history_features=["z", ("z", "mean")]` gives the model `z`'s *cumulative* mean since the earliest known row, not a rolling 2-unit window (the framework's `"mean"` aggregation has no windowed variant — see decision 2/T1; adding one is out of scope for this slice).
+- With `step=1.0` sweeping landmarks across the whole `k = 0..7` grid, the cumulative-mean proxy is a good stand-in for the true rolling-2 driver only at early landmarks (at `k = 1` it is literally the true value); at later landmarks it dilutes across many more points than the true driver's window (e.g. at `k = 7` the cumulative mean averages 8 draws against a true 2-draw window, correlation ≈ 0.5), so the average forest statistic over all landmarks is pulled below the 0.25× margin that assumed a closer proxy.
+- This is a property of the deliberately-mismatched diagnostic (my own invention for this slice — tvc-design gives the qualitative scenario, not the exact 0.25×/0.05× numbers or the featurization detail), not a defect in `permutation_importance`'s landmark dispatch: the Markov control passes cleanly (confirming the conditional-permutation machinery correctly isolates "history matters" from "level matters" when the model's own feature *does* match the true driver, as it does in that scenario), and §7.5b's two landmark-specific checks both pass. Un-mismatching the fixture (e.g. restricting to later landmarks only, or lowering `K`) would very likely clear the 0.25× bar, but doing so now would be tuning the fixture to the result rather than reporting the predeclared rule's outcome; recorded here for the user to accept as a deviation (or ask for the fixture/margin to be revisited) before merge.
 
 ## Review log (self-review; no external Codex session available this turn)
 Findings from a full read of `tvc-design.md` §3/§5/§6/§7.2/§7.5b, `tvc-plan.md` S19, `landmark.py`, `inspection.py`, `_inspection/_units.py`/`_score.py`/`_loco.py`/`_boot.py`, `model_selection.py`, against this plan's decisions:
