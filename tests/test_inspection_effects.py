@@ -3,6 +3,7 @@
 import copy
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from rftvc import (
@@ -38,41 +39,61 @@ def _stubbed(model, stub):
 
 
 class HazardOracle:
-    """Constant hazard rate ``c * exp(beta * X[:, 1])`` (z is column 1)."""
+    """Hazard rate ``c * exp(beta * z + gamma * x0)`` (z is the replaced column 1;
+    ``x0``, column 0, is left alone by ``hazard_effect``'s grid substitution, so the
+    post-substitution rate genuinely varies row to row -- unlike a rate that depends
+    only on the replaced feature, which would be identical across every row and make
+    the exposure weighting untestable (every weighting scheme, including a broken
+    one, averages a constant to itself)."""
 
-    def __init__(self, c=0.2, beta=0.6):
-        self.c, self.beta = c, beta
+    def __init__(self, c=0.2, beta=0.6, gamma=0.3):
+        self.c, self.beta, self.gamma = c, beta, gamma
 
     def predict_cumhaz(self, X, times, aggregate, n_jobs):
-        rate = self.c * np.exp(self.beta * X[:, 1])
+        rate = self.c * np.exp(self.beta * X[:, 1] + self.gamma * X[:, 0])
         return rate[:, None] * np.asarray(times, dtype=float)[None, :]
 
 
-def test_hazard_effect_oracle_gives_exact_constant_rate():
-    stub = HazardOracle(c=0.2, beta=0.6)
+def test_hazard_effect_oracle_matches_hand_derived_exposure_weighted_rate():
+    from rftvc.metrics import _window_exposure_1
+
+    stub = HazardOracle(c=0.2, beta=0.6, gamma=0.3)
     m = _stubbed(FOREST, stub)
     values = np.array([-1.0, 0.0, 1.0, 2.0])
-    res = inspection.hazard_effect(m, X, Y, feature=1, values=values, windows=4)
-    expected = stub.c * np.exp(stub.beta * values)
-    np.testing.assert_allclose(res.hazard, expected[:, None] * np.ones((1, res.hazard.shape[1])), rtol=1e-8)
+    w = np.array([0.0, 1.0, 3.0, 6.0])
+    res = inspection.hazard_effect(m, X, Y, feature=1, values=values, windows=w)
+    start, stop, x0 = Y["start"], Y["stop"], X[:, 0]
+    for i, v in enumerate(values):
+        row_rate = stub.c * np.exp(stub.beta * v + stub.gamma * x0)
+        for mi in range(len(w) - 1):
+            e = _window_exposure_1(start, stop, w[mi], w[mi + 1])
+            at_risk = e > 0
+            expected = (e[at_risk] * row_rate[at_risk]).sum() / e[at_risk].sum()
+            assert np.isclose(res.hazard[i, mi], expected, rtol=1e-8), (i, mi)
 
 
-def test_hazard_effect_weights_equal_exposures_hand_check():
-    # 3 rows, 2 windows [0,1],(1,2]; row0 at risk in both, row1 only window 1, row2 only window 2.
+def test_hazard_effect_weighted_average_uses_true_per_row_exposures():
+    # 3 rows with unequal, hand-computed per-window exposures and distinct, X-independent
+    # per-row rates, so a naive unweighted mean over at-risk rows gives a different (wrong)
+    # answer than the correct exposure-weighted one in both windows -- this actually
+    # exercises the weighting, unlike a fixture with equal weights or a constant rate.
     X3 = np.array([[0.0], [0.0], [0.0]])
     start = np.array([0.0, 0.0, 1.0])
-    stop = np.array([2.0, 1.0, 2.0])
-    y3 = make_survival_y(stop, np.array([True, False, True]), start=start)
+    stop = np.array([2.0, 0.5, 1.5])
+    y3 = make_survival_y(stop, np.array([True, False, False]), start=start)
     m = SurvivalForestTV(n_estimators=5, random_state=0).fit(X3, y3)
 
-    class ConstOracle:
-        def predict_cumhaz(self, X, times, aggregate, n_jobs):
-            return np.tile(np.asarray(times, dtype=float), (X.shape[0], 1)) * 0.5  # rate = 0.5 for every row
+    class RowRateOracle:
+        RATE = np.array([1.0, 2.0, 4.0])  # by row position; hazard_effect never reorders rows
 
-    m = _stubbed(m, ConstOracle())
+        def predict_cumhaz(self, X, times, aggregate, n_jobs):
+            return self.RATE[:, None] * np.asarray(times, dtype=float)[None, :]
+
+    m = _stubbed(m, RowRateOracle())
     res = inspection.hazard_effect(m, X3, y3, feature=0, values=[0.0], windows=np.array([0.0, 1.0, 2.0]))
-    # exposure-weighted average of a constant rate is that rate, regardless of weights
-    np.testing.assert_allclose(res.hazard[0], [0.5, 0.5], atol=1e-10)
+    # window (0,1]: exposures [1, 0.5, 0] -> weighted (1*1 + 0.5*2)/1.5 = 4/3; naive mean = 1.5
+    # window (1,2]: exposures [1, 0, 0.5] -> weighted (1*1 + 0.5*4)/1.5 = 2.0; naive mean = 2.5
+    np.testing.assert_allclose(res.hazard[0], [4.0 / 3.0, 2.0], atol=1e-10)
 
 
 def test_hazard_effect_support_mask_varies_by_window():
@@ -134,16 +155,23 @@ def test_hazard_effect_empty_window_gives_nan():
 
 
 def test_hazard_effect_competing_risks_cause_selection():
+    # two real causes, and cause=2 is NOT the first axis: with a single-cause fixture
+    # (as an earlier draft of this test used), selecting "index 0 of a length-1 axis"
+    # would pass even if the cause-index lookup were broken (any bug that always picks
+    # index 0 is invisible when there is only one cause).
     rng = np.random.default_rng(2)
-    x0, z, U, ev = simulate(150, rng)
+    x0, z, U, ev = simulate(300, rng)
     Xc, y2, idc = rows(x0, z, U, ev)
-    labels = np.where(y2["event"], 1, 0)
+    cause_draw = rng.integers(1, 3, size=y2["event"].shape[0])  # 1 or 2
+    labels = np.where(y2["event"], cause_draw, 0)
     yc = make_competing_risks_y(y2["stop"], labels, start=y2["start"])
-    m = CompetingRisksForestTV(n_estimators=20, random_state=0, causes=[1]).fit(Xc, yc, idc)
+    m = CompetingRisksForestTV(n_estimators=20, random_state=0, causes=[1, 2]).fit(Xc, yc, idc)
+    k = int(np.flatnonzero(m.causes_ == 2)[0])
+    assert k != 0, "fixture must put cause 2 at a non-zero axis position for this test to be meaningful"
     res_all = inspection.hazard_effect(m, Xc, yc, feature=1, values=[0.0, 1.0], windows=4)
-    res_1 = inspection.hazard_effect(m, Xc, yc, feature=1, values=[0.0, 1.0], windows=4, cause=1)
-    assert res_all.hazard.shape == (2, 1, 4)
-    np.testing.assert_allclose(res_1.hazard, res_all.hazard[:, 0, :])
+    res_2 = inspection.hazard_effect(m, Xc, yc, feature=1, values=[0.0, 1.0], windows=4, cause=2)
+    assert res_all.hazard.shape == (2, 2, 4)
+    np.testing.assert_allclose(res_2.hazard, res_all.hazard[:, k, :])
 
 
 def test_hazard_effect_landmark_dispatch_uses_inner_forest(monkeypatch):
@@ -187,6 +215,13 @@ def test_hazard_effect_landmark_dispatch_uses_inner_forest(monkeypatch):
 def test_hazard_effect_errors():
     with pytest.raises(ValueError, match="kind"):
         inspection.hazard_effect(FOREST, X, Y, feature=1, kind="bogus")
+
+
+def test_hazard_effect_ids_column_is_not_a_feature():
+    df = pd.DataFrame({"id": IDS, "x0": X[:, 0], "z": X[:, 1]})
+    m = SurvivalForestTV(n_estimators=5, random_state=0).fit(df, Y, ids="id")
+    with pytest.raises(ValueError, match="ids column"):
+        inspection.hazard_effect(m, df, Y, feature="id")
 
 
 # --- path_effect -----------------------------------------------------------------------
@@ -261,6 +296,26 @@ def test_path_effect_oracle_matches_analytic_change():
     np.testing.assert_allclose(res.per_subject, expected, rtol=1e-8, atol=1e-10)
 
 
+def test_path_effect_nonzero_origin_is_actually_used():
+    # a bug that silently ignored the origin= argument (e.g. always using each
+    # subject's first start) would make this identical to the default-origin call.
+    Xp, iv, ids = _path_fixture()
+    m = _stubbed(FOREST, PathOracle(c=0.15, beta=0.5))
+    horizons = np.array([4.0, 5.0])
+    res_default = inspection.path_effect(m, Xp, iv, ids, feature=1, delta=1.0, from_time=3.0, horizons=horizons)
+    res_origin1 = inspection.path_effect(
+        m, Xp, iv, ids, feature=1, delta=1.0, from_time=3.0, horizons=horizons, origin=1.0
+    )
+    assert not np.allclose(res_default.per_subject, res_origin1.per_subject)
+
+
+def test_path_effect_horizons_before_from_time_raises():
+    Xp, iv, ids = _path_fixture()
+    m = _stubbed(FOREST, PathOracle())
+    with pytest.raises(ValueError, match="from_time"):
+        inspection.path_effect(m, Xp, iv, ids, feature=1, delta=1.0, from_time=3.0, horizons=[2.0])
+
+
 def test_path_effect_straddling_row_is_split_correctly():
     ids = np.array([0, 0])
     start = np.array([0.0, 2.0])
@@ -295,23 +350,29 @@ def test_path_effect_validation_errors():
 
 
 def test_path_effect_competing_risks_shape_and_cause():
+    # two real causes, cause=2 selected at a non-zero axis position (see the
+    # matching note on test_hazard_effect_competing_risks_cause_selection: a
+    # single-cause fixture cannot catch an index-lookup bug that always picks axis 0).
     K = 4
     n_subj = 5
     ids = np.repeat(np.arange(n_subj), K)
     starts = np.tile(np.arange(K, dtype=float), n_subj)
     stops = starts + 1.0
     rng = np.random.default_rng(7)
-    x0, z, U, ev = simulate(200, rng)
+    x0, z, U, ev = simulate(300, rng)
     Xc, y2, idc = rows(x0, z, U, ev)
-    labels = np.where(y2["event"], 1, 0)
+    cause_draw = rng.integers(1, 3, size=y2["event"].shape[0])
+    labels = np.where(y2["event"], cause_draw, 0)
     yc = make_competing_risks_y(y2["stop"], labels, start=y2["start"])
-    cr = CompetingRisksForestTV(n_estimators=15, random_state=0, causes=[1]).fit(Xc, yc, idc)
+    cr = CompetingRisksForestTV(n_estimators=15, random_state=0, causes=[1, 2]).fit(Xc, yc, idc)
+    k = int(np.flatnonzero(cr.causes_ == 2)[0])
+    assert k != 0, "fixture must put cause 2 at a non-zero axis position for this test to be meaningful"
     Xp = np.column_stack([np.zeros(n_subj * K), rng.normal(size=n_subj * K)])
     iv = make_survival_y(stops, np.zeros(n_subj * K, dtype=bool), start=starts)
     res_all = inspection.path_effect(cr, Xp, iv, ids, feature=1, delta=1.0, from_time=1.0, horizons=[2.0, 3.0])
-    res_1 = inspection.path_effect(cr, Xp, iv, ids, feature=1, delta=1.0, from_time=1.0, horizons=[2.0, 3.0], cause=1)
-    assert res_all.per_subject.shape == (n_subj, 1, 2)
-    np.testing.assert_allclose(res_1.per_subject, res_all.per_subject[:, 0, :])
+    res_2 = inspection.path_effect(cr, Xp, iv, ids, feature=1, delta=1.0, from_time=1.0, horizons=[2.0, 3.0], cause=2)
+    assert res_all.per_subject.shape == (n_subj, 2, 2)
+    np.testing.assert_allclose(res_2.per_subject, res_all.per_subject[:, k, :])
 
 
 def test_path_effect_landmark_raises_type_error():
