@@ -13,6 +13,7 @@ import hashlib
 import os
 import tempfile
 import time
+import urllib.error
 import urllib.request
 import warnings
 from pathlib import Path
@@ -26,12 +27,16 @@ def _cache_dir():
 
 
 def _download(url, retries, timeout):
-    """Bytes from ``url``, retrying a network failure with backoff (not a checksum
-    mismatch, which is a data problem no retry fixes)."""
+    """Bytes from ``url``, retrying a transient network failure with backoff. Not
+    retried: a checksum mismatch (a data problem no retry fixes) or an ``HTTPError``
+    (a definite server response, e.g. 404 -- a URL that returns one will keep
+    returning it, so retrying only wastes the backoff delay)."""
     for attempt in range(retries):
         try:
             with urllib.request.urlopen(url, timeout=timeout) as r:
                 return r.read()
+        except urllib.error.HTTPError:
+            raise
         except OSError:
             if attempt + 1 == retries:
                 raise
@@ -58,7 +63,12 @@ def fetch(url, sha256, cache_name, *, retries=3, timeout=60):
             raise ValueError(f"checksum mismatch downloading {url}: got {digest}, expected {sha256}")
         fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.tmp-")
         try:
-            with os.fdopen(fd, "wb") as f:
+            try:
+                f = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)  # fdopen failed before taking ownership of fd; it won't be closed by "with" below
+                raise
+            with f:
                 f.write(data)
             os.replace(tmp_name, path)
         except BaseException:

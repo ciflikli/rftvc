@@ -4,6 +4,7 @@ retry). No real network access here: ``urllib.request.urlopen`` is monkeypatched
 
 import hashlib
 import os
+import urllib.error
 
 import pytest
 
@@ -133,3 +134,49 @@ def test_fetch_gives_up_after_retries_exhausted(monkeypatch):
     monkeypatch.setattr(_thirdparty.time, "sleep", lambda s: None)
     with pytest.raises(OSError, match="connection reset"):
         _thirdparty.fetch("http://example.invalid/f", "0" * 64, "f.rda", retries=3)
+
+
+def test_fetch_does_not_retry_a_permanent_http_error(monkeypatch):
+    """An HTTPError (e.g. a 404) is a definite server response, not a transient failure:
+    retrying it just wastes time on a URL that will never succeed (regression: it was
+    caught by the same bare ``except OSError`` as a transient network failure and retried
+    like one, since HTTPError is itself an OSError subclass)."""
+    calls = {"n": 0}
+
+    def not_found(url, timeout):
+        calls["n"] += 1
+        raise urllib.error.HTTPError(url, 404, "Not Found", hdrs=None, fp=None)
+
+    def no_sleep_expected(seconds):
+        raise AssertionError("must not retry (and so must not sleep) on a permanent HTTPError")
+
+    monkeypatch.setattr(_thirdparty.urllib.request, "urlopen", not_found)
+    monkeypatch.setattr(_thirdparty.time, "sleep", no_sleep_expected)
+    with pytest.raises(urllib.error.HTTPError):
+        _thirdparty.fetch("http://example.invalid/f", "0" * 64, "f.rda", retries=3)
+    assert calls["n"] == 1
+
+
+def test_fetch_does_not_leak_the_fd_when_fdopen_fails(monkeypatch):
+    """If ``os.fdopen`` itself raises before wrapping the raw descriptor, the descriptor
+    must still be closed explicitly (regression: it stayed open, since ``with
+    os.fdopen(fd, ...)`` only closes what ``fdopen`` successfully returned; repeated
+    failures would exhaust file descriptors)."""
+    data = b"some bytes"
+    sha = _sha256(data)
+    monkeypatch.setattr(_thirdparty, "_download", lambda url, retries, timeout: data)
+    closed = []
+    orig_close = os.close
+
+    def spy_close(fd):
+        closed.append(fd)
+        orig_close(fd)
+
+    def broken_fdopen(fd, mode):
+        raise OSError("fdopen failed (simulated)")
+
+    monkeypatch.setattr(os, "close", spy_close)
+    monkeypatch.setattr(os, "fdopen", broken_fdopen)
+    with pytest.raises(OSError, match="fdopen failed"):
+        _thirdparty.fetch("http://example.invalid/f", sha, "f.rda")
+    assert len(closed) == 1
