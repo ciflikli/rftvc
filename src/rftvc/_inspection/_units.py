@@ -62,3 +62,48 @@ def resolve_units(features, groups, names, n_features, ids_column=None):
         if len(set(idx)) != len(idx):
             raise ValueError("features names a column twice")
     return [np.array([c], dtype=np.intp) for c in idx], [label(c) for c in idx]
+
+
+def resolve_landmark_units(features, groups, raw_groups, names, n_features):
+    """``(units, unit_names)`` for a landmark model's stacked features.
+
+    Like ``resolve_units``, but the default unit (and a raw-column name in
+    ``features``) is a *raw* column's whole group of derived feature names
+    (``raw_groups``, from ``landmark._raw_groups``), not one landmark feature
+    column; ``"landmark"`` (by name or by its index, always ``n_features - 1``)
+    is constant within a stratum and is not a permutable unit.
+    """
+    if features is not None and groups is not None:
+        raise ValueError("give features or groups, not both")
+    label = (lambda c: str(names[c])) if names is not None else str
+    if groups is not None:
+        return resolve_units(None, groups, names, n_features, ids_column="landmark")
+    landmark_idx = n_features - 1
+    if features is None:
+        units, unit_names = [], []
+        for raw, derived in raw_groups.items():
+            idx = sorted(_column(d, names, n_features, None) for d in derived)
+            units.append(np.array(idx, dtype=np.intp))
+            unit_names.append(str(raw))
+        return units, unit_names
+    features = [features] if isinstance(features, (str, numbers.Integral)) else list(features)
+    if not features:
+        raise ValueError("features is empty")
+    units, unit_names, seen = [], [], {}
+    for f in features:
+        is_landmark_idx = isinstance(f, numbers.Integral) and not isinstance(f, (bool, np.bool_)) and int(f) == landmark_idx
+        if f == "landmark" or is_landmark_idx:
+            raise ValueError("'landmark' is constant within a landmark stratum and is not a permutable unit")
+        if isinstance(f, str) and f in raw_groups:
+            idx = sorted(_column(d, names, n_features, None) for d in raw_groups[f])
+            key = f
+        else:
+            idx = [_column(f, names, n_features, None)]
+            key = label(idx[0])
+        for c in idx:
+            if c in seen:
+                raise ValueError(f"column {label(c)!r} is named by both {seen[c]!r} and {key!r}")
+            seen[c] = key
+        units.append(np.array(idx, dtype=np.intp))
+        unit_names.append(str(key))
+    return units, unit_names
