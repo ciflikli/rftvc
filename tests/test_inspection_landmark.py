@@ -260,3 +260,134 @@ def test_brier_result_omits_pe_only_fields():
     for field in ("importances_window", "importances_cause", "importances_id", "id_labels", "zero_rate_share",
                   "n_truncated_events", "n_unpermuted", "window_edges", "null_score", "n_events"):
         assert r[field] is None
+
+
+# --- LOCO (T5) --------------------------------------------------------------------------
+
+from rftvc._inspection import _loco  # noqa: E402
+
+
+def _loco_kw(**kw):
+    kw.setdefault("cv", 3)
+    kw.setdefault("n_seeds", 1)
+    kw.setdefault("random_state", 0)
+    return kw
+
+
+def test_loco_oracle_noise_near_zero_signal_positive():
+    r = inspection.drop_column_importance(LM, DF, **_loco_kw())
+    idx = {n: i for i, n in enumerate(r.feature_names)}
+    assert abs(r.importances_mean[idx["n1"]]) <= 3 * r.importances_se[idx["n1"]]
+    assert r.importances_mean[idx["x0"]] > 0
+    assert r.importances_mean[idx["z"]] > 0
+
+
+def test_loco_dropping_removes_every_derived_feature_of_its_raw_column(monkeypatch):
+    seen = []
+    orig = _loco._fit_landmark
+
+    def spy(stack_template, df_train, train_s, seed, history_features):
+        seen.append(list(history_features))
+        return orig(stack_template, df_train, train_s, seed, history_features)
+
+    monkeypatch.setattr(_loco, "_fit_landmark", spy)
+    fixture = _df(200, 5)
+    lm3 = LandmarkSurvivalForest(
+        horizon=2.0, step=1.0, history_features=["x0", ("z", "mean"), ("z", "max"), "n1"],
+        forest=SurvivalForestTV(n_estimators=10, random_state=0),
+    ).fit(fixture)
+    inspection.drop_column_importance(lm3, fixture, **_loco_kw(cv=2))
+    full_calls = [h for h in seen if len(h) == 4]
+    z_dropped_calls = [h for h in seen if len(h) == 2]  # x0, n1 remain; z's two derived features gone
+    assert full_calls and z_dropped_calls
+    for h in z_dropped_calls:
+        assert "z" not in h and ("z", "mean") not in h and ("z", "max") not in h
+        assert "x0" in h and "n1" in h
+
+
+def test_loco_folds_reuse_split_checks_and_disjoint_check(monkeypatch):
+    calls = {"split_checks": 0, "disjoint": 0}
+    orig_split, orig_disjoint = _loco._split_checks, _loco._disjoint_check
+
+    def spy_split(*a, **k):
+        calls["split_checks"] += 1
+        return orig_split(*a, **k)
+
+    def spy_disjoint(*a, **k):
+        calls["disjoint"] += 1
+        return orig_disjoint(*a, **k)
+
+    monkeypatch.setattr(_loco, "_split_checks", spy_split)
+    monkeypatch.setattr(_loco, "_disjoint_check", spy_disjoint)
+    inspection.drop_column_importance(LM, DF, **_loco_kw())
+    assert calls["split_checks"] >= 1 and calls["disjoint"] >= 1
+
+
+def test_loco_time_split_gap_below_horizon_raises():
+    from rftvc.model_selection import RollingOriginSplit
+
+    cv = RollingOriginSplit(n_splits=2, test_size=1.0, gap=0.0)
+    with pytest.raises(ValueError, match="gap"):
+        inspection.drop_column_importance(LM, DF, cv=cv, windows=[0.0, 1.0, 2.0])
+
+
+def test_loco_time_split_se_nan_id_split_se_finite():
+    from rftvc.model_selection import RollingOriginSplit
+
+    cv = RollingOriginSplit(n_splits=2, test_size=1.0, gap=2.0)
+    r_time = inspection.drop_column_importance(LM, DF, cv=cv, windows=[0.0, 1.0, 2.0], random_state=0)
+    assert np.isnan(r_time.importances_se).all()
+    assert np.isfinite(r_time.importances).all()
+    r_id = inspection.drop_column_importance(LM, DF, **_loco_kw())
+    assert np.isfinite(r_id.importances_se).all()
+
+
+def test_loco_add_noise_control_column_is_a_raw_row_level_draw(monkeypatch):
+    """The noise column is drawn once per row of the raw frame (decision 8), not per id: a
+    spy confirms every fold's training frame carries the SAME per-row values (``df.filter``
+    never changes them), and two independent runs with the same seed agree exactly."""
+    seen_rows = {}
+    orig = _loco._fit_landmark
+
+    def spy(stack_template, df_train, train_s, seed, history_features):
+        if "_noise" in df_train.columns:
+            keys = zip(df_train["id"].to_list(), df_train["start"].to_list(), df_train["stop"].to_list())
+            for key, v in zip(keys, df_train["_noise"].to_list()):
+                seen_rows.setdefault(key, set()).add(v)
+        return orig(stack_template, df_train, train_s, seed, history_features)
+
+    monkeypatch.setattr(_loco, "_fit_landmark", spy)
+    inspection.drop_column_importance(LM, DF, **_loco_kw(add_noise_control=True, cv=3))
+    assert seen_rows and all(len(v) == 1 for v in seen_rows.values())  # never re-drawn per fold
+
+    r1 = inspection.drop_column_importance(LM, DF, **_loco_kw(add_noise_control=True, cv=3, random_state=5))
+    r2 = inspection.drop_column_importance(LM, DF, **_loco_kw(add_noise_control=True, cv=3, random_state=5))
+    assert "_noise" in r1.feature_names
+    np.testing.assert_array_equal(r1.importances_mean, r2.importances_mean)
+
+
+def test_loco_cost_guard_fit_count(monkeypatch):
+    calls = {"n": 0}
+    orig = _loco._fit_landmark
+
+    def spy(*a, **k):
+        calls["n"] += 1
+        return orig(*a, **k)
+
+    monkeypatch.setattr(_loco, "_fit_landmark", spy)
+    n_folds, n_seeds = 3, 2
+    inspection.drop_column_importance(LM, DF, cv=n_folds, n_seeds=n_seeds, random_state=0)
+    p_units = len(LM.feature_names_) - 1  # excludes "landmark"
+    assert calls["n"] == (p_units + 1) * n_folds * n_seeds
+
+
+def test_loco_landmark_needs_at_least_one_remaining_feature():
+    with pytest.raises(ValueError, match="no history_features"):
+        inspection.drop_column_importance(LM, DF, groups={"all": ["x0", "z_mean", "n1"]})
+
+
+def test_loco_brier_ibs_pooled_and_se_nan():
+    r = inspection.drop_column_importance(LM, DF, scoring="brier", **_loco_kw())
+    assert np.isfinite(r.baseline_score)
+    assert np.isnan(r.importances_se).all()
+    assert r.share_of_gain is None and r.importances_window is None

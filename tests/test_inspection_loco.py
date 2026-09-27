@@ -302,7 +302,7 @@ def test_estimator_errors():
     est = SurvivalForestTV(n_estimators=10, random_state=0, n_jobs=1)
     with pytest.raises(ValueError, match="y is required"):
         inspection.drop_column_importance(est, X)
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError, match="y must be None"):
         inspection.drop_column_importance(LandmarkSurvivalForest(), X, y)
     with pytest.raises(TypeError):
         inspection.drop_column_importance(object(), X, y)
