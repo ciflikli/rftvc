@@ -7,3 +7,5 @@ Case studies
    pbc2
    btscs
    importance
+   rossi
+   ebmt4

@@ -1,0 +1,2 @@
+patients,rows,relapse_events,death_without_relapse_events,binary_covariates_gated,binary_covariates_agree
+2279,3413,370,533,6,6
