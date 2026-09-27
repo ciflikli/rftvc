@@ -71,13 +71,24 @@ def rossi_frame():
     return _to_pandas(d)
 
 
+EBMT4_LEVELS = {
+    "year": ["1985-1989", "1990-1994", "1995-1998"],
+    "agecl": ["<=20", "20-40", ">40"],
+    "proph": ["no", "yes"],
+    "match": ["no gender mismatch", "gender mismatch"],
+}
+
+
 def ebmt4_frame():
-    d = ebmt4_competing_risks()
-    d = d.with_columns(
-        pl.col("year").cast(pl.Categorical).to_physical().alias("year"),
-        pl.col("agecl").cast(pl.Categorical).to_physical().alias("agecl"),
-        pl.col("proph").cast(pl.Categorical).to_physical().alias("proph"),
-        pl.col("match").cast(pl.Categorical).to_physical().alias("match"),
+    """Counting-process rows with year/agecl/proph/match ordinal-coded.
+
+    An explicit, fixed level order (the R factor levels themselves, already
+    ordinal for year/agecl) via ``pl.Enum`` -- bare ``.cast(pl.Categorical)``
+    codes by first appearance, which is not stable across separate process
+    runs on identical data (docs/plans/rc-validation-findings.md).
+    """
+    d = ebmt4_competing_risks().with_columns(
+        pl.col(c).cast(pl.Enum(levels)).to_physical().alias(c) for c, levels in EBMT4_LEVELS.items()
     )
     return _to_pandas(d)
 
