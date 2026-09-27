@@ -25,24 +25,6 @@ from .metrics import _baseline_at, _check_windows, event_windows
 __all__ = ["drop_column_importance", "hazard_effect", "path_effect", "permutation_importance"]
 
 
-class _HazardEffectResult(Bunch):
-    """``hazard_effect``'s result: a ``"values"`` dict key, which ``Bunch``'s attribute
-    access can't reach (``dict.values`` is a method found first). ``result["values"]``
-    always works; ``result.values`` warns and still returns the grid, rather than
-    silently handing back a bound method."""
-
-    @property
-    def values(self):
-        warnings.warn(
-            "accessing 'values' as an attribute returns this array via a property "
-            "override, not dict.values (a bound method) as plain attribute lookup would "
-            "otherwise give; use result[\"values\"] to avoid relying on this override",
-            UserWarning,
-            stacklevel=2,
-        )
-        return self["values"]
-
-
 def _family(estimator, fn="permutation_importance", fitted=True):
     """``(is_landmark, competing)``, checked for ``fn``'s supported estimator types."""
     from .landmark import LandmarkCompetingRisksForest, _LandmarkBase
@@ -549,10 +531,9 @@ def hazard_effect(estimator, X, y, *, feature, values=None, windows=8, kind="ave
     (``None`` unless ``kind="individual"``), ``feature_name``.
 
     ``values`` shadows ``dict.values`` (as ``sklearn.inspection.partial_dependence``'s
-    own ``"values"`` entry must be): access it as ``result["values"]``. ``result.values``
-    still returns the grid (a warning-emitting property override, not plain attribute
-    lookup) rather than silently handing back a bound method, but ``result["values"]``
-    is the form to use.
+    own ``"values"`` entry does): ``result.values`` is the bound ``dict.values`` method,
+    not the grid, and calling it (``result.values()``) gives the ordinary dict values,
+    not an error. Access the grid as ``result["values"]``.
 
     A ``hazard_effect`` two-point contrast is only comparable to a linear model's
     (e.g. ``CoxTimeVaryingFitter``) single coefficient sign when ``feature`` is binary
@@ -622,7 +603,7 @@ def hazard_effect(estimator, X, y, *, feature, values=None, windows=8, kind="ave
         Xe, start, stop, predict, w, feature_idx, values, kind, competing, cause_idx
     )
     feature_name = str(names[feature_idx]) if names is not None else str(feature_idx)
-    return _HazardEffectResult(
+    return Bunch(
         values=values,
         hazard=hazard,
         window_edges=w,

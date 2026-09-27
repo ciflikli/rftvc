@@ -394,11 +394,17 @@ def test_hazard_effect_values_validation():
         inspection.hazard_effect(FOREST, X, Y, feature=1, values=[[0.0, 1.0], [2.0, 3.0]])
 
 
-def test_hazard_effect_values_attribute_access_warns_but_still_works():
+def test_hazard_effect_values_item_access_gives_the_grid_attribute_gives_dict_method():
+    """``"values"`` shadows ``dict.values`` (as for sklearn's own ``partial_dependence``):
+    ``result["values"]`` is the grid; plain attribute access, ``result.values``, is the
+    ordinary bound ``dict.values`` method (regression: an earlier property override made
+    ``result.values`` return the grid directly, which broke calling it as a method --
+    ``result.values()`` raised ``TypeError: 'numpy.ndarray' object is not callable``,
+    since normal Mapping-consuming code expects ``.values()`` to work)."""
     res = inspection.hazard_effect(FOREST, X, Y, feature=1, values=[0.0, 1.0], windows=4)
-    with pytest.warns(UserWarning, match='result\\["values"\\]'):
-        via_attribute = res.values
-    assert np.array_equal(via_attribute, res["values"])
+    assert res.values == res.values  # a bound method each time: equal, not a warning or an array
+    assert np.array_equal(res["values"], [0.0, 1.0])
+    assert list(res.values()) == [res[k] for k in res]  # ordinary dict.values() behavior works
 
 
 def test_hazard_effect_and_path_effect_reject_cause_for_survival_estimators():

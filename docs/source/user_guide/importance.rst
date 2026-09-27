@@ -142,10 +142,10 @@ effects directly.
    effect["values"], effect.hazard, effect.support_mask
 
 ``effect["values"]`` (not ``effect.values`` -- see the function's docstring;
-this one field shadows ``dict.values``). ``effect.values`` still returns the
-grid rather than a bound method -- accessing it warns, so a script that used
-the wrong form fails loudly instead of silently getting a bound method back
--- but ``effect["values"]`` is the form to use.
+this one field shadows ``dict.values``, the same way it does for
+``sklearn.inspection.partial_dependence``'s own ``"values"`` entry). Plain
+attribute access, ``effect.values``, gives the ordinary bound ``dict.values``
+method, not the grid; ``effect["values"]`` is the form to use.
 
 A ``hazard_effect`` two-point contrast is comparable to a linear model's
 (e.g. ``lifelines.CoxTimeVaryingFitter``) coefficient sign only when
