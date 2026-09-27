@@ -8,6 +8,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from rftvc import LandmarkSurvivalForest, SurvivalForestTV, landmark_features, make_landmark_data
+from rftvc.landmark import _raw_groups
 from tests.fixtures.pbcseq import pbcseq_counting_process, visits_to_counting_process
 
 
@@ -74,6 +75,56 @@ def test_aggregations_use_only_rows_known_at_landmark():
     np.testing.assert_allclose(data.X[0], [5.0, 3.0, 5.0, 1.0, 2.0, 1.5])
 
 
+def test_slope_and_std_aggregations():
+    df = _frame(
+        [("a", 0.0, 1.0, False, 1.0), ("a", 1.0, 2.0, False, 3.0), ("a", 2.0, 5.0, True, 5.0)]
+    )
+    data = make_landmark_data(df, horizon=1.0, landmarks=[2.5], history_features=[("z", "slope"), ("z", "std")])
+    slope, std = np.polyfit([0.0, 1.0, 2.0], [1.0, 3.0, 5.0], 1)[0], np.std([1.0, 3.0, 5.0], ddof=1)
+    np.testing.assert_allclose(data.X[0, :2], [slope, std])
+
+
+def test_slope_nan_with_one_distinct_time_std_nan_with_one_row():
+    one_row = _frame([("a", 0.0, 2.0, True, 1.0)])  # only one row known at s: one distinct time
+    data = make_landmark_data(one_row, horizon=1.0, landmarks=[0.5], history_features=[("z", "slope"), ("z", "std")])
+    assert np.isnan(data.X[0, 0]) and np.isnan(data.X[0, 1])
+
+
+def test_slope_uses_measured_at_when_given_else_start():
+    df = pl.DataFrame(
+        {
+            "id": ["a", "a", "a"],
+            "start": [0.0, 1.0, 2.0],
+            "stop": [1.0, 2.0, 5.0],
+            "event": [False, False, True],
+            "z": [1.0, 3.0, 5.0],
+            "m": [-2.0, -1.0, 1.0],  # a different (but valid, m <= start) clock
+        }
+    )
+    by_start = make_landmark_data(df, horizon=1.0, landmarks=[2.5], history_features=[("z", "slope")])
+    by_measured = make_landmark_data(
+        df, horizon=1.0, landmarks=[2.5], history_features=[("z", "slope")], measured_at="m"
+    )
+    np.testing.assert_allclose(by_start.X[0, 0], 2.0)  # z = 1 + 2 * start
+    np.testing.assert_allclose(by_measured.X[0, 0], 9.0 / 7.0)
+    assert not np.isclose(by_start.X[0, 0], by_measured.X[0, 0])
+
+
+def test_raw_groups_worked_example():
+    assert _raw_groups(["z", ("z", "mean"), ("z", "slope"), "x"]) == {"z": ["z", "z_mean", "z_slope"], "x": ["x"]}
+
+
+def test_raw_groups_column_and_name_order_preserved():
+    got = _raw_groups([("b", "mean"), "a", ("b", "std"), ("a", "max")])
+    assert list(got) == ["b", "a"]
+    assert got == {"b": ["b_mean", "b_std"], "a": ["a", "a_max"]}
+
+
+def test_raw_groups_propagates_empty_history_features_error():
+    with pytest.raises(ValueError, match="at least one feature"):
+        _raw_groups([])
+
+
 def test_rows_are_known_by_start_not_by_measurement_time():
     df = pl.DataFrame(
         {"id": [1, 1], "start": [0.0, 1.0], "stop": [1.0, 3.0], "event": [False, True], "z": [1.0, 9.0], "m": [0.0, 1.0]}
@@ -88,7 +139,7 @@ def test_rows_are_known_by_start_not_by_measurement_time():
         make_landmark_data(df.with_columns(pl.col("m") + 0.5), horizon=1.0, landmarks=[1.0], history_features=["z"], measured_at="m")
 
 
-@pytest.mark.parametrize("feature", ["stop", "event", ("stop", "max"), ("event", "sum"), "id"])
+@pytest.mark.parametrize("feature", ["stop", "event", ("stop", "max"), ("event", "sum"), "id", ("stop", "slope"), ("event", "std")])
 def test_history_features_on_outcome_columns_raise(feature):
     with pytest.raises(ValueError, match="look ahead"):
         make_landmark_data(HAND, horizon=1.0, landmarks=[1.0], history_features=[feature])
