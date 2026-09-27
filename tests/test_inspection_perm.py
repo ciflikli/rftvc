@@ -243,7 +243,138 @@ def test_user_strata_labels():
     with pytest.raises(ValueError, match="3 entries"):
         _strata.user_labels(np.array([0, 1]), 3)
     with pytest.raises(ValueError, match="sortable"):
+        _strata.user_labels(np.array([1, "a", 2], dtype=object), 3)
+
+
+def test_strata_module_does_not_require_pandas():
+    """pandas is a dev-only dependency (pyproject.toml's dependency-groups.dev), not a
+    runtime one: _strata.py must not import it unconditionally (regression: it briefly
+    did, which would break `import rftvc` for a normal, non-dev install)."""
+    import subprocess
+    import sys
+
+    script = (
+        "import sys, builtins\n"
+        "real_import = builtins.__import__\n"
+        "def blocked(name, *a, **k):\n"
+        "    if name == 'pandas' or name.startswith('pandas.'):\n"
+        "        raise ModuleNotFoundError(name)\n"
+        "    return real_import(name, *a, **k)\n"
+        "builtins.__import__ = blocked\n"
+        "import rftvc.inspection\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_user_strata_labels_reject_nan_in_an_object_array():
+    """NaN detection must not be skipped for object-dtype strata (regression: the check
+    used to look at ``s.dtype.kind == "f"`` only, so a float NaN or a None boxed in an
+    object array silently got its own distinct stratum instead of raising)."""
+    with pytest.raises(ValueError, match="NaN"):
         _strata.user_labels(np.array([1, "a", None], dtype=object), 3)
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([1.0, 2.0, float("nan")], dtype=object), 3)
+
+
+def test_user_strata_labels_reject_nat_datetime64():
+    """A datetime64/timedelta64 array's own NaT (regression: an earlier fix's dtype-kind
+    dispatch only special-cased "f"/"c"/"O", leaving datetime64's "M" kind unhandled, so a
+    NaT silently got its own stratum code instead of raising)."""
+    d = np.array(["2020-01-01", "NaT"], dtype="datetime64[D]")
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(d, 2)
+
+
+def test_user_strata_labels_reject_boxed_nat_and_decimal_nan():
+    """NaT or Decimal("NaN") boxed in an object array (regression: an earlier fix's
+    object-array branch only special-cased None and float/np.floating NaN)."""
+    import decimal
+
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([np.datetime64("2020-01-01"), np.datetime64("NaT")], dtype=object), 2)
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([decimal.Decimal("1"), decimal.Decimal("NaN")], dtype=object), 2)
+
+
+def test_user_strata_labels_reject_masked_and_signaling_nan():
+    """numpy's masked-array sentinel (regression: ``np.ma.masked != np.ma.masked`` returns
+    the masked constant itself, and ``bool(...)`` of that is False, not an exception, so
+    ``x != x`` alone silently treats it as a normal, distinct label) and a signaling
+    Decimal NaN (regression: comparing it raises ``decimal.InvalidOperation``, not handled
+    by the ``pd.NA``-only ``except TypeError``)."""
+    import decimal
+
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([1, np.ma.masked], dtype=object), 2)
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([decimal.Decimal("1"), decimal.Decimal("sNaN")], dtype=object), 2)
+
+
+def test_user_strata_labels_reject_a_masked_array_entry():
+    """A genuine ``numpy.ma.MaskedArray``'s mask marks an entry missing independently of
+    its underlying data value (regression: ``np.asarray`` drops the mask, so a masked
+    entry silently kept whatever placeholder value the array holds underneath, e.g. a
+    masked ``1`` joining the same stratum as a real, unmasked ``1``)."""
+    labels = np.ma.array([1, 1, 2], mask=[False, True, False])
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(labels, 3)
+
+
+def test_user_strata_labels_reject_pandas_na():
+    """pandas' pd.NA (a nullable-dtype missing marker) boxed in an object array (regression:
+    ``x != x`` is itself an ``NA``, not a bool, for ``pd.NA``, so ``bool(x != x)`` raises
+    TypeError there by design rather than returning True/False; must be treated as missing,
+    not left to propagate as an opaque TypeError)."""
+    _strata.user_labels(np.array([1, 2], dtype=object), 2)  # sanity: no false positive
+    with pytest.raises(ValueError, match="NaN"):
+        _strata.user_labels(np.array([1, pd.NA], dtype=object), 2)
+
+
+def test_user_strata_labels_other_typeerror_is_not_treated_as_missing():
+    """A label type whose own ``__ne__`` happens to raise ``TypeError`` for an unrelated
+    reason must not be silently reclassified as "missing": only ``pd.NA``'s deliberately
+    ambiguous truthiness is caught (regression: a bare ``except TypeError: return True``
+    would misclassify any such label and hide its real, unrelated bug)."""
+
+    class _BrokenNe:
+        def __eq__(self, other):
+            return self is other
+
+        def __ne__(self, other):
+            if self is other:
+                raise TypeError("boom: unrelated to missingness")
+            return not (self == other)
+
+        def __lt__(self, other):
+            return id(self) < id(other)
+
+    a, b = _BrokenNe(), _BrokenNe()
+    with pytest.raises(TypeError, match="boom"):
+        _strata.user_labels(np.array([a, b], dtype=object), 2)
+
+
+def test_user_strata_labels_pandas_without_na_survives_the_lookup(monkeypatch):
+    """The pd.NA check must not assume ``sys.modules["pandas"]`` has an ``NA`` attribute
+    (regression: ``pd.NA`` instead of ``getattr(pd, "NA", None)`` would turn an unrelated
+    TypeError into a misleading AttributeError if that module slot were ever occupied by
+    something without ``.NA``, masking the real error instead of re-raising it)."""
+    import sys
+    import types
+
+    class _BrokenNe:
+        def __eq__(self, other):
+            return self is other
+
+        def __ne__(self, other):
+            if self is other:
+                raise TypeError("boom: unrelated to missingness")
+            return not (self == other)
+
+    monkeypatch.setitem(sys.modules, "pandas", types.ModuleType("pandas"))  # no .NA
+    a, b = _BrokenNe(), _BrokenNe()
+    with pytest.raises(TypeError, match="boom"):
+        _strata.user_labels(np.array([a, b], dtype=object), 2)
 
 
 def test_user_strata_restrict_the_permutation():
