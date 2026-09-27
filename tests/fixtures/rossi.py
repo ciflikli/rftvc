@@ -1,11 +1,27 @@
-"""Rossi (R carData) weekly-employment panel -> counting-process rows."""
+"""Rossi (R carData) weekly-employment panel -> counting-process rows.
 
-from pathlib import Path
+``carData`` is GPL >= 2 with no separate data-specific licence (see
+``docs/plans/rc-validation-findings.md``'s licence discussion), so rather
+than committing the data under rftvc's MIT licence, ``_read`` downloads it
+on demand from carData's own upstream CRAN mirror -- pinned to a specific
+commit and SHA-256-verified, cached locally, never redistributed with rftvc
+-- following ``examples/data/cunningham_lemke.py``'s precedent. Requires
+network on first use only (cached after); the fixture-correctness tests
+that exercise this are marked ``network`` and excluded from the default
+test run, same as the ``slow`` marker.
+"""
 
 import polars as pl
 
-ROSSI = Path(__file__).with_name("rossi.csv")
+from ._thirdparty import fetch, read_rda
+
+URL = "https://raw.githubusercontent.com/cran/carData/b7d1f48e05ff8e64a5fe9ccb2c64bdef2d91f400/data/Rossi.rda"
+SHA256 = "d7ef41985b5fda5e32ed55594b15f437f08f1b29422172f3429e60e486b8d7c4"
 STATIC = ["id", "fin", "age", "race", "wexp", "mar", "paro", "prio", "educ", "week", "arrest"]
+
+
+def _read():
+    return read_rda(fetch(URL, SHA256, "carData_Rossi.rda"), "Rossi")
 
 
 def rossi_counting_process():
@@ -20,7 +36,7 @@ def rossi_counting_process():
     ``id`` column). ``fin``, ``race``, ``wexp``, ``mar``, ``paro`` keep their
     original string values (encoded downstream, not here).
     """
-    d = pl.read_csv(ROSSI).with_row_index("id", offset=1)
+    d = _read().with_row_index("id", offset=1)
     emp_cols = [f"emp{j}" for j in range(1, 53)]
     long = (
         d.select(STATIC + emp_cols)
