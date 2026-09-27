@@ -19,7 +19,7 @@ from ._competing import CompetingRisksForestTV
 from ._estimator import SurvivalForestTV
 from ._validation import CR_DTYPE, _as_labels, check_counting_process, make_competing_risks_y, make_survival_y
 
-AGGREGATIONS = ("last", "first", "mean", "min", "max", "sum", "count")
+AGGREGATIONS = ("last", "first", "mean", "min", "max", "sum", "count", "slope", "std")
 
 
 class LandmarkData(NamedTuple):
@@ -73,8 +73,22 @@ def _feature_specs(history_features, forbidden):
     return specs
 
 
-def _agg_expr(name, column, agg, start):
+def _raw_groups(history_features):
+    """``{raw column -> [derived feature names]}``, first-appearance order of both.
+
+    ``"landmark"`` never appears (it is appended after ``history_features`` is
+    parsed, by ``make_landmark_data`` / ``landmark_features``), which is exactly
+    the "not a permutable unit" property, for free.
+    """
+    groups = {}
+    for name, column, _ in _feature_specs(history_features, forbidden=set()):
+        groups.setdefault(column, []).append(name)
+    return groups
+
+
+def _agg_expr(name, column, agg, start, time):
     col = pl.col(column).cast(pl.Float64)
+    t = pl.col(time).cast(pl.Float64)
     exprs = {
         "last": col.sort_by(start).last(),
         "first": col.sort_by(start).first(),
@@ -83,19 +97,23 @@ def _agg_expr(name, column, agg, start):
         "max": col.max(),
         "sum": col.sum(),
         "count": pl.len().cast(pl.Float64),
+        "slope": pl.when(t.n_unique() < 2).then(None).otherwise(pl.cov(t, col) / t.var()),
+        "std": col.std(),
     }
     return exprs[agg].alias(name)
 
 
-def _history_features(df, s, specs, *, id, start):
+def _history_features(df, s, specs, *, id, start, measured_at=None):
     """Features from the rows known at ``s``, one row per id.
 
     A row is known at ``s`` iff ``start <= s``. A later row must not be used even
     if its covariates were measured before ``s``: the row exists only because
-    the subject survived to its start, which is not yet known at ``s``.
+    the subject survived to its start, which is not yet known at ``s``. ``slope``
+    is the OLS slope on ``measured_at`` when given, else on ``start``.
     """
+    time = measured_at if measured_at is not None else start
     hist = df.filter(pl.col(start) <= s)
-    return hist.group_by(id, maintain_order=True).agg([_agg_expr(n, c, a, start) for n, c, a in specs])
+    return hist.group_by(id, maintain_order=True).agg([_agg_expr(n, c, a, start, time) for n, c, a in specs])
 
 
 def _landmark_grid(first_start, last_stop, landmarks, step):
@@ -182,7 +200,7 @@ def make_landmark_data(
         at_risk = subjects.filter((pl.col("_entry") <= s) & (pl.col("_U") > s))
         if at_risk.height == 0:
             continue
-        feats = _history_features(df.join(at_risk.select(id), on=id), s, specs, id=id, start=start)
+        feats = _history_features(df.join(at_risk.select(id), on=id), s, specs, id=id, start=start, measured_at=measured_at)
         part = at_risk.join(feats, on=id, how="inner", maintain_order="left").with_columns(
             pl.lit(s).alias("landmark"),
             ((pl.min_horizontal("_U", pl.lit(s + horizon))) - s).alias("_stop"),
@@ -213,8 +231,8 @@ def landmark_features(df, s, *, history_features, id="id", start="start", stop="
     (Training needs ``U > s`` only because such a subject would contribute a
     zero-length row, not because it is outside the target population.) If
     ``event`` is given, subjects with an event at or before ``s`` are excluded.
-    ``measured_at`` is accepted for signature symmetry; rows are known at
-    ``s`` iff ``start <= s`` (see ``make_landmark_data``).
+    Rows are known at ``s`` iff ``start <= s`` (see ``make_landmark_data``);
+    ``measured_at``, if given, is the OLS time axis for a ``"slope"`` feature.
     """
     df = _as_polars(df)
     specs = _feature_specs(history_features, forbidden={stop, id} | ({event} if event else set()))
@@ -226,7 +244,7 @@ def landmark_features(df, s, *, history_features, id="id", start="start", stop="
     if event is not None:
         keep = keep & ~(pl.col("_event") & (pl.col("_U") <= s))
     at_risk = subjects.filter(keep)
-    feats = _history_features(df.join(at_risk.select(id), on=id), s, specs, id=id, start=start)
+    feats = _history_features(df.join(at_risk.select(id), on=id), s, specs, id=id, start=start, measured_at=measured_at)
     out = at_risk.join(feats, on=id, how="inner", maintain_order="left").with_columns(pl.lit(float(s)).alias("landmark"))
     names = [name for name, _, _ in specs] + ["landmark"]
     return out[id].to_numpy(), np.ascontiguousarray(out.select(names).to_numpy().astype(np.float64))
@@ -298,7 +316,8 @@ class LandmarkSurvivalForest(_LandmarkBase):
         Prediction window ``w`` (outcomes are administratively censored at ``s + w``).
     history_features : list
         Column names (last value at ``s``) or ``(column, agg)`` pairs, ``agg`` in
-        ``"last", "first", "mean", "min", "max", "sum", "count"``.
+        ``"last", "first", "mean", "min", "max", "sum", "count", "slope", "std"``
+        (``"slope"``: the OLS slope on ``measured_at``, else ``start``).
     landmarks : array-like or None
         Training landmarks. Exactly one of ``landmarks`` and ``step``.
     step : float or None

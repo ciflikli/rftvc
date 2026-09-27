@@ -490,11 +490,11 @@ def test_errors(kw, match):
 def test_estimator_errors():
     with pytest.raises(ValueError, match="y is required"):
         inspection.permutation_importance(FOREST, XT)
-    with pytest.raises(NotImplementedError):
+    from sklearn.exceptions import NotFittedError
+
+    with pytest.raises(NotFittedError):  # landmark dispatch also requires a fitted estimator
         inspection.permutation_importance(LandmarkSurvivalForest(), XT, YT)
     with pytest.raises(TypeError):
         inspection.permutation_importance(object(), XT, YT)
-    from sklearn.exceptions import NotFittedError
-
     with pytest.raises(NotFittedError):
         inspection.permutation_importance(SurvivalForestTV(), XT, YT)

@@ -18,17 +18,24 @@ __all__ = ["drop_column_importance", "permutation_importance"]
 
 
 def _family(estimator, fn="permutation_importance", fitted=True):
-    from .landmark import _LandmarkBase
+    """``(is_landmark, competing)``, checked for ``fn``'s supported estimator types."""
+    from .landmark import LandmarkCompetingRisksForest, _LandmarkBase
 
-    if isinstance(estimator, _LandmarkBase):
-        raise NotImplementedError(f"{fn} for landmark models is not implemented yet")
-    if not isinstance(estimator, _BaseForestTV):
+    is_landmark = isinstance(estimator, _LandmarkBase)
+    if not is_landmark and not isinstance(estimator, _BaseForestTV):
         raise TypeError(
-            f"{fn} supports SurvivalForestTV and CompetingRisksForestTV, got {type(estimator).__name__}"
+            f"{fn} supports SurvivalForestTV, CompetingRisksForestTV, LandmarkSurvivalForest and "
+            f"LandmarkCompetingRisksForest, got {type(estimator).__name__}"
         )
     if fitted:
         check_is_fitted(estimator, "forest_")
-    return isinstance(estimator, CompetingRisksForestTV)
+    competing = isinstance(estimator, (CompetingRisksForestTV, LandmarkCompetingRisksForest))
+    return is_landmark, competing
+
+
+def _reject_brier_kwargs(censoring_estimator, g_min, n_times, context):
+    if censoring_estimator is not None or g_min != 0.05 or n_times != 10:
+        raise ValueError(f"censoring_estimator, g_min and n_times are only used with scoring in {{'brier', 'ibs'}} ({context})")
 
 
 def _entropy(random_state):
@@ -146,6 +153,9 @@ def permutation_importance(
     n_bootstrap=100,
     random_state=None,
     n_jobs=None,
+    censoring_estimator=None,
+    g_min=0.05,
+    n_times=10,
 ):
     """Permutation importance on counting-process rows, scored by the piecewise-exponential log score.
 
@@ -162,22 +172,43 @@ def permutation_importance(
     off the (time, value) support (a late value placed on an early row), which
     biases importance; it is available for comparison only and warns.
 
+    For a fitted ``LandmarkSurvivalForest`` / ``LandmarkCompetingRisksForest``,
+    ``X`` is the raw long frame (``y``, ``ids``, ``oob``, ``measured_at`` and
+    ``block_time`` do not apply and must be left at their defaults: outcomes
+    and ids come from the model's own ``event``/``stop``/``id`` columns).
+    Units default to *raw* history columns (every derived feature of a column
+    moves together); rows are permuted within each landmark's own risk set
+    (``strata`` is fixed to that partition: ``"time"``, the shared default, or
+    the explicit alias ``"landmark"``; anything else raises). ``scoring`` also
+    accepts ``"brier"`` / ``"ibs"`` (IPCW, fitted per landmark as
+    ``model_selection.landmark_cross_validate`` does, then pooled by risk-set
+    size); as these are losses, importance there is ``pooled(permuted) -
+    pooled(baseline)`` (positive = permuting made the loss worse), the mirror
+    of the PE score's ``intact - permuted``, and ``share_of_gain`` is ``None``.
+
     Parameters
     ----------
-    estimator : fitted SurvivalForestTV or CompetingRisksForestTV
+    estimator : fitted SurvivalForestTV, CompetingRisksForestTV, LandmarkSurvivalForest or LandmarkCompetingRisksForest
     X : array-like or DataFrame of shape (n_rows, n_features)
-        Held-out counting-process rows (or, with ``oob=True``, the training data).
+        Held-out counting-process rows (or, with ``oob=True``, the training
+        data); for a landmark estimator, the raw long frame.
     y : survival or competing-risks target of the rows (``start``, ``stop``, ``event``).
+        Must be ``None`` for a landmark estimator.
     ids : array-like of shape (n_rows,) or str, default=None
         Subject of each row (or a column of a DataFrame ``X``). ``None`` makes
-        every row its own subject; the bootstrap then resamples rows.
+        every row its own subject; the bootstrap then resamples rows. Must be
+        ``None`` for a landmark estimator (ids come from its own id column).
     features : list of names or indices, default=None
-        One unit per feature; default all features.
+        One unit per feature; default all features. For a landmark estimator,
+        a raw column name expands to every derived feature built on it
+        (the default unit); a derived feature name/index is a singleton.
     groups : dict name -> list of columns, default=None
         Units permuted jointly (e.g. a covariate with its lags); exclusive with ``features``.
     strata : "time", None or array-like of shape (n_rows,), default="time"
         ``"time"``: ``n_strata`` quantile bins of ``start``. An array gives
         user strata (e.g. calendar period). ``None``: no strata (naive shuffle; see above).
+        For a landmark estimator this is fixed to the landmark partition;
+        pass ``"time"`` (the default) or the explicit alias ``"landmark"``.
     n_strata : int, default=10
     conditional_on : list of names or indices, default=None
         Columns whose ``n_bins`` quantile bins are crossed with the strata
@@ -217,6 +248,11 @@ def permutation_importance(
         unit's result does not depend on the other units requested.
     n_jobs : int, default=None
         Threads for prediction.
+    censoring_estimator, g_min, n_times : default=None, 0.05, 10
+        Landmark ``scoring in {"brier", "ibs"}`` only (same names/defaults as
+        ``model_selection.landmark_cross_validate`` / ``metrics.brier_landmark`` /
+        ``metrics.integrated_brier``); non-default with ``scoring="pe"`` or a
+        counting-process estimator raises.
 
     Returns
     -------
@@ -231,12 +267,35 @@ def permutation_importance(
     - ``baseline_score``, ``null_score``, ``zero_rate_share``, ``n_events``,
       ``n_truncated_events``, ``n_rows_excluded``, ``n_unpermuted``,
       ``feature_names``, ``units`` (column indices per unit).
+
+    For a landmark estimator with ``scoring in {"brier", "ibs"}`` the Bunch
+    instead has ``importances``, ``importances_mean``, ``importances_std``,
+    ``importances_se``, ``share_of_gain=None``, ``baseline_score`` (the pooled
+    baseline loss), ``feature_names``, ``units``; the PE-only decompositions
+    (``importances_window``, ``importances_cause``, ``importances_id``,
+    ``zero_rate_share``, ``n_truncated_events``, ``n_unpermuted``) are ``None``.
     """
-    competing = _family(estimator)
+    is_landmark, competing = _family(estimator)
+    if is_landmark:
+        if oob:
+            raise ValueError("oob=True is only for counting-process estimators (SurvivalForestTV/CompetingRisksForestTV)")
+        if y is not None:
+            raise ValueError("y must be None for a landmark estimator: outcomes come from X's own event/stop columns")
+        if ids is not None:
+            raise ValueError("ids must be None for a landmark estimator: ids come from X's own id column (model.id)")
+        if measured_at is not None or block_time is not None:
+            raise ValueError("measured_at and block_time are only used with oob=True (counting-process estimators)")
+        if scoring not in ("pe", "brier", "ibs"):
+            raise ValueError(f"scoring must be 'pe', 'brier' or 'ibs', got {scoring!r}")
+        return _pe_landmark(
+            estimator, X, features, groups, strata, n_strata, conditional_on, n_bins, scoring, windows, alpha,
+            cause, n_repeats, n_bootstrap, random_state, n_jobs, censoring_estimator, g_min, n_times, competing,
+        )
     if y is None:
         raise ValueError("y is required for counting-process estimators")
     if scoring != "pe":
         raise ValueError(f"scoring must be 'pe' for counting-process estimators (brier/ibs: landmark models), got {scoring!r}")
+    _reject_brier_kwargs(censoring_estimator, g_min, n_times, "counting-process estimator")
     n_repeats = _strata.check_count(n_repeats, "n_repeats")
     if isinstance(n_bootstrap, (bool, np.bool_)) or not isinstance(n_bootstrap, numbers.Integral) or n_bootstrap < 0:
         raise ValueError(f"n_bootstrap must be an integer >= 0, got {n_bootstrap!r}")
@@ -278,13 +337,24 @@ def permutation_importance(
         if input_rows is not None:
             codes = codes[input_rows]
         st = _score.Strata("user", codes, n_strata, cond, n_bins)
-    ev = _score.Evaluation(Xe, ye, start, row_ids, w, null, alpha, estimator.causes_ if competing else None, cause, predict)
+    causes = estimator.causes_ if competing else None
+    boot = 0 if oob else n_bootstrap
+    return _pe_finish(
+        Xe, ye, start, row_ids, predict, H, causes, cause, w, null, alpha, units, unit_names,
+        n_repeats, boot, random_state, excluded, st,
+    )
+
+
+def _pe_finish(Xe, ye, start, row_ids, predict, H, causes, cause, w, null, alpha, units, unit_names,
+                n_repeats, n_bootstrap, random_state, excluded, st):
+    """The shared tail of PE-scoring permutation importance: intact score, the per-unit
+    permutation loop, ``share_of_gain`` and the result ``Bunch`` (design §3.1)."""
+    ev = _score.Evaluation(Xe, ye, start, row_ids, w, null, alpha, causes, cause, predict)
     intact = _score.score(ev, ye, H, ids=row_ids)
     entropy = _entropy(random_state)
-    boot = 0 if oob else n_bootstrap
     res = [
         _score.unit_importance(
-            ev, H, intact, cols, st, np.random.SeedSequence(entropy, spawn_key=(int(cols.min()),)), n_repeats, boot
+            ev, H, intact, cols, st, np.random.SeedSequence(entropy, spawn_key=(int(cols.min()),)), n_repeats, n_bootstrap
         )
         for cols in units
     ]
@@ -331,6 +401,83 @@ def permutation_importance(
     )
 
 
+def _pe_landmark(model, df, features, groups, strata, n_strata, conditional_on, n_bins, scoring, windows, alpha,
+                  cause, n_repeats, n_bootstrap, random_state, n_jobs, censoring_estimator, g_min, n_times, competing):
+    """Landmark dispatch of ``permutation_importance`` (``scoring in {"pe", "brier", "ibs"}``)."""
+    from .landmark import _raw_groups
+
+    n_repeats = _strata.check_count(n_repeats, "n_repeats")
+    if isinstance(n_bootstrap, (bool, np.bool_)) or not isinstance(n_bootstrap, numbers.Integral) or n_bootstrap < 0:
+        raise ValueError(f"n_bootstrap must be an integer >= 0, got {n_bootstrap!r}")
+    n_strata = _strata.check_count(n_strata, "n_strata")
+    n_bins = _strata.check_count(n_bins, "n_bins")
+    data = model._landmark_data(df)
+    Xe, ye, row_ids, s = data.X, data.y, data.ids, data.s
+    names = data.feature_names
+    threads = effective_n_jobs(n_jobs)
+    raw_groups = _raw_groups(model.history_features)
+    units, unit_names = _units.resolve_landmark_units(features, groups, raw_groups, names, Xe.shape[1])
+    cond = []
+    if conditional_on is not None:
+        refs = [conditional_on] if isinstance(conditional_on, (str, numbers.Integral)) else list(conditional_on)
+        cond = [_units._column(c, names, Xe.shape[1], None) for c in refs]
+    if isinstance(strata, str) and strata in ("time", "landmark"):
+        codes = np.unique(s, return_inverse=True)[1]
+        st = _score.Strata("user", codes, n_strata, cond, n_bins)
+    else:
+        raise ValueError(
+            f"strata is fixed to the landmark partition for landmark estimators; pass 'time' (the default) "
+            f"or 'landmark', got {strata!r}"
+        )
+    if scoring == "pe":
+        _reject_brier_kwargs(censoring_estimator, g_min, n_times, "scoring='pe'")
+        w = _windows(model.forest_, windows)
+        null = _baseline_at(model.forest_, w)
+        inner = model.forest_.forest_
+        if competing:
+            def predict(Xr, rows):
+                return inner.predict_cause_cumhaz(np.ascontiguousarray(Xr), w, threads)
+        else:
+            def predict(Xr, rows):
+                return inner.predict_cumhaz(np.ascontiguousarray(Xr), w, model.forest_.aggregate, threads)
+        H = predict(Xe, np.arange(Xe.shape[0]))
+        causes = model.forest_.causes_ if competing else None
+        start = np.zeros(Xe.shape[0])
+        return _pe_finish(
+            Xe, ye, start, row_ids, predict, H, causes, cause, w, null, alpha, units, unit_names,
+            n_repeats, n_bootstrap, random_state, 0, st,
+        )
+    n_times = _strata.check_count(n_times, "n_times")
+    if scoring == "ibs" and n_times < 2:
+        raise ValueError(f"n_times must be an integer >= 2 with scoring='ibs', got {n_times!r}")
+    entropy = _entropy(random_state)
+    res = _score.landmark_loss_importance(
+        model, Xe, ye, row_ids, s, units, scoring, cause, n_repeats, n_bootstrap,
+        entropy, n_times, censoring_estimator, g_min, competing, st,
+    )
+    return Bunch(
+        importances=res.importances,
+        importances_mean=res.importances_mean,
+        importances_std=res.importances_std,
+        importances_se=res.importances_se,
+        importances_window=None,
+        window_edges=None,
+        importances_cause=None,
+        importances_id=None,
+        id_labels=None,
+        share_of_gain=None,
+        baseline_score=res.baseline_score,
+        null_score=None,
+        zero_rate_share=None,
+        n_events=None,
+        n_truncated_events=None,
+        n_rows_excluded=None,
+        n_unpermuted=None,
+        feature_names=np.array(unit_names, dtype=object),
+        units=units,
+    )
+
+
 def drop_column_importance(
     estimator,
     X,
@@ -348,6 +495,9 @@ def drop_column_importance(
     add_noise_control=False,
     random_state=None,
     n_jobs=None,
+    censoring_estimator=None,
+    g_min=0.05,
+    n_times=10,
 ):
     """Cross-fitted drop-column (LOCO) importance, scored by the piecewise-exponential log score.
 
@@ -368,16 +518,29 @@ def drop_column_importance(
     ``add_noise_control=True`` appends a standard-normal column (drawn once, shared by every
     fold) and reports it as unit ``"_noise"``, a noise floor for the other units.
 
+    For a ``LandmarkSurvivalForest`` / ``LandmarkCompetingRisksForest`` **template**, ``X`` is
+    the raw long frame (``y``/``ids`` must be ``None``: outcomes and ids come from the
+    model's own columns). Dropping a unit removes every ``history_features`` entry built on
+    it (a raw column, or the individual derived features a ``groups=`` unit names); folds are
+    the landmark partition (``cv.split`` on the stacked ``s``/id grouping), not
+    ``model_selection._cv_folds``. ``add_noise_control`` draws one value per **row of the raw
+    frame** (not per stacked row) and adds it to every fold's full model as an extra
+    ``history_features`` entry (aggregation ``"last"``). ``scoring in {"brier", "ibs"}`` pools
+    per-landmark losses as ``permutation_importance`` does, but ``importances_se`` is not
+    computed for LOCO in that case (``NaN``; use ``permutation_importance``'s bootstrap SE for
+    a loss-scored standard error).
+
     Parameters
     ----------
-    estimator : SurvivalForestTV or CompetingRisksForestTV
+    estimator : SurvivalForestTV, CompetingRisksForestTV, LandmarkSurvivalForest or LandmarkCompetingRisksForest
         A template estimator (fitted or not); every fold clones and refits it.
     X : array-like or DataFrame of shape (n_rows, n_features)
-        Counting-process rows.
+        Counting-process rows; for a landmark estimator, the raw long frame.
     y : survival or competing-risks target of the rows (``start``, ``stop``, ``event``).
+        Must be ``None`` for a landmark estimator.
     ids : array-like of shape (n_rows,) or str, default=None
         Subject of each row (or a column of a DataFrame ``X``). ``None`` makes every row its
-        own subject.
+        own subject. Must be ``None`` for a landmark estimator.
     cv : int or a splitter, default=5
         An int gives ``GroupKFold(cv)`` on ``ids`` (new-subject cross-fitting): the
         documented, primary mode. A ``model_selection.RollingOriginSplit`` / ``GroupTimeSplit``
@@ -426,6 +589,9 @@ def drop_column_importance(
         (``joblib.Parallel(prefer="threads")``, since the Rust fit releases the GIL). Each
         clone keeps its own ``n_jobs`` (inherited from ``estimator``); combining a large
         ``n_jobs`` here with a multi-threaded template estimator oversubscribes.
+    censoring_estimator, g_min, n_times : default=None, 0.05, 10
+        Landmark ``scoring in {"brier", "ibs"}`` only; non-default with ``scoring="pe"`` or a
+        counting-process estimator raises (as ``permutation_importance``).
 
     Returns
     -------
@@ -447,13 +613,25 @@ def drop_column_importance(
       ``n_events``, ``n_ids``, ``n_folds``, ``feature_names``, ``units`` (column indices
       per unit, including the appended ``"_noise"`` column when requested).
     """
-    competing = _family(estimator, fn="drop_column_importance", fitted=False)
+    is_landmark, competing = _family(estimator, fn="drop_column_importance", fitted=False)
+    if is_landmark:
+        if y is not None:
+            raise ValueError("y must be None for a landmark estimator: outcomes come from X's own event/stop columns")
+        if ids is not None:
+            raise ValueError("ids must be None for a landmark estimator: ids come from X's own id column (model.id)")
+        if scoring not in ("pe", "brier", "ibs"):
+            raise ValueError(f"scoring must be 'pe', 'brier' or 'ibs', got {scoring!r}")
+        return _loco_landmark(
+            estimator, X, cv, features, groups, scoring, windows, alpha, cause, n_seeds, add_noise_control,
+            random_state, n_jobs, censoring_estimator, g_min, n_times, competing,
+        )
     if y is None:
         raise ValueError("y is required for counting-process estimators")
     if scoring != "pe":
         raise ValueError(
             f"scoring must be 'pe' for counting-process estimators (brier/ibs: landmark models), got {scoring!r}"
         )
+    _reject_brier_kwargs(censoring_estimator, g_min, n_times, "counting-process estimator")
     n_seeds = _strata.check_count(n_seeds, "n_seeds")
     if isinstance(cv, numbers.Integral) and not isinstance(cv, (bool, np.bool_)):
         if cv < 2:
@@ -501,6 +679,95 @@ def drop_column_importance(
         fold_scores=res.fold_scores,
         n_events=res.n_events,
         n_ids=res.n_ids,
+        n_folds=res.n_folds,
+        feature_names=np.array(unit_names, dtype=object),
+        units=units,
+    )
+
+
+def _loco_landmark(model, df, cv, features, groups, scoring, windows, alpha, cause, n_seeds, add_noise_control,
+                    random_state, n_jobs, censoring_estimator, g_min, n_times, competing):
+    """Landmark dispatch of ``drop_column_importance`` (``scoring in {"pe", "brier", "ibs"}``)."""
+    import polars as pl
+    from sklearn.base import clone
+
+    from ._estimator import SurvivalForestTV
+    from .landmark import _as_polars, _raw_groups
+
+    n_seeds = _strata.check_count(n_seeds, "n_seeds")
+    if isinstance(cv, numbers.Integral) and not isinstance(cv, (bool, np.bool_)):
+        if cv < 2:
+            raise ValueError(f"cv must be an integer >= 2 or a splitter, got {cv!r}")
+        from sklearn.model_selection import GroupKFold
+
+        cv = GroupKFold(cv)
+    elif not hasattr(cv, "split"):
+        raise ValueError(f"cv must be an integer >= 2 or a splitter with a split method, got {cv!r}")
+    if not (isinstance(windows, numbers.Integral) and not isinstance(windows, (bool, np.bool_))):
+        windows = _check_windows(windows)
+    entropy = _entropy(random_state)
+    default_forest = CompetingRisksForestTV() if competing else SurvivalForestTV()
+    stack_template = model if model.forest is not None else clone(model).set_params(forest=default_forest)
+    df = _as_polars(df)
+    if add_noise_control:
+        df = df.with_columns(pl.Series("_noise", _loco.noise_column(entropy, df.height)))
+        stack_template = clone(stack_template).set_params(history_features=list(stack_template.history_features) + ["_noise"])
+    raw_groups = _raw_groups(model.history_features)  # the user's units, before any noise column
+    data = stack_template._landmark_data(df)
+    names = data.feature_names
+    units, unit_names = _units.resolve_landmark_units(features, groups, raw_groups, names, data.X.shape[1])
+    if add_noise_control:
+        units = units + [np.array([names.index("_noise")], dtype=np.intp)]
+        unit_names = unit_names + ["_noise"]
+    if scoring == "pe":
+        _reject_brier_kwargs(censoring_estimator, g_min, n_times, "scoring='pe'")
+        res = _loco.run_landmark(stack_template, df, data, units, cv, windows, alpha, cause, competing, n_seeds, entropy, n_jobs)
+        mean = res.importances_mean
+        gain = res.baseline_score - res.null_score
+        if gain > 1e-12 * max(1.0, abs(res.null_score)):
+            share = mean / gain
+        else:
+            warnings.warn(
+                "the model does not beat the training null on these data; share_of_gain is NaN", UserWarning, stacklevel=2
+            )
+            share = np.full(mean.shape, np.nan)
+        return Bunch(
+            importances=res.importances,
+            importances_mean=mean,
+            importances_se=res.importances_se,
+            importances_window=res.importances_window,
+            window_edges=res.window_edges,
+            importances_cause=res.importances_cause,
+            share_of_gain=share,
+            baseline_score=res.baseline_score,
+            null_score=res.null_score,
+            fold_scores=res.fold_scores,
+            n_events=res.n_events,
+            n_ids=res.n_ids,
+            n_folds=res.n_folds,
+            feature_names=np.array(unit_names, dtype=object),
+            units=units,
+        )
+    n_times = _strata.check_count(n_times, "n_times")
+    if scoring == "ibs" and n_times < 2:
+        raise ValueError(f"n_times must be an integer >= 2 with scoring='ibs', got {n_times!r}")
+    res = _loco.run_landmark_loss(
+        stack_template, df, data, units, cv, scoring, cause, n_seeds, entropy, n_jobs, n_times,
+        censoring_estimator, g_min, competing,
+    )
+    return Bunch(
+        importances=res.importances,
+        importances_mean=res.importances_mean,
+        importances_se=res.importances_se,
+        importances_window=None,
+        window_edges=None,
+        importances_cause=None,
+        share_of_gain=None,
+        baseline_score=res.baseline_score,
+        null_score=None,
+        fold_scores=None,
+        n_events=None,
+        n_ids=None,
         n_folds=res.n_folds,
         feature_names=np.array(unit_names, dtype=object),
         units=units,

@@ -12,7 +12,7 @@ Notation: `M` windows, edges `w_0 = 0 < … < w_M = τ`; `S` = α-mixed piecewis
 - [x] S16: PE score metric, training null (`baseline_cumhaz_`), `_fit_design` refactor, Rust `oob_cumhaz` (branch `feat/s16-pe-score`)
 - [x] S17: `inspection.permutation_importance` for counting-process estimators (branch `feat/s17-perm-importance`)
 - [x] S18: `inspection.drop_column_importance` (LOCO, cross-fitted) (branch `feat/s18-loco`)
-- [ ] S19: Landmark importance (raw-column units, landmark strata, Brier/IBS scoring) + `slope` / `std` history features (branch `feat/s19-landmark-importance`)
+- [x] S19: Landmark importance (raw-column units, landmark strata, Brier/IBS scoring) + `slope` / `std` history features (branch `feat/s19-landmark-importance`)
 - [ ] S20: `hazard_effect`, `path_effect`, foundation + importance user guide, case study, bench sims (branch `feat/s20-effects-docs`)
 
 ## Plan-level decisions (defaults; the slice plan reviews may change them)
