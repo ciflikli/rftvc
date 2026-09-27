@@ -104,6 +104,29 @@ need different importance measures:
 The :doc:`../case_studies/importance` case study shows both computed on one
 dataset and reports where they disagree.
 
+Two warnings you'll likely see on real data
+--------------------------------------------
+
+S16-S20's synthetic generators were tuned to a clear signal and rarely trigger
+either of these; a real, moderate-sized dataset routinely does. Neither is a
+bug -- both are the library doing its job -- but a first-time reader of real
+output can easily mistake either for one.
+
+- ``UserWarning: the model does not beat the training null on these data;
+  share_of_gain is NaN`` (:func:`~rftvc.inspection.permutation_importance`,
+  :func:`~rftvc.inspection.drop_column_importance`): normal for a
+  weaker-signal cause or covariate on real, moderate-sized data -- expect it
+  for at least one cause/covariate combination in a typical real analysis.
+  ``importances_mean``/``importances_se`` are still meaningful; only the
+  ratio ``share_of_gain`` is undefined when there is no gain over the null to
+  divide by.
+- ``UserWarning: ...% of events fall in windows where the predicted rate is
+  0; the windows are too fine for this model`` (:func:`~rftvc.inspection.permutation_importance`,
+  :func:`~rftvc.inspection.drop_column_importance`): the default ``windows=8``
+  can be too fine for a cause or subset with fewer events -- expect to need a
+  smaller ``windows`` for the rarer cause in an imbalanced competing-risks
+  split.
+
 ``hazard_effect``
 -------------------
 
