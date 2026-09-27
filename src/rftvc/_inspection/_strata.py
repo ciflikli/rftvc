@@ -19,7 +19,7 @@ def _scalar_isna(x):
         return bool(x != x)
     except TypeError:
         pd = sys.modules.get("pandas")  # already imported if the caller could have a pd.NA
-        if pd is not None and x is pd.NA:
+        if pd is not None and x is getattr(pd, "NA", None):
             return True
         raise
 

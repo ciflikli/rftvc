@@ -330,6 +330,29 @@ def test_user_strata_labels_other_typeerror_is_not_treated_as_missing():
         _strata.user_labels(np.array([a, b], dtype=object), 2)
 
 
+def test_user_strata_labels_pandas_without_na_survives_the_lookup(monkeypatch):
+    """The pd.NA check must not assume ``sys.modules["pandas"]`` has an ``NA`` attribute
+    (regression: ``pd.NA`` instead of ``getattr(pd, "NA", None)`` would turn an unrelated
+    TypeError into a misleading AttributeError if that module slot were ever occupied by
+    something without ``.NA``, masking the real error instead of re-raising it)."""
+    import sys
+    import types
+
+    class _BrokenNe:
+        def __eq__(self, other):
+            return self is other
+
+        def __ne__(self, other):
+            if self is other:
+                raise TypeError("boom: unrelated to missingness")
+            return not (self == other)
+
+    monkeypatch.setitem(sys.modules, "pandas", types.ModuleType("pandas"))  # no .NA
+    a, b = _BrokenNe(), _BrokenNe()
+    with pytest.raises(TypeError, match="boom"):
+        _strata.user_labels(np.array([a, b], dtype=object), 2)
+
+
 def test_user_strata_restrict_the_permutation():
     labels = (XT[:, 0] > 0).astype(int)
     ev, calls = _recording_eval(XT, YT)
