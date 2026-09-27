@@ -246,6 +246,27 @@ def test_user_strata_labels():
         _strata.user_labels(np.array([1, "a", 2], dtype=object), 3)
 
 
+def test_strata_module_does_not_require_pandas():
+    """pandas is a dev-only dependency (pyproject.toml's dependency-groups.dev), not a
+    runtime one: _strata.py must not import it unconditionally (regression: it briefly
+    did, which would break `import rftvc` for a normal, non-dev install)."""
+    import subprocess
+    import sys
+
+    script = (
+        "import sys, builtins\n"
+        "real_import = builtins.__import__\n"
+        "def blocked(name, *a, **k):\n"
+        "    if name == 'pandas' or name.startswith('pandas.'):\n"
+        "        raise ModuleNotFoundError(name)\n"
+        "    return real_import(name, *a, **k)\n"
+        "builtins.__import__ = blocked\n"
+        "import rftvc.inspection\n"
+    )
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def test_user_strata_labels_reject_nan_in_an_object_array():
     """NaN detection must not be skipped for object-dtype strata (regression: the check
     used to look at ``s.dtype.kind == "f"`` only, so a float NaN or a None boxed in an

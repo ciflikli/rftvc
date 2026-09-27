@@ -3,7 +3,19 @@
 import numbers
 
 import numpy as np
-import pandas as pd
+
+
+def _isna(s):
+    """NaN/``None`` mask, dtype-agnostic (unlike ``np.isnan``, defined for object arrays
+    too: a numeric dtype's ``NaN`` or an object array's boxed float ``NaN``/``None``)."""
+    if s.dtype.kind in "fc":
+        return np.isnan(s)
+    if s.dtype.kind != "O":
+        return np.zeros(s.shape, dtype=bool)
+    return np.fromiter(
+        (x is None or (isinstance(x, (float, np.floating)) and np.isnan(x)) for x in s.ravel()),
+        dtype=bool, count=s.size,
+    ).reshape(s.shape)
 
 
 def check_count(value, name):
@@ -29,7 +41,7 @@ def user_labels(strata, n):
     s = np.asarray(strata)
     if s.shape != (n,):
         raise ValueError(f"strata must have {n} entries (one per row), got shape {s.shape}")
-    if pd.isna(s).any():
+    if _isna(s).any():
         raise ValueError("strata labels must not be NaN")
     try:
         _, codes = np.unique(s, return_inverse=True)
