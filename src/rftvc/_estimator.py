@@ -399,7 +399,7 @@ class _BaseForestTV(BaseEstimator):
             return int(ms)
         if isinstance(ms, numbers.Real):
             if not (0 < ms <= 1):
-                raise ValueError(f"invalid max_samples={ms!r}: float must be in (0, 1]")
+                raise ValueError(f"invalid max_samples={ms!r}")
             return max(1, int(round(ms * n_ids)))
         raise TypeError(f"invalid max_samples={ms!r}")
 
@@ -413,11 +413,11 @@ class _BaseForestTV(BaseEstimator):
             return max(1, int(np.log2(p)))
         if isinstance(mf, numbers.Integral):
             if mf < 1:
-                raise ValueError(f"invalid max_features={mf!r}: int must be >= 1")
+                raise ValueError(f"invalid max_features={mf!r}")
             return min(int(mf), p)
         if isinstance(mf, numbers.Real):
             if not (0 < mf <= 1):
-                raise ValueError(f"invalid max_features={mf!r}: float must be in (0, 1]")
+                raise ValueError(f"invalid max_features={mf!r}")
             return max(1, int(mf * p))
         raise TypeError(f"invalid max_features={mf!r}")
 

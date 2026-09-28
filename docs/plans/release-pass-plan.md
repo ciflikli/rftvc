@@ -253,6 +253,15 @@ explicit note that this is the only intended change.
   (`n_estimators`, `min_events_leaf`, `min_ids_leaf`, `max_depth`, `ntime`, `oob_buffer`).
 - Full fast suite (`pytest -m "not slow and not network"`) green: 668 passed, 4 skipped,
   96 xfailed.
+- Codex review of PR #42 caught two real issues, both fixed: (1) the out-of-range
+  `ValueError` branches in `_resolve_n_draw`/`_resolve_max_features` had grown a
+  `": float must be in (0, 1]"`/`": int must be >= 1"` suffix, contradicting this slice's
+  own "message text is unchanged" acceptance criterion — reverted to the original
+  `f"invalid max_samples={ms!r}"`/`f"invalid max_features={mf!r}"` text. (2) flagged that
+  a non-scalar `max_features` (e.g. a numpy array) hits `mf == "sqrt"`'s ambiguous-truth
+  `ValueError` before reaching the new type check — confirmed this is unchanged pre-existing
+  behavior (same on `main` before this slice, since arrays were never a supported/documented
+  type), left as-is.
 
 ---
 
