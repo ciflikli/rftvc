@@ -826,6 +826,16 @@ floats, unless a fixed `random_state` makes exact values worth pinning).
 - Full fast suite (`pytest -m "not slow and not network"`) green: 686 passed, 4 skipped,
   96 xfailed (6 new doctest-collection tests, one per module, each running multiple
   `Examples` blocks — 36+ individual doctest assertions).
+- Codex review of PR #50 caught a real issue, fixed: `path_effect`'s example shifted
+  ``feature=1``, a column with no real effect on the synthetic hazard (only column 0
+  drives it), and asserted only `.shape` — a broken shift/contrast implementation would
+  have passed the doctest silently (confirmed: Codex replaced the shift with a no-op in
+  memory and all 40 inspection-module doctest assertions still passed). Rewrote the
+  example to shift `feature=0` (the column that actually drives the hazard, with a
+  known-sign effect: `rate = exp(-0.5 * X[:, 0])`, so raising it *lowers* risk) from a
+  time inside a row (exercising the row-split path, not just a boundary) and assert the
+  contrast is negative at both horizons, not just shaped correctly. Re-verified robust
+  to thread count (`RAYON_NUM_THREADS=1` and `4`, both green).
 
 ---
 

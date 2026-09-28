@@ -705,8 +705,10 @@ def path_effect(
 
     Examples
     --------
-    One subject's forward covariate path, held flat, then shifted by ``delta=1.0``
-    from time 2 onward:
+    One subject's forward covariate path, held flat, then feature 0 (the one driving
+    the hazard here: ``rate = exp(-0.5 * X[:, 0])``, so raising it *lowers* risk)
+    shifted by ``delta=1.0`` from a time inside its second row onward — the contrast
+    should come out negative at both horizons:
 
     >>> import numpy as np
     >>> from rftvc import SurvivalForestTV, make_survival_y, inspection
@@ -721,9 +723,11 @@ def path_effect(
     ...     np.arange(1.0, n_steps + 1), np.zeros(n_steps, dtype=bool), start=np.arange(0.0, n_steps)
     ... )
     >>> ids = np.zeros(n_steps, dtype=int)
-    >>> result = inspection.path_effect(forest, Xp, iv, ids, feature=1, delta=1.0, from_time=2.0, horizons=[3.0, 4.0])
+    >>> result = inspection.path_effect(forest, Xp, iv, ids, feature=0, delta=1.0, from_time=1.5, horizons=[3.0, 4.0])
     >>> result.per_subject.shape
     (1, 2)
+    >>> bool((result.per_subject < 0).all())
+    True
     """
     is_landmark, competing = _family(estimator, fn="path_effect")
     if is_landmark:
