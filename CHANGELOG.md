@@ -10,6 +10,8 @@ retroactively itemized here — see `git log` for the full slice-by-slice histor
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-28
+
 ### Added
 - `random_state` now accepts a `numpy.random.Generator` everywhere it appears
   (`SurvivalForestTV`, `CompetingRisksForestTV`, `inspection.permutation_importance`,

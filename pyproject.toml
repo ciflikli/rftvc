@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rftvc"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Scikit-learn compatible random survival forests with time-varying covariates"
 readme = "README.md"
 requires-python = ">=3.10"
