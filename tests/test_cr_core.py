@@ -68,6 +68,17 @@ def test_single_leaf_equals_survfit_aalen_johansen(name):
     np.testing.assert_allclose(m.predict_cumulative_hazard(X[:1])[0].T, ref_h, atol=1e-12)
 
 
+def test_random_state_accepts_generator():
+    X, y, ids = _cr_data()
+    fits = [
+        CompetingRisksForestTV(n_estimators=10, random_state=np.random.default_rng(0))
+        .fit(X, y, ids)
+        .predict_cumulative_incidence(X[:5])
+        for _ in range(2)
+    ]
+    np.testing.assert_array_equal(*fits)
+
+
 def test_time_with_only_cause_two_is_a_grid_point():
     fx = FIXTURES["tiny"]  # 1.5 is a cause-2 event time and nothing else
     y = make_competing_risks_y(fx["stop"], fx["cause"], start=fx["start"])

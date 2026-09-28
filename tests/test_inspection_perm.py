@@ -442,6 +442,12 @@ def test_reproducible_across_n_jobs_and_unit_order():
     assert not np.array_equal(_pi(FOREST, random_state=8).importances, a.importances)
 
 
+def test_random_state_accepts_generator():
+    a = _pi(FOREST, random_state=np.random.default_rng(0))
+    b = _pi(FOREST, random_state=np.random.default_rng(0))
+    np.testing.assert_array_equal(a.importances, b.importances)
+
+
 # --- groups and names -----------------------------------------------------------------
 
 

@@ -38,7 +38,11 @@ def test_call_order(monkeypatch):
         return wrapped
 
     monkeypatch.setattr(est_mod, "check_counting_process", spy("check_counting_process", est_mod.check_counting_process))
-    monkeypatch.setattr(est_mod, "check_random_state", spy("check_random_state", est_mod.check_random_state))
+    monkeypatch.setattr(
+        est_mod,
+        "check_random_state_or_generator",
+        spy("check_random_state_or_generator", est_mod.check_random_state_or_generator),
+    )
     monkeypatch.setattr(est_mod._core, "coarsen", spy("coarsen", est_mod._core.coarsen))
     monkeypatch.setattr(est_mod._core, "fit_forest", spy("fit_forest", est_mod._core.fit_forest))
     for cls, y in ((SurvivalForestTV, Y), (CompetingRisksForestTV, _cr_y(Y))):
@@ -52,7 +56,7 @@ def test_call_order(monkeypatch):
             calls.clear()
             Spy(n_estimators=3, random_state=0, **kw).fit(X, y, IDS)
             expected = ["_check_y", "check_counting_process", "_validate_params", step,
-                        "_resolve_min_ids_leaf", "_resolve_n_draw", "check_random_state", "fit_forest"]
+                        "_resolve_min_ids_leaf", "_resolve_n_draw", "check_random_state_or_generator", "fit_forest"]
             assert [c for c in calls if c in expected] == expected, (cls.__name__, kw, calls)
 
 
@@ -66,7 +70,7 @@ def _method_spy(name, fn, calls):
 
 def test_design_is_deterministic_and_rng_free(monkeypatch):
     m = SurvivalForestTV(n_estimators=3, ntime=20, random_state=None)
-    monkeypatch.setattr(est_mod, "check_random_state", lambda *_: pytest.fail("_fit_design must not draw"))
+    monkeypatch.setattr(est_mod, "check_random_state_or_generator", lambda *_: pytest.fail("_fit_design must not draw"))
     state = np.random.get_state()[1].copy()
     d1 = m._fit_design(X, Y, IDS, None, "error", "counting_process", None)
     d2 = m._fit_design(X, Y, IDS, None, "error", "counting_process", None)

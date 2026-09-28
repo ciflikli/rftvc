@@ -6,10 +6,37 @@ from typing import NamedTuple
 
 import narwhals as nw
 import numpy as np
+from sklearn.utils import check_random_state
 
 SURV_DTYPE = np.dtype([("start", "f8"), ("stop", "f8"), ("event", "?")])
 CR_DTYPE = np.dtype([("start", "f8"), ("stop", "f8"), ("event", "i8")])
 MAX_CAUSES = 255
+
+
+def check_random_state_or_generator(random_state):
+    """int, RandomState, Generator, or None -> RandomState or Generator.
+
+    Same contract everywhere ``random_state`` appears in the public API. Unlike
+    ``sklearn.utils.check_random_state``, this accepts a ``numpy.random.Generator``
+    and returns it unchanged (``Generator`` has no seedable-from-int-inside-sklearn
+    path).
+    """
+    if isinstance(random_state, np.random.Generator):
+        return random_state
+    return check_random_state(random_state)
+
+
+def rng_seed(rng):
+    """One ``int64`` seed drawn from a fitted ``RandomState`` or ``Generator``.
+
+    ``RandomState.randint`` and ``Generator.integers`` are not interchangeable
+    names for the same call, so callers that accept both (via
+    ``check_random_state_or_generator``) draw a seed through this instead.
+    """
+    high = np.iinfo(np.int64).max
+    if isinstance(rng, np.random.Generator):
+        return int(rng.integers(high, dtype=np.int64))
+    return int(rng.randint(high, dtype=np.int64))
 
 
 def make_survival_y(stop, event, start=None):

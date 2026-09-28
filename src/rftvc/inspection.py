@@ -5,7 +5,7 @@ import warnings
 
 import numpy as np
 from joblib import effective_n_jobs
-from sklearn.utils import Bunch, check_random_state
+from sklearn.utils import Bunch
 from sklearn.utils.validation import check_is_fitted
 
 from ._competing import CompetingRisksForestTV
@@ -14,6 +14,7 @@ from ._inspection import _effects, _loco, _score, _strata, _units
 from ._validation import (
     check_counting_process,
     check_intervals,
+    check_random_state_or_generator,
     check_survival_y,
     competing_risks_labels,
     make_competing_risks_y,
@@ -56,7 +57,7 @@ def _entropy(random_state):
         if random_state < 0:
             raise ValueError(f"random_state must be non-negative, got {random_state}")
         return int(random_state)
-    return int(check_random_state(random_state).randint(np.iinfo(np.int64).max, dtype=np.int64))
+    return int(check_random_state_or_generator(random_state).randint(np.iinfo(np.int64).max, dtype=np.int64))
 
 
 def _windows(estimator, windows):
@@ -251,7 +252,7 @@ def permutation_importance(
         that of the reported repeat average over evaluation subjects,
         conditional on the fitted forest (refit variability is not included).
         It costs ``n_units × n_bootstrap × n_repeats`` predictions; 0 skips it.
-    random_state : int, RandomState, Generator or None
+    random_state : int, RandomState instance, Generator, or None, default=None
         Each unit draws from its own stream keyed by its first column, so a
         unit's result does not depend on the other units requested.
     n_jobs : int, default=None
@@ -849,7 +850,7 @@ def drop_column_importance(
         Refits per fold per unit, averaged (fit-noise control).
     add_noise_control : bool, default=False
         Add a standard-normal column and report it as unit ``"_noise"``.
-    random_state : int, RandomState, Generator or None
+    random_state : int, RandomState instance, Generator, or None, default=None
         Seeds the noise column and every fold/seed's fit, independently of ``n_jobs``.
     n_jobs : int, default=None
         Unlike ``permutation_importance`` (which parallelises only inside the engine's own
