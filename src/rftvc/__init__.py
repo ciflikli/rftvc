@@ -1,5 +1,7 @@
 """Random survival forests with time-varying covariates."""
 
+from importlib.metadata import version as _version
+
 from ._competing import CompetingRisksForestTV
 from ._estimator import SurvivalForestTV
 from .landmark import (
@@ -39,4 +41,4 @@ __all__ = [
     "metrics",
     "model_selection",
 ]
-__version__ = "0.1.0.dev0"
+__version__ = _version("rftvc")

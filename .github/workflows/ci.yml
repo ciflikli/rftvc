@@ -18,6 +18,19 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: astral-sh/setup-uv@v6
+      - name: Check pyproject/Cargo version agreement
+        run: |
+          PY_VER=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "([^"]+)"/\1/')
+          RS_VER=$(grep -m1 '^version = ' rust/rftvc-py/Cargo.toml | sed -E 's/version = "([^"]+)"/\1/')
+          # strip PEP 440 pre-release markers (rc1, .dev0) and Cargo's "-rc.1" to compare
+          # only the dotted numeric core; exact prerelease-tag equivalence is a human
+          # judgment call at release time, not something worth encoding in a regex here.
+          PY_CORE=$(echo "$PY_VER" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+          RS_CORE=$(echo "$RS_VER" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+          if [ "$PY_CORE" != "$RS_CORE" ]; then
+            echo "pyproject.toml version core ($PY_CORE) != Cargo.toml version core ($RS_CORE)"
+            exit 1
+          fi
       - name: Rust checks
         working-directory: rust
         run: |
