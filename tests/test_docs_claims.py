@@ -2,11 +2,23 @@
 
 from pathlib import Path
 
-DOCS = Path(__file__).resolve().parents[1] / "docs" / "source" / "user_guide"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DOCS = REPO_ROOT / "docs" / "source" / "user_guide"
 
 
 def _text(name):
     return (DOCS / name).read_text().lower()
+
+
+def test_readme_exists_and_has_stable_substrings():
+    text = (REPO_ROOT / "README.md").read_text()
+    for phrase in [
+        "time-varying covariates",
+        "pip install -e . --group dev",
+        "rftvc.readthedocs.io",
+        "SurvivalForestTV",
+    ]:
+        assert phrase in text, f"missing README substring: {phrase!r}"
 
 
 def test_foundation_page_states_the_four_assumptions():

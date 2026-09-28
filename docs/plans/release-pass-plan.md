@@ -19,7 +19,7 @@ sessions concurrently; within a track, slices are ordered by real dependency.
 - [ ] T2-slice-3 `wheels.yml` TestPyPI → PyPI publish job with dry-run step
 - [ ] T3-slice-1 Docstring `Examples` sections across the public API
 - [ ] T3-slice-2 `api.rst` `CR_DTYPE`/`SURV_DTYPE` entries + `compatibility.rst` support matrix
-- [ ] T3-slice-3 `README.md` (new)
+- [x] T3-slice-3 `README.md` (new)
 - [ ] T3-slice-4 `CHANGELOG.md` (new, Keep a Changelog, fresh start)
 
 ---
@@ -835,6 +835,33 @@ than duplicating them"):
   not just local Markdown rendering assumptions).
 - `pyproject.toml`'s `readme = "README.md"` key (from T2-slice-1) resolves successfully
   in a local build.
+
+**T3-slice-3 done — deviations from the plan:**
+- Landed standalone (not bundled with T2-slice-1), since T2-slice-1 hasn't started yet —
+  satisfies the plan's "land T3-slice-3 first" ordering option.
+- Install instructions say "Not yet published to PyPI. Build from source with uv and
+  maturin" (`uv pip install -e . --group dev`), not `maturin develop` as the plan's
+  outline suggested — matches this repo's actual documented dev workflow
+  ([[rftvc-dev-workflow]] memory, `ci.yml`), not a generic maturin invocation.
+- The quickstart is a new small synthetic example (`numpy.random.default_rng` + 200
+  rows), not `index.rst`'s three-liner verbatim — `index.rst`'s snippet references
+  undefined variables (`stop`, `event`, `start`, `ids`, `X_path`, `y_path`) and isn't
+  standalone-runnable; the README's version had to actually execute. Verified by
+  extracting the fenced code block from the rendered `README.md` and running it
+  byte-for-byte (`.venv/bin/python` on the extracted block) — ran clean, `risk.shape ==
+  (5,)`.
+- `CHANGELOG.md` link is present but T3-slice-4 hasn't landed yet, so it currently 404s
+  — explicitly allowed by the plan's own "link it even if added in the same PR" note;
+  will resolve once T3-slice-4 merges.
+- The `compatibility.rst` link points at `https://rftvc.readthedocs.io/en/latest/compatibility.html`
+  even though `compatibility.rst` doesn't yet have the T3-slice-2 support-matrix content
+  (that slice hasn't landed) — the page itself already exists (pre-dates this pass), so
+  the link isn't broken, just less complete than it will be.
+- New test: `tests/test_docs_claims.py::test_readme_exists_and_has_stable_substrings`
+  (existence + 4 stable substrings — tagline phrase, install command, readthedocs
+  link, the estimator class name), following the file's existing guard convention.
+- Full fast suite (`pytest -m "not slow and not network"`) green: 678 passed, 4 skipped,
+  96 xfailed. GitHub rendering not yet checked (pending push/PR).
 
 ---
 
