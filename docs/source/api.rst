@@ -31,6 +31,17 @@ Data
    landmark_features
    LandmarkData
 
+.. data:: CR_DTYPE
+
+   Structured ``numpy.dtype`` of a competing-risks target: fields ``start`` (f8),
+   ``stop`` (f8), ``event`` (i8, a cause label; 0 = censored). See
+   :func:`make_competing_risks_y`.
+
+.. data:: SURV_DTYPE
+
+   Structured ``numpy.dtype`` of a survival target: fields ``start`` (f8),
+   ``stop`` (f8), ``event`` (bool). See :func:`make_survival_y`.
+
 Model selection
 ---------------
 
