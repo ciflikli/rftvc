@@ -17,8 +17,10 @@ retroactively itemized here — see `git log` for the full slice-by-slice histor
   supported internally.
 - A `UserWarning` when `ntime` coarsening drops rows or loses events, pointing at the
   fitted estimator's `n_coarsen_dropped_rows_`/`n_coarsen_lost_events_` attributes.
-- CI now tests Python 3.10 (the declared floor) and Windows, in addition to the
-  existing Linux/macOS + Python 3.13 coverage.
+- CI now tests 6 combinations (Linux, macOS, Windows × Python 3.10, 3.13), replacing
+  the previous Linux/macOS-only, Python-3.11-only coverage.
+- CI now fails if `pyproject.toml` and `rust/rftvc-py/Cargo.toml` disagree on their
+  version core.
 
 ### Changed
 - `SurvivalForestTV`/`CompetingRisksForestTV` hyperparameter validation now raises
@@ -26,6 +28,3 @@ retroactively itemized here — see `git log` for the full slice-by-slice histor
   of the correct type (previously both raised `ValueError`).
 - `rftvc.__version__` now reflects installed package metadata instead of a
   hand-maintained literal.
-
-### Fixed
-- (release-pass fixes land here as they merge)

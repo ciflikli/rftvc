@@ -963,3 +963,12 @@ against `git log` immediately before merging this slice.
   `keepachangelog.com`), following the file's existing guard convention.
 - Full fast suite (`pytest -m "not slow and not network"`) green: 678 passed, 4 skipped,
   96 xfailed.
+- Codex review of PR #47 caught three real issues, all fixed: (1) the CI-coverage bullet
+  said "existing Linux/macOS + Python 3.13 coverage" — factually wrong, the pre-T2-slice-2
+  matrix was Python 3.11 only, not 3.13; reworded to state the 6-combination replacement
+  plainly. (2) T1-slice-4's CI version-agreement check (pyproject.toml vs. Cargo.toml)
+  had no entry of its own — added one under `### Added`. (3) the placeholder `### Fixed`
+  section ("release-pass fixes land here as they merge") was removed — Keep a Changelog
+  omits empty sections, and there was nothing to list there: every "fix PR review
+  findings" commit (PRs #42, #43, #46) corrected its own PR's diff before merge, so the
+  net merged behavior already reflects the fix with nothing separately "Fixed."
