@@ -131,12 +131,16 @@ def run_censoring(n_reps=N_REPS_CENS, n_train=N_TRAIN_CENS, n_eval=N_EVAL_CENS, 
 
 
 def check_censoring(df):
-    """``(pass_pe, pass_brier)``: the design's real rank-concordance rule — both scoring
-    families rank ``z1`` (the real signal) above ``z2`` (noise), by a plain mean comparison
-    (not a per-replicate significance test — see module docstring for why)."""
-    pass_pe = bool(df["pe_z1"].mean() > df["pe_z2"].mean())
-    pass_brier = bool(df["brier_z1"].mean() > df["brier_z2"].mean())
-    return pass_pe, pass_brier
+    """``(pass_agree, pe_rank_z1_larger, brier_rank_z1_larger)``: the design's real
+    rank-*concordance* rule, unmodified from ``bench.tvc_landmark_sim.run()``'s own ``pass4``
+    — the two scoring families' rankings of ``z1`` vs. ``z2`` **agree** (both put ``z1``
+    largest, or both put ``z2`` largest), by a plain mean comparison per family (not a
+    per-replicate significance test — see module docstring for why). This is deliberately
+    *not* "both families rank z1 above z2": that would be a stricter claim than the design's
+    own predeclared rule, which only ever asked for agreement between the two families."""
+    pe_rank_z1_larger = bool(df["pe_z1"].mean() > df["pe_z2"].mean())
+    brier_rank_z1_larger = bool(df["brier_z1"].mean() > df["brier_z2"].mean())
+    return pe_rank_z1_larger == brier_rank_z1_larger, pe_rank_z1_larger, brier_rank_z1_larger
 
 
 __all__ = [

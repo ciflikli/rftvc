@@ -97,14 +97,14 @@ def test_oracle_smoke():
 # --- Slice 9 (docs/plans/plan.md): the real §7.2/§7.5b gates, default tier ---------------
 #
 # Reduced scales/rep counts and margins verified across >= 2 independent out-of-band seed
-# batches distinct from these gates' own seeds (0-13/0-29); full derivation in
-# docs/plans/s19-landmark-gate-research.md.
+# batches (10000-.../20010-...) distinct from these gates' own seeds (0-14, or 0-29 for
+# history's R=30); full derivation in docs/plans/s19-landmark-gate-research.md.
 
 
 def test_markov_control_and_history_significance():
     """Markov control: the design's real, unmodified bound
     ``mark.mean() <= 0.05 * oracle(markov)`` (R=15) — passes with 3-7x margin at every scale
-    tested (out-of-band batches: seeds 10000-10014, 20010-20039).
+    tested (out-of-band batches, same R=15: seeds 10000-10014, 20010-20024).
 
     History: **not** the design's declared 0.25x-of-oracle magnitude rule — that rule already
     fails at the full R=50 scale (s19-plan.md lines 121, 127-130, a documented, user-approved
@@ -113,8 +113,8 @@ def test_markov_control_and_history_significance():
     new threshold to force a pass would silently override that accepted deviation. Instead: a
     one-sided t-test that ``hist.mean() > 0`` is statistically significant, at R=30 (R=15 is
     not robust enough for this — p=0.138 in the primary seed batch; R=30 gives
-    p=0.0004/1.5e-6/7.3e-5 across three independent out-of-band batches, seeds 0-29,
-    10000-10029, 20010-20039).
+    p=0.0004/1.5e-6/7.3e-5 at this gate's own seeds (0-29) and two independent out-of-band
+    batches (10000-10029, 20010-20039)).
     """
     oh, ol = oracle("history", n=20000, n_repeats=2), oracle("markov", n=20000, n_repeats=2)
     hist, mark = run_level_history()
@@ -127,8 +127,9 @@ def test_copies_se_does_not_shrink_with_more_landmarks():
     """The design's real rule (``se(step=0.5)/se(step=4.0) >= 0.5``, R=15): the id-cluster
     bootstrap SE does not shrink with more landmark copies per subject — confirming it
     clusters by subject, not by row. Verified with real margin (0.56-0.73, never near the 0.5
-    boundary) across three independent out-of-band seed batches (10000-10014, 20010-20024) at
-    this reduced scale (n_train=n_eval=100, n_estimators=20, vs. the design's 500/500/100).
+    boundary) across three seed batches — this gate's own (0-14) and two independent
+    out-of-band batches (10000-10014, 20010-20024) — at this reduced scale
+    (n_train=n_eval=100, n_estimators=20, vs. the design's 500/500/100).
     """
     small_se, large_se = run_copies()
     pass_ratio, ratio = check_copies(small_se, large_se)
@@ -136,18 +137,24 @@ def test_copies_se_does_not_shrink_with_more_landmarks():
 
 
 def test_censoring_pe_and_brier_rankings_agree():
-    """The design's real rank-concordance rule: both PE and Brier importance rank ``z1`` (the
-    real signal) above ``z2`` (noise) under heavy censoring, R=15 at n_train=n_eval=150,
-    n_estimators=25 (n=100 breaks the generator — heavy censoring sometimes leaves an eval
-    fold with no scorable PE events). Uses a plain mean comparison, not a per-replicate
+    """The design's real rank-*concordance* rule, unmodified from
+    ``bench.tvc_landmark_sim.run()``'s own ``pass4``: PE and Brier importance agree on which
+    of ``z1``/``z2`` ranks larger under heavy censoring (not "both rank z1 above z2" — a
+    stricter claim the design never asked for), R=15 at n_train=n_eval=150, n_estimators=25
+    (n=100 breaks the generator — heavy censoring sometimes leaves an eval fold with no
+    scorable PE events). Uses a plain mean comparison per family, not a per-replicate
     significance test: a one-sided t-test on the Brier half is seed-sensitive at this scale
     (p=0.109 in one out-of-band batch), while the mean comparison — the design's actual rule —
-    is robust across all three batches tested (0-14, 10000-10014, 20010-20024).
+    is robust across all three batches tested (0-14, 10000-10014, 20010-20024): both families
+    ranked z1 above z2 in every batch tested, so agreement and "both rank z1 above z2" happen
+    to coincide on the data seen so far, but only agreement is the gated claim.
     """
     df = run_censoring()
-    pass_pe, pass_brier = check_censoring(df)
-    assert pass_pe, "PE importance did not rank z1 above z2"
-    assert pass_brier, "Brier importance did not rank z1 above z2"
+    pass_agree, pe_rank_z1_larger, brier_rank_z1_larger = check_censoring(df)
+    assert pass_agree, (
+        f"PE and Brier importance rankings disagreed: "
+        f"pe_rank_z1_larger={pe_rank_z1_larger}, brier_rank_z1_larger={brier_rank_z1_larger}"
+    )
 
 
 @pytest.mark.slow

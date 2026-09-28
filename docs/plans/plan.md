@@ -196,18 +196,23 @@ bench file and one test file, so splitting by PR would not track a real code bou
    `mark.mean() <= 0.05 * oracle(markov)`, R=15 — passes with 3-7x margin at every scale tested; (b)
    a new, explicitly weaker claim for history — a one-sided t-test that `hist.mean() > 0` is
    statistically significant, **R=30** (R=15 is not robust enough: p=0.138 in the primary seed
-   batch; R=30 gives p=0.0004/1.5e-6/7.3e-5 across three independent batches). Reduced scale:
-   `n_train=n_eval=200, n_estimators=40` (verified across seeds 0-14/10000-10014/20010-20039).
+   batch; R=30 gives p=0.0004/1.5e-6/7.3e-5 at this gate's own seeds 0-29 and two independent
+   out-of-band batches, 10000-10029 and 20010-20039). Reduced scale `n_train=n_eval=200,
+   n_estimators=40` was separately confirmed (at R=15, before the R=30 bump) across seeds
+   0-14/10000-10014/20010-20024 for the Markov control, which needs no rep-count increase.
 2. **Copies bootstrap-SE** (`copies_replicate`, §7.5b): the design's real
    `se(step=0.5)/se(step=4.0) >= 0.5` ratio ported unmodified, R=15 both `step` arms, at
    `n_train=n_eval=100, n_estimators=20` — verified across 3 independent seed batches (margins
    0.56-0.73, never near the 0.5 boundary).
 3. **Censoring PE-vs-Brier** (`censoring_data`/`censoring_replicate`, §7.5b): the design's real
-   rank-concordance rule (`pe_z1.mean() > pe_z2.mean()` and the same for Brier) ported unmodified
-   (not the stricter one-sided-t alternative research tested and rejected — Brier's per-replicate
-   significance is seed-sensitive at this scale, p=0.109 in one batch, while the raw mean
-   comparison is robust in all 3), R=15, at `n_train=n_eval=150, n_estimators=25` (n=100 breaks the
-   generator: `UndefinedMetricError: no events in (0, windows[-1]] to score`).
+   rank-*concordance* rule ported unmodified from `bench.tvc_landmark_sim.run()`'s own `pass4` —
+   `(pe_z1.mean() > pe_z2.mean()) == (brier_z1.mean() > brier_z2.mean())`, i.e. the two scoring
+   families' rankings agree, not "both rank z1 above z2" (a stricter claim the design never
+   declared) — not the stricter one-sided-t alternative research tested and rejected either
+   (Brier's per-replicate significance is seed-sensitive at this scale, p=0.109 in one batch,
+   while the raw mean comparison is robust in all 3), R=15, at `n_train=n_eval=150,
+   n_estimators=25` (n=100 breaks the generator: `UndefinedMetricError: no events in (0,
+   windows[-1]] to score`).
 
 **Files:**
 - `bench/landmark_importance_truth_check.py` (new) — reuses `bench.tvc_landmark_sim`'s
@@ -218,7 +223,7 @@ bench file and one test file, so splitting by PR would not track a real code bou
   - `run_copies(n_reps=15, n_train=100, n_eval=100, n_estimators=20, seed0=0) -> (small_se, large_se)` — two `(n_reps,)` arrays (`step=0.5`/`step=4.0`).
   - `check_copies(small_se, large_se) -> (pass_ratio, ratio)`.
   - `run_censoring(n_reps=15, n_train=150, n_eval=150, n_estimators=25, seed0=0) -> pd.DataFrame` (columns `pe_z1, pe_z2, brier_z1, brier_z2`, as `censoring_replicate` already returns per-row).
-  - `check_censoring(df) -> (pass_pe, pass_brier)`.
+  - `check_censoring(df) -> (pass_agree, pe_rank_z1_larger, brier_rank_z1_larger)`.
 - `tests/test_landmark_sim_truth.py` (extend, not new — already imports the needed generators) —
   three new default-tier (not `slow`) tests: `test_markov_control_and_history_significance`,
   `test_copies_se_does_not_shrink_with_more_landmarks`, `test_censoring_pe_and_brier_rankings_agree`.
