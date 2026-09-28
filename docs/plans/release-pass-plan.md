@@ -9,7 +9,7 @@ sessions concurrently; within a track, slices are ordered by real dependency.
 ## Status
 - [x] T1-slice-1 `random_state` contract unification (`_validation.py` + `_estimator.py` +
       `_competing.py` + `inspection.py`)
-- [ ] T1-slice-2 `_estimator.py` `TypeError`/`ValueError` split (`_check_int`,
+- [x] T1-slice-2 `_estimator.py` `TypeError`/`ValueError` split (`_check_int`,
       `_resolve_max_features`, `_resolve_n_draw`)
 - [ ] T1-slice-3 `ntime` coarsening `UserWarning`
 - [ ] T1-slice-4 Version-sync mechanism (`__init__.py`, `pyproject.toml`, both `Cargo.toml`s,
@@ -234,6 +234,25 @@ explicit note that this is the only intended change.
   changed).
 - New type-vs-value test cases exist for all three functions and pass.
 - Fast test suite green.
+
+**T1-slice-2 done — deviations from the plan:**
+- `max_features=True`/`np.True_` is silently accepted as `max_features=1` (bool is a
+  `numbers.Integral` subclass, and `_resolve_max_features`'s int branch doesn't reject
+  bools the way `_resolve_n_draw` explicitly does for `max_samples`). Left unchanged —
+  pre-existing behavior, out of this slice's stated scope (only `max_samples` had an
+  explicit bool-rejection branch to preserve). Not tested as an error case in
+  `test_invalid_max_features_type`.
+- Two existing tests asserted `ValueError` on what is now a type-mismatch input and were
+  updated: `test_forest.py::test_invalid_max_samples` split into
+  `test_invalid_max_samples_value` (kept `ValueError`) and
+  `test_invalid_max_samples_type` (new, `TypeError`); `test_validation.py::test_invalid_params`
+  dropped its `{"max_features": "bogus"}` case into a new
+  `test_invalid_max_features_string_raises_type_error` (`TypeError`).
+- New `ValueError`/`TypeError` parametrized cases added to `test_forest.py` for
+  `max_features`, and for every `_check_int`-covered constructor param
+  (`n_estimators`, `min_events_leaf`, `min_ids_leaf`, `max_depth`, `ntime`, `oob_buffer`).
+- Full fast suite (`pytest -m "not slow and not network"`) green: 668 passed, 4 skipped,
+  96 xfailed.
 
 ---
 

@@ -94,11 +94,60 @@ def test_resample_unit_other_than_id_raises():
         SurvivalForestTV(n_estimators=1, resample_unit="row").fit(X, y)
 
 
-@pytest.mark.parametrize("max_samples", [0, 1.5, 301, -0.1, "x", True, False, np.True_])
-def test_invalid_max_samples(max_samples):
+@pytest.mark.parametrize("max_samples", [0, 1.5, 301, -0.1])
+def test_invalid_max_samples_value(max_samples):
     X, y = _data()
     with pytest.raises(ValueError, match="max_samples"):
         SurvivalForestTV(n_estimators=1, max_samples=max_samples).fit(X, y)
+
+
+@pytest.mark.parametrize("max_samples", ["x", True, False, np.True_])
+def test_invalid_max_samples_type(max_samples):
+    X, y = _data()
+    with pytest.raises(TypeError, match="max_samples"):
+        SurvivalForestTV(n_estimators=1, max_samples=max_samples).fit(X, y)
+
+
+@pytest.mark.parametrize("max_features", [0, 1.5, -1, 0.0])
+def test_invalid_max_features_value(max_features):
+    X, y = _data()
+    with pytest.raises(ValueError, match="max_features"):
+        SurvivalForestTV(n_estimators=1, max_features=max_features).fit(X, y)
+
+
+@pytest.mark.parametrize("max_features", ["bogus", [1, 2]])
+def test_invalid_max_features_type(max_features):
+    X, y = _data()
+    with pytest.raises(TypeError, match="max_features"):
+        SurvivalForestTV(n_estimators=1, max_features=max_features).fit(X, y)
+
+
+@pytest.mark.parametrize("name,kw", [
+    ("n_estimators", {"n_estimators": "5"}),
+    ("n_estimators", {"n_estimators": 2.5}),
+    ("min_events_leaf", {"n_estimators": 1, "min_events_leaf": None}),
+    ("min_ids_leaf", {"n_estimators": 1, "min_ids_leaf": 2.5}),
+    ("max_depth", {"n_estimators": 1, "max_depth": "3"}),
+    ("ntime", {"n_estimators": 1, "ntime": 1.5}),
+    ("oob_buffer", {"n_estimators": 1, "oob_buffer": 1.5}),
+])
+def test_check_int_wrong_type_raises_type_error(name, kw):
+    X, y = _data()
+    with pytest.raises(TypeError, match=name):
+        SurvivalForestTV(**kw).fit(X, y)
+
+
+@pytest.mark.parametrize("name,kw", [
+    ("n_estimators", {"n_estimators": 0}),
+    ("min_events_leaf", {"n_estimators": 1, "min_events_leaf": 0}),
+    ("min_ids_leaf", {"n_estimators": 1, "min_ids_leaf": 0}),
+    ("max_depth", {"n_estimators": 1, "max_depth": -1}),
+    ("ntime", {"n_estimators": 1, "ntime": 0}),
+])
+def test_check_int_below_minimum_raises_value_error(name, kw):
+    X, y = _data()
+    with pytest.raises(ValueError, match=name):
+        SurvivalForestTV(**kw).fit(X, y)
 
 
 def test_pickle_roundtrip_and_clone():
