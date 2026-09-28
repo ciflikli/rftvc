@@ -124,7 +124,7 @@ class _BaseForestTV(BaseEstimator):
                     f"{self.n_coarsen_lost_events_} event(s); see n_coarsen_dropped_rows_ / "
                     "n_coarsen_lost_events_ on the fitted estimator.",
                     UserWarning,
-                    stacklevel=2,
+                    stacklevel=3,  # _fit's caller is fit(); this points past it at fit()'s own caller
                 )
         else:  # no stale coarse-mode metadata from an earlier fit
             for name in ("coarse_grid_", "n_coarsen_dropped_rows_", "n_coarsen_lost_events_"):

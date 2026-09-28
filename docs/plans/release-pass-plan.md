@@ -322,6 +322,15 @@ the attributes only exist when coarsening actually ran.
   warnings summary.
 - Full fast suite (`pytest -m "not slow and not network"`) green: 675 passed, 4 skipped,
   96 xfailed.
+- Codex review of PR #43 caught a real issue, fixed: `stacklevel=2` pointed the warning
+  at `fit()`'s own internal `return self._fit(...)` line, not the user's call site,
+  since `fit()` is a thin wrapper around `_fit()` (two frames between the `warnings.warn`
+  call and the user, not one). Bumped to `stacklevel=3`; verified with `python -W always`
+  that a direct `SurvivalForestTV.fit(...)` call now attributes to the caller's own line.
+  Landmark-wrapped fits (`LandmarkSurvivalForest.fit` → `_fit_forest` → `forest.fit` →
+  `_fit`) have one more frame than this accounts for and will still be one frame off —
+  not fixed, since a single fixed `stacklevel` can't be exactly right for both call
+  depths, and direct estimator use is the common case.
 
 ---
 
