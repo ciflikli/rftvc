@@ -13,8 +13,9 @@ scikit-learn compatible Python API.
 
 ## Install
 
-Not yet published to PyPI. Build from source with [uv](https://docs.astral.sh/uv/)
-and [maturin](https://www.maturin.rs/):
+Not yet published to PyPI. Build from source: a [Rust toolchain](https://rustup.rs/)
+(via [maturin](https://www.maturin.rs/)) and [uv](https://docs.astral.sh/uv/) are
+required.
 
 ```console
 git clone https://github.com/ciflikli/rftvc.git

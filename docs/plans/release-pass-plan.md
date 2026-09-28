@@ -862,6 +862,10 @@ than duplicating them"):
   link, the estimator class name), following the file's existing guard convention.
 - Full fast suite (`pytest -m "not slow and not network"`) green: 678 passed, 4 skipped,
   96 xfailed. GitHub rendering not yet checked (pending push/PR).
+- Codex review of PR #46 caught a real gap, fixed: the install instructions named only
+  uv and maturin, not the Rust toolchain maturin itself needs to build the PyO3
+  extension (CI's own `dtolnay/rust-toolchain@stable` step confirms this is a real
+  prerequisite, not implied by "maturin" alone). Reworded to name Rust explicitly.
 
 ---
 
