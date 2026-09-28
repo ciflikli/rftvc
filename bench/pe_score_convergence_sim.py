@@ -39,7 +39,7 @@ import numpy as np
 from scipy import stats
 
 from rftvc import SurvivalForestTV, make_survival_y
-from rftvc.metrics import piecewise_exponential_score
+from rftvc.metrics import _baseline_at, piecewise_exponential_score
 from tests.sim import END, HORIZON, K, hazard, rows, simulate
 
 ALPHA = 0.01
@@ -116,7 +116,7 @@ def replicate(seed, n_values, n_estimators=200):
         X, y, tr_ids = rows(x0, z, U, event)
         tvc = SurvivalForestTV(n_estimators=n_estimators, random_state=seed).fit(X, y, ids=tr_ids)
         h_model = tvc.predict_cumulative_hazard(Xp, WINDOWS, intervals=intervals, ids=ids)
-        null = np.interp(WINDOWS, tvc.event_times_, tvc.baseline_cumhaz_)
+        null = _baseline_at(tvc, WINDOWS)
         model_score = piecewise_exponential_score(y_eval, h_model, WINDOWS, null_cumhaz=null, alpha=ALPHA)
         oracle_score = piecewise_exponential_score(y_eval, h_true, WINDOWS, null_cumhaz=null, alpha=ALPHA)
         gaps.append(oracle_score.total - model_score.total)
