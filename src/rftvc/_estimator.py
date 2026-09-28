@@ -392,14 +392,16 @@ class _BaseForestTV(BaseEstimator):
         if ms is None:
             ms = 1.0 if self.bootstrap else 0.632
         if isinstance(ms, (bool, np.bool_)):
-            raise ValueError(f"invalid max_samples={ms!r}: use an int count or a float fraction")
+            raise TypeError(f"invalid max_samples={ms!r}: use an int count or a float fraction")
         if isinstance(ms, numbers.Integral):
             if ms < 1 or (ms > n_ids and not self.bootstrap):
                 raise ValueError(f"max_samples={ms} must be in [1, n_ids={n_ids}] without bootstrap")
             return int(ms)
-        if isinstance(ms, numbers.Real) and 0 < ms <= 1:
+        if isinstance(ms, numbers.Real):
+            if not (0 < ms <= 1):
+                raise ValueError(f"invalid max_samples={ms!r}")
             return max(1, int(round(ms * n_ids)))
-        raise ValueError(f"invalid max_samples={ms!r}")
+        raise TypeError(f"invalid max_samples={ms!r}")
 
     def _resolve_max_features(self, p):
         mf = self.max_features
@@ -409,15 +411,21 @@ class _BaseForestTV(BaseEstimator):
             return max(1, int(np.sqrt(p)))
         if mf == "log2":
             return max(1, int(np.log2(p)))
-        if isinstance(mf, numbers.Integral) and 1 <= mf:
+        if isinstance(mf, numbers.Integral):
+            if mf < 1:
+                raise ValueError(f"invalid max_features={mf!r}")
             return min(int(mf), p)
-        if isinstance(mf, numbers.Real) and 0 < mf <= 1:
+        if isinstance(mf, numbers.Real):
+            if not (0 < mf <= 1):
+                raise ValueError(f"invalid max_features={mf!r}")
             return max(1, int(mf * p))
-        raise ValueError(f"invalid max_features={mf!r}")
+        raise TypeError(f"invalid max_features={mf!r}")
 
     def _check_int(self, name, minimum):
         value = getattr(self, name)
-        if not isinstance(value, numbers.Integral) or value < minimum:
+        if not isinstance(value, numbers.Integral):
+            raise TypeError(f"{name} must be an integer >= {minimum}, got {value!r}")
+        if value < minimum:
             raise ValueError(f"{name} must be an integer >= {minimum}, got {value!r}")
 
 

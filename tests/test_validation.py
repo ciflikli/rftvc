@@ -43,11 +43,17 @@ def test_rejects_no_events():
         check_survival_y(make_survival_y([1.0, 2.0], [0, 0]))
 
 
-@pytest.mark.parametrize("param", [{"min_ids_leaf": 0}, {"max_bins": 300}, {"max_features": "bogus"}, {"max_depth": -1}])
+@pytest.mark.parametrize("param", [{"min_ids_leaf": 0}, {"max_bins": 300}, {"max_depth": -1}])
 def test_invalid_params(param):
     X = np.zeros((3, 1))
     with pytest.raises(ValueError):
         SurvivalForestTV(**param).fit(X, make_survival_y([1.0, 2.0, 3.0], [1, 1, 0]))
+
+
+def test_invalid_max_features_string_raises_type_error():
+    X = np.zeros((3, 1))
+    with pytest.raises(TypeError, match="max_features"):
+        SurvivalForestTV(max_features="bogus").fit(X, make_survival_y([1.0, 2.0, 3.0], [1, 1, 0]))
 
 
 def test_rejects_bad_ids_shape():
