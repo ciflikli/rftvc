@@ -1,116 +1,134 @@
-# Research Findings: Survival Random Forests with Time-Varying Covariates
+# Research: simulation-based statistical validation + conformal prediction feasibility
 
-Status: research stage done (2026-09-25); Codex review corrections applied (see research-review.md). No design decisions yet. Answers `questions.md`.
-Tags: [S] = backed by a source fetched this session; [K] = background knowledge, verify before relying on it.
+Stage 2 (research only) of the CRISPI pipeline for `docs/plans/questions.md`. Facts only — no proposed design/pseudocode (that's the next stage). Numbered to match the questions file.
+
+## Part A — Simulation-based validation
+
+### 1. Existing DGPs with known ground truth
+
+The codebase already has **closed-form-hazard simulation infrastructure**, distinct from the real-data (Rossi/EBMT4) plausibility checks:
+
+- `tests/sim.py` — `SurvivalForestTV` vs a fixed-covariate baseline, single-event, external TVC. Hazard is explicit and closed-form: `hazard(x0, z) = 0.15 * exp(0.8*z + 0.8*1{z>1} + 0.4*x0)` on unit intervals (`tests/sim.py:31-33`). `true_survival()` (line 64) computes the exact `S(t) = exp(-Λ(t))` from that hazard. Scored via integrated squared error (ISE) of predicted vs true survival curve, with a predeclared one-sided t-test pass rule (`run()`, line 95-99). Exercised by `tests/test_sim.py` (`@pytest.mark.slow`, n_reps=20).
+- `tests/sim_panel.py` — a BTSCS-shaped panel DGP (`simulate_panel`) with an AR(1) external covariate and a closed-form onset hazard `0.012 * exp(0.8*x_t + 0.5*z_i + 0.6*1{x_t>1})` (line 29). No closed-form truth-checking test currently reads from it directly (used as a data shape example, not a validation harness) — check before reuse.
+- `bench/*_sim.py` (S14/S17/S19 slices) — a **family** of closed-form-hazard generators with associated "truth" tests:
+  - `bench/s14_cr_sim.py`: competing-risks scenarios A/B/C with explicit `hazards()`, closed-form `true_cif()` via Aalen–Johansen integration; `tests/test_cr_sim_truth.py` checks the closed form against numerical integration (`atol=1e-9`) and against 40k-sample empirical event-time frequencies.
+  - `bench/tvc_perm_sim.py` (`CROracle`, `TrendOracle`, `TimingOracle`) and `bench/tvc_path_effect_sim.py` — oracle stubs with closed-form cumulative hazards, used for permutation-importance / path-effect simulations. `tests/test_tvc_sim_truth.py` checks the oracle stubs' closed forms against numerical integration (fast) and runs a slow 10-replication pilot of the declared pass rules (the real R=50 gate runs via `bench.tvc_perm_sim`, not pytest).
+  - `bench/tvc_landmark_sim.py` (`LevelHistoryOracle`) + `tests/test_landmark_sim_truth.py` — same pattern for landmark-importance sims.
+
+**So: not all fixtures are real-data or opaque.** There is a well-established, repeated pattern (closed-form generator in `bench/`, "truth" unit test in `tests/`, a `slow`-marked statistical-gate test or manual `bench` run) already used four times (S11/S14, S17, S19, plus the standalone `tests/sim.py`). A new simulation-validation study is not starting from zero; it is the fifth application of an existing pattern, and the biggest open question is scope (one library-wide sim vs. more per-slice ones) rather than mechanism.
+
+### 2. Outputs that can be scored against ground truth
+
+| Output | Method | Ground truth needed |
+|---|---|---|
+| Cumulative hazard / survival function | `predict_cumulative_hazard`, `predict_survival_function` (`_estimator.py:654-726`, `_competing.py:295-329`) | A known hazard function (as in `tests/sim.py`) → closed-form `Λ(t)`/`S(t)` to compare curves against (ISE, as already done). |
+| Cumulative incidence (competing risks) | `predict_cumulative_incidence` (`_competing.py:274-293`) | Known per-cause hazards → closed-form `F_k(t)` via Aalen–Johansen (as `bench/s14_cr_sim.py` already computes). |
+| PE score / deviance | `metrics.piecewise_exponential_score` (`metrics.py:715-858`) | A known true rate per window → the *theoretical* optimal score is the log-likelihood of the true piecewise-constant rate; a correctly-specified forest's PE score should approach that ceiling as n grows (see Q3). |
+| `hazard_effect`/`path_effect` contrasts | `inspection.py:505` / `inspection.py:649` | A known true covariate effect size (a coefficient in the DGP's hazard, e.g. the `0.8` on `z` in `tests/sim.py`) → the contrast's sign and approximate magnitude. |
+| Importance measures | `permutation_importance`/`drop_column_importance` (`inspection.py:142`, `inspection.py:806`) | A known true relevant/irrelevant feature partition (as in S17/S19's noise-control units) → importance should rank relevant > irrelevant and (ideally) be ≈0 for truly irrelevant features, subject to the known finite-sample cross-fitting bias documented in `docs/plans/s18-plan.md:123` (Wolock et al. 2025 VIM bias, shrinks with n not `n_estimators`). |
+
+### 3. `PEScore` and convergence
+
+`piecewise_exponential_score` (`metrics.py:715`) computes a per-window Poisson log-likelihood of the piecewise-constant hazard implied by predicted `cumhaz` on `windows`, mixed `(1-alpha)` with a training-set null (`alpha` default 0.01, floor to keep zero-rate cells finite). It returns a `PEScore` namedtuple with `total`, `by_window`, `by_cause[_window]`, `by_id`, and `null_total` (the null's own score on the same cells) — i.e. it's already built for exactly this kind of comparison (`docstring`, `metrics.py:597-617, 715-783`).
+
+It is suitable as a convergence metric **in principle**: for a correctly-specified simulation (piecewise-constant true hazard, or a fine enough window grid to approximate a smooth one), the **true rate's own log-likelihood is the maximum attainable score** in expectation — a consistent estimator's score should approach that ceiling as n grows, and the gap to a known-true-rate score (computable exactly, the way `bench/s14_cr_sim.py`'s `true_cif`/closed-form hazard already is) gives a natural finite-sample convergence diagnostic. Caveat found while reading: `zero_rate_share` warns (>1% threshold, `metrics.py:838-845`) when windows are "too fine for the model" — a convergence study sweeping n must either fix window count/grid across n or explicitly re-derive `event_windows` per n (`event_windows`, `metrics.py:619-639`, itself n-dependent via event-time quantiles), otherwise `zero_rate_share` behavior could confound the convergence signal. No existing test currently asserts PE score converges to a known ceiling — this would be new.
+
+### 4. `tests/ref/cr_ref.py` and `tests/ref/logrank_ref.py`
+
+Both are **hand-derived, deliberately naive references** — explicitly *not* R or lifelines:
+
+- `tests/ref/logrank_ref.py`: `logrank_ref()` (LTRC log-rank chi-square, hypergeometric variance with ties, O(n·K) risk-set loop) and `nelson_aalen_ref()` (delayed-entry Nelson–Aalen). Docstring: "Deliberately naive LTRC log-rank reference (independent of the Rust code)."
+- `tests/ref/cr_ref.py`: `composite_ref()` (competing-risks composite log-rank) and `aalen_johansen_ref()` (delayed-entry per-cause Nelson–Aalen + Aalen–Johansen). Same "independent of the Rust code" framing.
+
+Pattern: a slow, obviously-correct-by-inspection O(n·K) Python loop over unique event times, checked bitwise/tolerance against the fast Rust implementation. This is a **cross-implementation-within-the-repo** check, not a comparison against a published/vetted external package. It is a reusable pattern for simulation-based ground truth in the narrow sense that "ground truth" here is a second, independently-written, trivially-correct implementation of the *same estimator* — useful for verifying the Rust code computes what it claims, but distinct from Q1/Q2's "known DGP" ground truth (which checks the *statistical target*, not just implementation correctness). Also note `tests/ref/coarsen_ref.py` exists (not read in depth; same directory, likely same pattern for `ntime` coarsening).
+
+### 5. Existing reference-package comparisons
+
+- **`lifelines`** is a **dev dependency** (`pyproject.toml`: `lifelines>=0.29` under `[dependency-groups] dev`) and is actively used as a comparison benchmark: `docs/plans/rc-validation-plan.md`/`rc-validation-findings.md` use `lifelines.CoxTimeVaryingFitter` against `SurvivalForestTV`/`CompetingRisksForestTV` on Rossi/EBMT4 real data (direction-of-effect agreement, not a formal statistical test).
+- **`scikit-survival`** is also a dev dependency (`scikit-survival>=0.23`) — used in `bench/gbsg2_vs_sksurv.py` (a bench script, not read in depth here but name implies a direct sksurv comparison).
+- **`randomForestSRC`** (R) is used via **R scripts calling out from the repo**, not vendored/installed as a Python dependency: `bench/s14_cr_parity.R` (competing-risks parity check against `survival::pbc`, `rfsrc(Surv(...))`, ntree=500) and `bench/cr_rfsrc_check.R` (ad hoc exploration of `rfsrc`'s start-stop + competing-risks support). These require an external `RL` env var pointing at an R library — **not part of the default toolchain**, run manually/by hand.
+- No R `survival`/`mstate` package is used directly in Python; those were only used one-time to export the Rossi/EBMT4 CSVs (superseded by direct `.rda` downloads, per `rc-validation-plan.md` Decision 1).
+- **No `CoxTimeVaryingFitter`-vs-closed-form-truth simulation exists yet** — `lifelines`/`scikit-survival`/`randomForestSRC` are all currently used only as comparison points on real or opaque-synthetic data, never against a known-hazard DGP. Adding lifelines/sksurv as a second-implementation cross-check *on the known-truth sims* (in addition to `rftvc` itself) would be new.
+
+### 6. Runtime cost at simulation scale
+
+- `docs/plans/rc-validation-findings.md`: `SurvivalForestTV(n_estimators=500)` on 432 subjects/1405 rows fits in **0.05s**; `CompetingRisksForestTV(n_estimators=500)` on 2279 patients/3413 rows also **0.05s**. These are small-n real-data sizes, not simulation-scale, but establish a floor.
+- `bench/perf_fit.py`, `bench/s11_cr_timing.py`, `bench/s14_cr_scale.py` are dedicated timing harnesses already built for exactly this kind of scaling question: `s11_cr_timing.py` benchmarks competing-risks fit time vs single-event at configurable `n` (default 100,000 rows) and `n_trees` (default 100), best-of-3; `s14_cr_scale.py` sweeps `n_causes ∈ {1,2,4}` at configurable `N`/`ntime`, reporting fit time, peak RSS, and leaf bytes, explicitly framed as "not a merge gate." No specific numeric results were read in depth (would need running these scripts fresh for current numbers), but the infrastructure and CLI already exist.
+- **The `slow`/`network` pytest-marker split already exists and is already used for exactly this purpose**: `pyproject.toml` — `addopts = "-m 'not slow and not network'"`, with `slow: statistical/benchmark checks, not merge gates` as a declared marker. Every existing sim-truth suite (`test_sim.py`, `test_tvc_sim_truth.py`, `test_landmark_sim_truth.py`) already splits into a **fast smoke test** (closed-form-vs-numerical-integration check + a single R=1 replication, runs in the default/merge-gate suite) and a **slow statistical pilot** (`@pytest.mark.slow`, R=10-20 replications, excluded from merge gate). The full predeclared statistical gates (e.g. S17's R=50 run) run via `bench.*` modules by hand, not pytest at all. **Conclusion: a full n/censoring-rate/TVC/competing-risks simulation study is not something that needs a new CI mechanism — the fast-smoke/slow-pilot/manual-bench three-tier pattern already exists and has been used four times**; the only open question is how many n/censoring/scenario combinations at what replication count, which is a design-stage cost/power tradeoff, not an infrastructure gap.
+
+### 7. `rc-validation-plan.md` structure to reuse/depart from
+
+Structure (from `docs/plans/rc-validation-plan.md`, itself already Codex-plan-reviewed with 8 findings applied):
+- **"Why these two, not more"** section framing scope and exclusions up front.
+- **Decisions** (numbered, each with rationale, often noting what was corrected via review) covering: data/DGP sourcing, reshape/construction rules, the fit-and-compare methodology (explicitly separating *relevance* (importance) from *direction* (hazard_effect/coefficient sign) — Decision 4's finding 2, a substantive methodological lesson directly reusable for a simulation study's own effect-direction checks), **what this validates, concretely** (an explicit non-goals list, e.g. "not a missingness-handling check"), and an explicit **"not a docs case study (yet)"** scope boundary.
+- **Tasks** as a checklist tied to Decisions, each closed out with concrete numbers (row counts, timings) not just "done."
+- **Acceptance** criteria stated as verifiable end conditions.
+- **Review log** appended verbatim with findings and fixes, kept as a permanent record.
+
+What a simulation-validation plan should **reuse**: the Decisions-with-rationale format, the explicit "what this does/doesn't validate" scoping section, the separation of relevance-vs-direction claims, closing tasks out with concrete numbers, and Codex plan review before implementation (per this repo's CLAUDE.md skill triggers).
+
+What it should **depart from**: rc-validation-plan is inherently a one-shot manual script (`examples/rc_validation.py`, "run by hand — not a docs case study yet") against two fixed real datasets with no repeatable statistical gate (no p-value/CI claim is made — Decision 8 explicitly narrows scope away from "validation" to "plausibility"). A simulation study, by contrast, *can* and (per the existing `tests/sim.py`/`bench/*_sim.py` pattern) *should* have a predeclared, repeatable statistical pass rule (a one-sided CI bound as in `tests/sim.py:95-99`, or a Holm-corrected multi-test gate as `tests/test_tvc_sim_truth.py` references) rather than a purely descriptive/qualitative write-up — this is the key structural difference the design stage needs to decide between "one big new plan" vs. "extend/generalize the existing per-slice `bench/*_sim.py` pattern to a library-wide sweep."
 
 ---
 
-## i) State of the art: random forests for survival
+## Part B — Conformal prediction feasibility
 
-### Time-fixed covariates (the mature part)
-| Model | Split rule | Leaf estimator | Implementations |
-|---|---|---|---|
-| RSF (Ishwaran 2008) | log-rank / log-rank score / C-index | KM + Nelson–Aalen (NA) | randomForestSRC (R), scikit-survival `RandomSurvivalForest` (Py) [S] |
-| Extra survival trees | random thresholds + log-rank | KM / NA | scikit-survival `ExtraSurvivalTrees` [K] |
-| Conditional inference forest | permutation test on log-rank scores (less bias toward many-level variables) | KM | partykit `cforest` (R) [K] |
-| Oblique RSF (Jaeger 2019; aorsf 2023) | linear combos of features via Cox Newton–Raphson in each node | KM / NA | aorsf (R); often top C-index in benchmarks, and hundreds of times faster than earlier oblique RSF [S] |
-| grf survival forest | log-rank, now with constant-time split updates (Sverdrup, Yang, LeBlanc 2025, arXiv 2510.03665) | KM | grf (R) [S] |
-| ranger survival forest | log-rank / C-index / maxstat | KM / NA | ranger (C++/R); fast baseline; no native counting-process TVCs [S: Wright & Ziegler 2017, arXiv 1508.04409] |
-| Gradient-boosted survival | Cox / AFT loss | – | xgboost, lightgbm, scikit-survival GBSA [K] |
+### 8. Conformal prediction under censoring: literature and variant fit
 
-This table covers **time-fixed** forests only and is not exhaustive. Competitor families not yet reviewed: survival BART, and deep dynamic-survival models (e.g. Dynamic-DeepHit, DeepHazard) [gap: to review if they become baselines].
+**Foundational (training-knowledge, high confidence):** Candès, Lei & Wasserman (2021), *"Conformalized Survival Analysis"* — the earliest treatment of conformal prediction for right-censored outcomes. Core ideas:
+- Under **Type-I / administrative censoring** (censoring time known/observed for everyone, even for those who had the event), a **weighted conformal** procedure re-weights calibration residuals by an inverse-probability-of-censoring-type factor to restore a valid, distribution-free lower predictive bound (LPB) on survival time, because right-censoring breaks the plain i.i.d.-exchangeability assumption ordinary split conformal needs (censored residuals are not comparable to observed ones without correction).
+- The paper introduces **"conformalized survival distributions"** producing a full predictive survival curve with calibrated coverage, not just a point interval.
 
-Takeaways:
-- Benchmarks: RSF, ORSF and boosting beat Cox when effects are non-linear or interact. With linear additive effects, Cox does as well or better [S: Sci Rep 2025 simulation].
-- Efficiency: a naive log-rank split search costs O(M) per candidate split, where M is the number of distinct event times in the node. The grf trick makes each update O(1) [S]. scikit-survival's RSF is known to use a lot of memory on large n and many unique times, which is why it has `low_memory` [K].
+**Confirmed still-current via web search (2026-09-28), with more recent work extending it:**
+- Candès et al.'s original method assumed a more restrictive censoring setting; **"Conformalized Survival Analysis for General Right-Censored Data"** (ICLR 2025, Davidov et al.) explicitly generalizes to the case where *either* the event *or* the censoring time is observed but not both (the standard right-censoring setting, matching this library's data model) — this is the more relevant target than the original 2021 paper alone.
+- **"Doubly Robust Conformalized Survival Analysis with Right-Censored Data"** (ICML 2025 spotlight) — imputes unobserved censoring times via ML, then calibrates via weighted conformal inference with an asymptotic double-robustness property; explicitly extends the more restrictive Type-I setting.
+- **"Two-sided conformalized survival analysis"** (arXiv 2410.24136) and **"Conformal Survival Bands for Risk Screening under Right-Censoring"** (arXiv 2505.04568) — two-sided intervals and risk-screening variants.
+- A **resampling-based approach** (Biometrics 2025, `ujaf063`) is an alternative construction avoiding explicit IPCW weighting.
+- **"Dynamic prediction intervals for survival times"** (arXiv 2609.10409, 2026) — landmark-style dynamic (time-updated) prediction intervals, directly relevant to this library's TVC/landmark machinery if pursued.
+- Net: the field has moved substantially since 2021, but the **core mechanism — weighted conformal calibration to correct for censoring-broken exchangeability, producing a lower (or two-sided) predictive bound on survival/event time or a calibrated full survival curve — is the consistent throughline** across all variants found. Nothing suggests the fundamental IPCW-style-weighting idea has been superseded, only refined/generalized (general right-censoring, double robustness, two-sidedness, resampling instead of weighting).
 
-### Time-varying covariates: what exists now (key finding)
-| Method | Year | TVC mechanism | Language |
-|---|---|---|---|
-| Bou-Hamad et al., discrete-time trees/forests | 2011 | person-period rows, binary hazard | R (ad hoc) [S: title] |
-| Fu & Simonoff, LTRC **trees** (`LTRCtrees`: `LTRCART`/`LTRCIT`; the forests are in `LTRCforests`) | 2017 | counting-process rows treated as independent left-truncated (LTRC) "pseudo-subjects" | R [S] |
-| RF-SLAM (Wongvibulsin, Wu, Zeger) | 2020 (accepted 2019) | counting-process information units (CPIUs), Poisson log-likelihood split | R (`rfSLAM`) [S] |
-| Pickett et al., RSF landmarking | 2021 | landmark snapshots → ordinary RSF per landmark | R [S] |
-| Moradian, Yao et al., discrete-time dynamic forests | 2021 | person-period data, pooled "super person-period" fit | R [S] |
-| **Yao, Frydman, Larocque, Simonoff: CIF-TV / RRF-TV (`LTRCforests`)** | 2022 | pseudo-subjects; LTRC log-rank scores or Poisson deviance with NA exposure | R (CRAN) [S] |
-| DynForest (Devaux et al.) | 2023/2025 | fits a mixed model for each longitudinal marker inside every node, then splits on the random effects | R [S] |
-| Laurent & Vo Van, LTRC survival forest | 2024 | LTRC CART → forest, with a "simple API" | IPOL: source and online demo exist; **implementation language and TVC input format unverified**, so this row does not count for or against the Python-gap claim [S] |
-| **BoXHED 2.0 (Pakbin, Wang, Mortazavi, Lee)** | JSS 2025 | boosted nonparametric hazard λ(t, X(t)), counting-process data, C++/GPU | **Python (PyPI `boxhed`)** [S] |
-| **Random Hazard Forests (Ishwaran, Kogalur et al.) `randomForestRHF` 2.1.0** | CRAN, 17 Sep 2026 | `Surv(id,start,stop,event)`; splits on a nonparametric hazard likelihood for predictable covariate processes; step-function hazard in each leaf | R/C, OpenMP [S] |
+**Fit to this library's outputs:** `SurvivalForestTV`/`CompetingRisksForestTV` expose cumulative hazard, survival function, and (competing risks) cumulative incidence — all *curves*, not single point predictions. The literature's "conformalized survival distribution" (a calibrated predictive curve) and "lower predictive bound at a fixed horizon" (closer to `predict_risk(X, horizon)`) are both plausible targets; a horizon-based calibrated risk (matching `predict_risk`) is the simpler starting point, a full calibrated curve (matching `predict_survival_function`/`predict_cumulative_hazard`) the more ambitious one. Competing risks (cumulative incidence, `predict_cumulative_incidence`) would need the cause-specific extension of whichever base method is chosen — not found as a settled/canonical variant in the search above (the general-right-censoring and doubly-robust papers are framed for single-event survival; competing-risks conformal survival calibration is a thinner, less established area — flag this as a design-stage risk, not a solved sub-problem).
 
-**Gap confirmed:** no maintained Python package offers a *random-forest* survival model with native counting-process TVCs.
-- BoXHED 2.0 is the closest Python tool, but it is boosting, not a forest.
-- RHF is the Ishwaran group's own answer to "RSF can't do TVCs", but it is R only.
+### 9. Does OOB machinery already produce per-observation predictions usable for calibration?
 
-## ii) How TVCs are handled, and the challenges
+**Yes, at the Rust-binding layer, but only partially exposed as public API — this is the most important finding of this research pass.**
 
-### Four data representations
-1. **Counting process / pseudo-subjects (LTRC)**: each (start, stop] interval with constant X becomes one row, treated as a left-truncated observation. Used by Fu & Simonoff, LTRCforests, RF-SLAM and RHF. Needs risk sets that respect left truncation, both in the split statistic and in the leaf KM/NA [S].
-2. **Person-period / discrete time / survival stacking**: bin time and turn survival into a binary hazard classification, with time as a feature. Any sklearn classifier works. The results depend on how time is binned, and the data can get very large [S].
-3. **Landmarking**: at landmark time s, take everyone still at risk, summarise the history up to s as features, and fit an ordinary RSF for the horizon. This makes the prediction target explicit, but you need one model per landmark (or a stacked super-model), and data are thrown away [S].
-4. **Longitudinal summaries inside nodes** (DynForest): mixed models deal with measurement error and irregular visit times, but they are expensive and you have to specify the mixed model up front [S].
+- **Public, documented**: `oob_prediction_` (both estimators, set when `oob_score=True`) is a **scalar per row**: for `SurvivalForestTV` it's OOB *mortality* (`sum_k Λ_oob(t_k|x)`, a single risk score summed over all `event_times_`, `_estimator.py:634-652`, backed by `forest.rs::oob_mortality`); for `CompetingRisksForestTV` it's OOB `F_k` **at the last event time only**, shape `(n_rows, n_causes_)` (`_competing.py` docstring, `_compute_oob`). Neither gives a full curve.
+- **Exists in Rust core but not exposed via the public Python estimator API**: `forest.rs::oob_cumhaz` (full per-row, per-time OOB cumulative hazard, `(n_rows, len(times))`, any `times` grid — not just `event_times_`) and `oob_cause_cumhaz` (competing-risks analogue). Both are bound to Python (`rust/rftvc-py/src/lib.rs:559, 585`) but reached only via the **private** `estimator.forest_.oob_cumhaz(...)` (the raw Rust forest object) plus **private** helpers (`estimator._rebuild_design(...)` for `d.oob_set`, the CSR out-of-bag-unit structure). Confirmed by direct use in `src/rftvc/inspection.py:120-133` (`forest.oob_cause_cumhaz`, `forest.oob_cumhaz`) for the OOB paths of `permutation_importance`/`drop_column_importance`, and exercised end-to-end in `tests/test_oob_cumhaz.py` (bitwise-checked against `oob_mortality`'s row sums, per-mode: id/survival_agg/coarse/block0/block1/bootstrap).
+- **`oob_n_trees_`** (per-row OOB ensemble size) is public and already used to detect/warn about rows with no qualifying OOB tree (`_estimator.py:639-648`) — directly relevant for a conformal calibration set, since rows with `oob_n_trees_ == 0` (NaN prediction) would need to be excluded from calibration, exactly as they're already excluded from `oob_score_`.
 
-### Practical challenges
-- **Within-subject dependence**: pseudo-rows from one subject are not independent. Per a tool summary of arXiv 2006.00567, Yao et al. found that bootstrapping by subject or by row gave similar accuracy (not re-verified in the text; the review could not locate it). Bootstrapping by row lets a subject's rows land both in-bag and out-of-bag, which makes OOB assessment of how well the model generalises to new subjects optimistic [K]. For the new-subject estimand, resample, cross-validate and compute OOB by `id`.
-- **Routing a subject across leaves**: a subject can fall in different leaves at different times. Prediction then chains conditional survival: S(t) = Π over intervals of S_leaf_j(t_{j+1}) / S_leaf_j(t_j) [S: Yao eq.]. A cumulative-hazard sum is the equivalent in hazard form, and RHF works this way natively [S].
-- **You need the future covariate path**: a survival curve beyond the last observed covariate time requires either assuming X stays constant (LOCF) or supplying a scenario path [S].
-- **Node sizes**: a tool summary attributes to Yao et al. the rule nodesize = max(default, √n_pseudo), plus tuning mtry by OOB integrated Brier score (IBS). **Unverified**: the review could not locate this in the text. Treat it as a package-default heuristic, not a statistical result.
-- **Computation**: counting-process expansion makes N_rows much larger than n_subjects. Split search also has to handle left-truncated risk sets, so the usual sorted-by-time cumulative trick needs entry/exit event sweeps [K]. A time grid (RHF's `ntime`) caps the cost [S].
+**Implication for Part B, stated as fact not design:** using OOB as the natural calibration set (a known technique to avoid a separate held-out split in random forests) is *mechanically closer* than it first appears — the full-curve engine (`oob_cumhaz`/`oob_cause_cumhaz`) already exists and is unit-tested, but reaching it from public API requires either (a) new plumbing to expose it as a documented public method/attribute, or (b) reusing the existing private-but-stable internal call pattern `inspection.py` already relies on. This is **not** a "build OOB curves from scratch" problem; it is an "expose existing internal machinery" problem — a materially smaller lift than if `oob_cumhaz` didn't exist at all.
 
-## iii) Statistical implications
+### 10. Public API surface precedent (MAPIE) and shape options
 
-1. **Three separate targets. Don't conflate them.**
-   - (a) **Hazard / path-scenario estimation.** A forest that uses only the current X(t) estimates a model-dependent conditional hazard λ(t | X(t)). This is not necessarily the full-history hazard λ(t | H(t)).
-     - For **external** covariates, S(t | X path) under a specified path is a genuine survival probability.
-     - For **internal** covariates, a survival curve along an arbitrary future path cannot be identified or predicted without modelling that path. This is why Yao et al. restrict their paper to estimation [S].
-   - (b) **Landmark dynamic prediction** P(T > s+w | T > s, H(s)). This is well defined for internal *and* external covariates and needs no future covariate path [S: Snell et al.; van Houwelingen].
-   - (c) **Joint longitudinal–survival prediction.** This models the covariate path explicitly (joint models, DynForest).
-2. **Predictability.** A valid hazard model needs X(t) to be known just before t (predictable). A covariate measured at or after the event time leaks the outcome, which is look-ahead bias. RHF makes this an explicit requirement [S].
-3. **Split statistics with pseudo-subjects.**
-   - A log-rank score with LTRC risk sets remains a usable predictive split candidate. Counting-process likelihoods factor into conditional interval contributions, so conditional on the past they do not need rows to be independent [S: RF-SLAM].
-   - **Unverified:** whether a particular split test's p-value or permutation calibration is valid under within-subject dependence. It depends on the score, the null, the permutation unit, and the censoring/visit process. It has to be derived or checked by simulation. Row-level resampling or permutation is the wrong default for generalising to new subjects; use subject-level units.
-   - Subjects with many visits carry more weight in splits, which gives implicit weighting by how often a subject was measured [K].
-4. **Informative visit times.** If sicker patients are measured more often, the visit process carries information about the outcome. Pseudo-subject methods and LOCF ignore this. Joint models and DynForest partly address it [K].
-5. **Discretisation (person-period).**
-   - As the bins get finer, this approaches the continuous-time hazard.
-   - Coarse bins bias the hazard and blur event ordering.
-   - A probabilistic classifier trained on correctly built person-period rows estimates the interval event probability, which is the discrete-time hazard. Calibration has to be checked (and recalibrated if needed) at the chosen interval and horizon. Poisson fitting is an alternative likelihood, not a calibration guarantee [S: RF-SLAM].
-6. **Landmarking.** Each landmark model is valid on its own. Predictions from different landmarks do not have to agree with each other, and the method is not efficient because it discards data [S+K].
-7. **Leaf estimator under left truncation.** A KM with delayed entry is unstable when the risk set is small early on, which is another reason for larger nodesize [S: PMC11345615]. Averaging cumulative hazards and then exponentiating, versus averaging tree survival curves, target different ensemble quantities; neither is uniformly better. Choose explicitly and validate by calibration.
-8. **Evaluation.**
-   - Match the evaluation to the prediction origin s and horizon w.
-     - For landmark models, use landmark risk sets (T ≥ s) and score P(T > s+w | T > s, H(s)).
-     - For fixed-origin predictions, standard cumulative/dynamic or incident/dynamic AUC and C-index work. Always name the definition used.
-   - IPCW requires independent censoring plus a censoring-survival estimate.
-     - Condition that model on history only if censoring is independent *only given* history. Otherwise a marginal model is enough.
-     - IPCW can be unstable or misspecified [S: Snell et al.; JMLR 24 19-1030].
-   - Report calibration at (s, w) as well as discrimination. Use subject-level outer splits for the new-subject estimand, and time-based splits for future-period deployment (see design-principles.md).
+**MAPIE (confirmed current, 2026-09-28 web search):** scikit-learn-ecosystem, "Model Agnostic Prediction Interval Estimator," fully sklearn-compatible (accepts any sklearn-API regressor/classifier). Its current (v1) API shape for split conformal:
+```
+estimator = SplitConformalRegressor(base_model, confidence_level=...)
+estimator.fit(X_train, y_train)          # optional if base model prefit
+estimator.conformalize(X_calib, y_calib)  # separate calibration step, own data split
+estimator.predict(X_test)                 # point prediction
+estimator.predict_interval(X_test)        # point + interval
+```
+Also supports a **prefit** workflow (wrap an already-fitted estimator, skip `.fit`, go straight to `.conformalize`) — directly analogous to "wrap a fitted `SurvivalForestTV` and calibrate on its OOB set" rather than requiring a fresh held-out split. As of 2026, MAPIE has added exchangeability tests (to flag when its assumptions don't hold — relevant, since censoring is exactly such a violation) and adaptive conformal methods, but **survival-analysis-with-censoring support was described by the search results as an emerging/active research area, not (yet, as far as found) a shipped MAPIE feature** — i.e., there is no existing MAPIE censored-survival module to mirror 1:1; the `fit`/`conformalize`/`predict_interval` *shape* is the reusable precedent, not a censored-survival implementation to copy.
 
-## Open questions for the design stage
-- ~~Target / covariate type~~ → answered: mostly external covariates, dynamic prediction (target b).
-- Pseudo-subject log-rank (LTRC-RSF) vs hazard-likelihood (RHF-style) vs Poisson (RF-SLAM) split criterion?
-- ~~Engine~~ → answered: Rust core (see design.md).
-- Which baselines to benchmark against: LTRCforests, randomForestRHF (via rpy2), BoXHED 2.0, landmark-RSF with sksurv.
+**This library's own existing API shape precedents** (relevant prior art for where a new feature would sit):
+- `oob_score=True` constructor flag + `oob_prediction_`/`oob_score_` fitted attributes is this library's existing pattern for "compute something from the OOB set as a byproduct of fitting" — a natural precedent for an `oob`-based calibration path (cf. `permutation_importance(..., oob=True)` in `inspection.py`, also following this convention).
+- `rftvc.metrics` is a flat function module (not classes) for most metrics, but `KaplanMeierCensoring` (`metrics.py:51-78`) is a small `BaseEstimator`-style `fit`/`predict` class **specifically for the censoring-survival estimator IPCW already needs** — i.e., the library already has exactly the building block (a reverse-KM censoring-survival estimator with `predict(times, left=True)`) that IPCW-weighted conformal-survival methods need, reusable rather than reimplemented.
+- `inspection.py` is the existing precedent for a separate top-level module (not a parameter bag on the estimators) housing cross-cutting analysis features that consume a fitted estimator; a `rftvc.calibration` module following that same shape (functions taking a fitted estimator + calibration data, returning calibrated bounds/curves) would match the codebase's existing separation-of-concerns convention more than adding parameters to `predict_*`.
 
-## Sources
-- Yao et al. 2022, Ensemble methods… TVC: https://arxiv.org/html/2006.00567 ; https://journals.sagepub.com/doi/abs/10.1177/09622802221111549
-- LTRCforests: https://rdrr.io/cran/LTRCforests/man/LTRCforests-package.html ; https://github.com/weichiyao/TimeVaryingData_LTRCforests
-- Fu & Simonoff 2017: https://academic.oup.com/biostatistics/article/18/2/352/2739324
-- RF-SLAM: https://link.springer.com/article/10.1186/s12874-019-0863-0
-- Discrete-time dynamic forests: https://ar5iv.arxiv.org/html/2103.01355
-- Survival stacking: https://arxiv.org/pdf/2107.13480
-- DynForest: https://arxiv.org/pdf/2302.02670 ; https://journal.r-project.org/articles/RJ-2025-002/
-- RSF landmarking (Pickett 2021): https://bmcmedresmethodol.biomedcentral.com/articles/10.1186/s12874-021-01375-x
-- Random Hazard Forests: https://cran.r-project.org/web/packages/randomForestRHF/index.html ; https://rdrr.io/cran/randomForestRHF/man/rhf.html
-- BoXHED 2.0: https://arxiv.org/abs/2103.12591 ; https://github.com/BoXHED/BoXHED2.0
-- aorsf: https://arxiv.org/pdf/2208.01129 ; ORSF vs RSF sim: https://www.nature.com/articles/s41598-025-27747-7
-- Efficient log-rank updates: https://arxiv.org/abs/2510.03665
-- LTRC survival forest (IPOL 2024): http://www.ipol.im/pub/art/2024/466/
-- scikit-survival RSF: https://scikit-survival.readthedocs.io/en/stable/user_guide/random-survival-forest.html
-- Bou-Hamad 2011: https://www.researchgate.net/publication/254133473
-- Snell et al., dynamic prediction: https://academic.oup.com/jrsssa/article/184/1/3/7056431
-- Landmark conditional survival target: https://pmc.ncbi.nlm.nih.gov/articles/PMC5957493/
-- Left-truncation small risk sets: https://pmc.ncbi.nlm.nih.gov/articles/PMC11345615/
-- IPCW Brier limitations: https://www.jmlr.org/beta/papers/v24/19-1030.html
-- ranger: https://arxiv.org/abs/1508.04409
-- LTRCtrees CRAN: https://CRAN.R-project.org/package=LTRCtrees
+### 11. General-purpose requirements (per `[[rftvc-general-purpose]]`)
+
+Facts about what "general-purpose" already means operationally in this codebase, to ground the coverage claim at design time:
+- Both **TVC** (via `intervals`/`ids`/`origin`/`extrapolate` path kwargs, present on every `predict_*` method in both estimators) and **competing risks** (`CompetingRisksForestTV`, `causes_`, cause-specific everything) are first-class, load-bearing parts of the public API surface already — any new feature that only worked for the plain single-event, non-TVC case would be a visible regression in generality relative to the rest of the library's own conventions.
+- **Arbitrary coverage level**: no existing precedent in this codebase (no other feature takes a "confidence level" or "alpha" parameter in this sense — `PEScore`'s `alpha` is a different thing, a null-mixing weight, not a coverage level). This would be new API surface, not a generalization of an existing pattern.
+- **Both static-horizon and full-curve predictions**: directly mirrors the existing `predict_risk` (static horizon) vs. `predict_survival_function`/`predict_cumulative_hazard` (full curve) split already in the public API — whatever conformal method is chosen would need an analogous two-shape output (a calibrated risk-at-horizon interval, and/or a calibrated curve/band), not just one, to match the existing method family's shape.
+- Landmark estimators (`landmark.py`: `LandmarkSurvivalForest`, `LandmarkCompetingRisksForest`, referenced in `inspection.py:33-38`) are a **third** estimator family beyond `SurvivalForestTV`/`CompetingRisksForestTV` that questions.md's own "Codebase References" section doesn't list but `inspection.py`'s `_family()` helper (line 29) explicitly supports for `permutation_importance`/`hazard_effect`/`path_effect`/`drop_column_importance` — a general-purpose conformal feature would need an explicit decision (in scope / out of scope / follow-up) about whether it covers landmark estimators too, since the existing inspection-tooling precedent treats them as first-class alongside the two counting-process estimators.
+
+---
+
+## Surprises / constraints worth flagging (not explicitly asked)
+
+1. **Part A infrastructure is far more mature than the question phrasing implies.** Q1 asks "are there any DGPs with known ground truth" almost as an open question; the answer is "yes, four separate slices' worth, with a repeated and already-battle-tested three-tier fast/slow/manual-bench pattern." The design stage's real decision is scope/reuse-vs-new, not whether to build simulation infra from scratch.
+2. **Part B's biggest unknown isn't plumbing, it's competing risks.** The OOB full-curve engine (Q9) already exists in Rust and is unit-tested — exposing it is comparatively cheap. But the conformal-survival literature search (Q8) found essentially no settled competing-risks-specific conformal method; single-event right-censored conformal survival is an active but converging area (multiple 2025/2026 papers extending Candès et al. 2021), while a competing-risks extension looks like open research territory, not an established recipe to port. This is a real scope risk for Q11's "must cover competing-risks case" requirement.
+3. **`oob_cumhaz`/`oob_cause_cumhaz` are private but stable, already-relied-upon internals** (`inspection.py` uses them directly) — worth the design stage explicitly deciding whether a conformal feature promotes them to public API or keeps reusing the internal call pattern, since either choice has precedent elsewhere in the codebase.
+4. **No conformal prediction code, references, or even the word "conformal" exist anywhere in the repo** (confirmed by grep across `.py`/`.md`) — Part B is a genuine greenfield feature, not an extension of partial work.
