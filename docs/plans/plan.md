@@ -8,7 +8,25 @@ Stage 4 of CRISPI. Input: `docs/plans/design.md` (Approach 2 for Part A, Approac
 - [x] Slice 3: Validation inventory doc (evidence vs. claims) (PR #54)
 - [x] Slice 4: Conformal-coverage spike (empirical-only, no theoretical guarantee claimed) — inconclusive, see docs/plans/conformal-prediction-investigation.md
 - [x] Slice 5: CompetingRisksForestTV fitted-model-vs-truth CI gate (closes the row-2 gap from Slice 3's inventory) (PR #57)
-- [x] Slice 6: trend-scenario permutation-importance CI gate (closes part of the row-3 gap — trend only, not timing/CR/landmark)
+- [x] Slice 6: trend-scenario permutation-importance CI gate (closes part of the row-3 gap — trend only, not timing/CR/landmark) (PR #58)
+- [x] Slice 7: timing-window permutation-importance CI gate (closes another part of the row-3 gap — ports the design's real unmodified rule, not a recalibrated threshold)
+
+## Slice 7: timing-window permutation-importance CI gate
+
+**Why:** continuing Slice 6's pattern down the row-3 gap list. Unlike trend, the timing scenario's real R=50 design rule (Holm-reject inside windows + Bonferroni upper-bound outside windows) was verified, via an out-of-band pilot, to transfer directly to the reduced scale — so this slice ports the *real* rule unmodified rather than recalibrating a new threshold like Slice 6 had to.
+
+**Files:**
+- `bench/timing_importance_truth_check.py` (new) — reuses `bench.tvc_perm_sim`'s timing scenario and its `holm_reject`/`one_sided_t`/`upper_bound` stats helpers unchanged, at the same reduced scale as Slice 6 (`n_train=n_eval=300, n_estimators=60`). `run(n_reps) -> (n_reps, 6)` window importances; `check(windows) -> (pass_inside, pass_outside, outside_ub, delta)`.
+- `tests/test_timing_importance_truth.py` (new) — fast smoke test, plus the gate itself: both halves of the design's real rule, R=15, not `slow`-marked.
+
+**Explicit scope note:** timing scenario only. Competing-risks oracle scenario (S17's third) and all of S19's landmark-importance scenarios remain manual-only.
+
+**Docs updated:** `docs/plans/simulation-validation-findings.md` — new row 3c, row 3/"does not establish" text updated.
+
+**Acceptance criteria:**
+- Gate runs in the default merge-gate suite.
+- Rule verified (not assumed) to hold at reduced scale via two independent out-of-band pilots before locking in as a CI gate.
+- Findings doc distinguishes 3c's "real rule verified at smaller scale" from 3b's "new threshold calibrated at smaller scale."
 
 ## Slice 6: trend-scenario permutation-importance CI gate
 
