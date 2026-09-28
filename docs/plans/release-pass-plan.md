@@ -503,14 +503,23 @@ first, revisit the classifiers list once T2-slice-2 merges.
   to confirm `readme`, `authors`, `keywords`, `classifiers` and `[project.urls]` all
   resolve correctly into the wheel's METADATA (maturin also auto-attached the `LICENSE`
   file and set `License-Expression: MIT`).
-- `[project.urls]`'s `Changelog` link points at `CHANGELOG.md` (T3-slice-4), which was
-  mid-review (PR #47) rather than merged when this slice landed — same "link it anyway"
-  allowance the plan gave README's own forward reference to `CHANGELOG.md`.
+- `[project.urls]`'s `Changelog` link points at `CHANGELOG.md`, added by T3-slice-4
+  (merged as PR #47 while this slice was in review, so the link resolves by the time
+  this PR itself merges).
 - Added a pytest packaging-smoke test (`tests/test_package.py::test_py_typed_marker_ships_with_the_installed_package`)
   rather than only a manual/CI-step check, since the repo already has a
   `tests/test_package.py` module from T1-slice-4 to extend.
 - Full fast suite (`pytest -m "not slow and not network"`) green: 679 passed, 4 skipped,
   96 xfailed.
+- Codex review of PR #48 caught two real issues, both fixed: (1) `license = "MIT"`
+  (SPDX expression) combined with the `"License :: OSI Approved :: MIT License"`
+  classifier is a deprecated PyPA combination — removed the classifier, kept the SPDX
+  form (re-verified via `maturin build` + wheel METADATA: still `License-Expression:
+  MIT`, classifier line gone). (2) the new pytest test only proves `py.typed` exists in
+  the editable-install source tree, not that it's packaged into a real wheel — added a
+  step to `wheels.yml`'s existing `test` job (which already installs the actual built
+  wheel per OS/Python combination) asserting the marker exists there too; documented
+  the pytest test's narrower scope in a comment.
 
 ---
 

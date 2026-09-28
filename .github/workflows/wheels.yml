@@ -97,3 +97,10 @@ jobs:
           c = SurvivalForestTV(n_estimators=20, ntime=10, random_state=0).fit(X, y)
           print("ok", risk.round(3), c.coarse_grid_.size)
           PY
+      - name: Check py.typed ships in the installed wheel
+        shell: bash
+        run: |
+          python -c "
+          import pathlib, rftvc
+          assert (pathlib.Path(rftvc.__file__).parent / 'py.typed').exists(), 'py.typed missing from installed wheel'
+          "

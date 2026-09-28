@@ -26,4 +26,7 @@ def test_version_matches_rust_crate():
 
 
 def test_py_typed_marker_ships_with_the_installed_package():
+    # Only proves the marker is in the source tree an editable install points at, not
+    # that it's packaged into a built wheel's METADATA/RECORD — wheels.yml's `test` job
+    # checks that against a real installed wheel.
     assert (Path(rftvc.__file__).parent / "py.typed").exists()
