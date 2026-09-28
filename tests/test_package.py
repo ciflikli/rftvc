@@ -23,3 +23,7 @@ def test_version_matches_rust_crate():
     cargo = (REPO_ROOT / "rust" / "rftvc-py" / "Cargo.toml").read_text()
     rs_version = re.search(r'^version = "([^"]+)"', cargo, re.MULTILINE).group(1)
     assert _core(rftvc.__version__) == _core(rs_version)
+
+
+def test_py_typed_marker_ships_with_the_installed_package():
+    assert (Path(rftvc.__file__).parent / "py.typed").exists()

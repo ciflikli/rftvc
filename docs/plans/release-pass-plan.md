@@ -14,7 +14,7 @@ sessions concurrently; within a track, slices are ordered by real dependency.
 - [x] T1-slice-3 `ntime` coarsening `UserWarning`
 - [x] T1-slice-4 Version-sync mechanism (`__init__.py`, `pyproject.toml`, both `Cargo.toml`s,
       CI version-agreement check)
-- [ ] T2-slice-1 `pyproject.toml` packaging metadata + `py.typed`
+- [x] T2-slice-1 `pyproject.toml` packaging metadata + `py.typed`
 - [x] T2-slice-2 CI gap fixes (`ci.yml` Python 3.10 floor + Windows)
 - [ ] T2-slice-3 `wheels.yml` TestPyPI → PyPI publish job with dry-run step
 - [ ] T3-slice-1 Docstring `Examples` sections across the public API
@@ -492,6 +492,25 @@ first, revisit the classifiers list once T2-slice-2 merges.
 - `pip install rftvc` (once published) would show authors/urls/keywords on PyPI's
   project page — not verifiable pre-publish, but `pyproject.toml`'s TOML is valid and
   `python -m build --sdist` (or `maturin build --sdist`) succeeds without error.
+
+**T2-slice-1 done — deviations from the plan:**
+- `classifiers`' Python versions are `3.10`/`3.13`, matching T2-slice-2's actual landed
+  CI matrix (which merged before this slice started), not a placeholder to revisit
+  later.
+- Verified with a real build, not just by inspection: `maturin build --release` and
+  `maturin sdist` into a scratch directory, then `unzip -l`/`tar -tzf` to confirm
+  `rftvc/py.typed` ships in both the wheel and the sdist, and `unzip -p .../METADATA`
+  to confirm `readme`, `authors`, `keywords`, `classifiers` and `[project.urls]` all
+  resolve correctly into the wheel's METADATA (maturin also auto-attached the `LICENSE`
+  file and set `License-Expression: MIT`).
+- `[project.urls]`'s `Changelog` link points at `CHANGELOG.md` (T3-slice-4), which was
+  mid-review (PR #47) rather than merged when this slice landed — same "link it anyway"
+  allowance the plan gave README's own forward reference to `CHANGELOG.md`.
+- Added a pytest packaging-smoke test (`tests/test_package.py::test_py_typed_marker_ships_with_the_installed_package`)
+  rather than only a manual/CI-step check, since the repo already has a
+  `tests/test_package.py` module from T1-slice-4 to extend.
+- Full fast suite (`pytest -m "not slow and not network"`) green: 679 passed, 4 skipped,
+  96 xfailed.
 
 ---
 

@@ -6,9 +6,27 @@ build-backend = "maturin"
 name = "rftvc"
 version = "0.1.0.dev0"
 description = "Scikit-learn compatible random survival forests with time-varying covariates"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+authors = [{ name = "Gokhan Ciflikli", email = "gokhanciflikli@gmail.com" }]
+keywords = ["survival-analysis", "random-forest", "scikit-learn", "time-varying-covariates"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = ["numpy>=1.24", "scikit-learn>=1.6", "polars>=1.0", "narwhals>=1.30"]
+
+[project.urls]
+Homepage = "https://github.com/ciflikli/rftvc"
+Documentation = "https://rftvc.readthedocs.io"
+Repository = "https://github.com/ciflikli/rftvc"
+Changelog = "https://github.com/ciflikli/rftvc/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
