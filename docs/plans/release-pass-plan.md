@@ -15,7 +15,7 @@ sessions concurrently; within a track, slices are ordered by real dependency.
 - [x] T1-slice-4 Version-sync mechanism (`__init__.py`, `pyproject.toml`, both `Cargo.toml`s,
       CI version-agreement check)
 - [ ] T2-slice-1 `pyproject.toml` packaging metadata + `py.typed`
-- [ ] T2-slice-2 CI gap fixes (`ci.yml` Python 3.10 floor + Windows)
+- [x] T2-slice-2 CI gap fixes (`ci.yml` Python 3.10 floor + Windows)
 - [ ] T2-slice-3 `wheels.yml` TestPyPI → PyPI publish job with dry-run step
 - [ ] T3-slice-1 Docstring `Examples` sections across the public API
 - [ ] T3-slice-2 `api.rst` `CR_DTYPE`/`SURV_DTYPE` entries + `compatibility.rst` support matrix
@@ -574,6 +574,27 @@ produces `.venv/Scripts/` instead, branch the run command per-OS).
 - All matrix combinations green (any Windows-only failures found are fixed as part of
   this slice, per the design's explicit call-out that this is a real CI gap, not
   cosmetic).
+
+**T2-slice-2 done — deviations from the plan:**
+- Rust-checks dedup guard: used `matrix.os == 'ubuntu-latest' && matrix.python == '3.13'`
+  (run exactly once per push) instead of the plan's illustrative
+  `matrix.os != 'windows-latest' || matrix.python == '3.10'` (which would still run it
+  4 times, not deduped to 1).
+- `.venv/bin/python -m pytest` → `uv run --no-sync pytest`: `uv venv` on Windows produces
+  `.venv/Scripts/`, not `.venv/bin/`, so the plan's `.venv/bin/...` path (even under
+  `shell: bash`/Git Bash) would not exist there. `uv run` resolves the project's venv
+  correctly regardless of OS; `--no-sync` stops it from re-resolving/reinstalling
+  dependencies on top of the `uv pip install -e .` that already ran. Verified locally
+  (macOS): `uv run --no-sync pytest -m "not slow and not network"` — 677 passed.
+- Verified the actual Python 3.10 floor works, not just declared it: built a scratch
+  venv with `uv venv --python 3.10` + `uv pip install -e . --group dev` outside the repo
+  and ran the fast suite — 681 passed (4 more than 3.11's 677; those 4 are
+  version-gated `skip`s on 3.11 that run on 3.10).
+- Could not test the `windows-latest` leg directly (no Windows runner available
+  locally) — relies on CI itself to surface any real Windows-only failure, per this
+  slice's own acceptance criterion to fix what's found there.
+- Full fast suite (`pytest -m "not slow and not network"`) green on both tested
+  Python versions locally; CI will confirm Windows.
 
 ---
 
