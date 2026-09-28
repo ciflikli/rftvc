@@ -43,7 +43,8 @@ def test_compatibility_page_matches_pyprojects_declared_versions():
     assert requires_python in text, f"compatibility.rst doesn't mention the declared Python floor {requires_python!r}"
     for dep in re.search(r"^dependencies = \[(.*)\]", pyproject, re.MULTILINE).group(1).split(","):
         name, version = re.match(r'\s*"([a-z-]+)>=([^"]+)"', dep).groups()
-        assert version in text, f"compatibility.rst doesn't mention {name}'s declared floor {version!r}"
+        pattern = rf"{re.escape(name)}:?\s*>=\s*{re.escape(version)}"
+        assert re.search(pattern, text), f"compatibility.rst doesn't mention {name} >= {version} together"
 
 
 def test_foundation_page_states_the_four_assumptions():

@@ -929,6 +929,20 @@ T2-slice-2 merges, or reconcile the two if they land out of order.
 - Full fast suite (`pytest -m "not slow and not network"`) green: 688 passed, 4 skipped,
   96 xfailed. `docs` job verified locally (`sphinx-build -E -W --keep-going`): build
   succeeded, zero warnings.
+- Codex review of PR #51 caught two real issues, both fixed: (1) "Python: 3.10 - 3.13"
+  implied an enforced ceiling that doesn't exist — `requires-python = ">=3.10"` has no
+  upper bound, and abi3 wheels are forward-compatible by design; CI only *tests* 3.10
+  and 3.13. Reworded to "Python: >= 3.10 (no declared ceiling); CI tests 3.10 and 3.13."
+  (2) the drift-guard test checked only that a dependency's bare version number
+  appeared *somewhere* on the page, not tied to its own name — a real cross-
+  contamination bug: since `narwhals >= 1.30` is on the page, a test for `numpy`'s
+  floor drifting to `>=1.30` would still pass, defeating the test's purpose. Fixed by
+  requiring `name(:)? >= version` to match together as one pattern (verified the fix
+  actually catches the described drift scenario, and that it still passes against the
+  real page's `"scikit-learn: >= 1.6"` phrasing, which needed the optional `:?`).
+  Codex's own sandbox couldn't run the Sphinx build (blocked cache writes) or confirm
+  `api.html`'s rendering — re-verified both locally in this session (see acceptance
+  criteria above and T3-slice-2's earlier deviations note).
 
 ---
 

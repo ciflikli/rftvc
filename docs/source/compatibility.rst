@@ -45,7 +45,8 @@ and pickling are tested directly.
 Support matrix
 ---------------
 
-- Python: 3.10 - 3.13 (``requires-python = ">=3.10"``; CI tests 3.10 and 3.13).
+- Python: >= 3.10 (``requires-python = ">=3.10"``, no declared ceiling); CI tests
+  3.10 and 3.13.
 - scikit-learn: >= 1.6.
 - Platforms: Linux (x86_64, aarch64), macOS (aarch64, x86_64), Windows (x64) —
   prebuilt abi3 wheels for each, built and smoke-tested in ``wheels.yml``.
