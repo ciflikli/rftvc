@@ -16,7 +16,7 @@ sessions concurrently; within a track, slices are ordered by real dependency.
       CI version-agreement check)
 - [x] T2-slice-1 `pyproject.toml` packaging metadata + `py.typed`
 - [x] T2-slice-2 CI gap fixes (`ci.yml` Python 3.10 floor + Windows)
-- [ ] T2-slice-3 `wheels.yml` TestPyPI → PyPI publish job with dry-run step
+- [x] T2-slice-3 `wheels.yml` TestPyPI → PyPI publish job with dry-run step
 - [ ] T3-slice-1 Docstring `Examples` sections across the public API
 - [ ] T3-slice-2 `api.rst` `CR_DTYPE`/`SURV_DTYPE` entries + `compatibility.rst` support matrix
 - [x] T3-slice-3 `README.md` (new)
@@ -723,6 +723,22 @@ ever executes.
 - Header comment no longer claims nothing is published.
 - No secrets (`TWINE_PASSWORD`/`PYPI_API_TOKEN`) are introduced — Trusted Publishing
   only.
+
+**T2-slice-3 done — deviations from the plan:**
+- Landed as written per the plan's concrete snippet — no code changes needed, only the
+  two new jobs and the header comment.
+- Cannot be exercised end-to-end from this session: actually publishing requires the
+  `testpypi`/`pypi` GitHub Environments to have Trusted Publisher entries configured on
+  TestPyPI's/PyPI's own project settings (an external, one-time, human action outside
+  this repo's files — the plan already calls this out) AND a real `v*`-shaped tag push,
+  which is a separate, later action after this PR merges, not something to do as part of
+  landing the diff.
+- Also added CHANGELOG entries for this slice and for T2-slice-1 (packaging metadata +
+  `py.typed`), which had merged after `CHANGELOG.md` itself (T3-slice-4, PR #47) and so
+  had no entry yet.
+- Full fast suite (`pytest -m "not slow and not network"`) green: 680 passed, 4 skipped,
+  96 xfailed (unaffected — this slice touches only `.github/workflows/wheels.yml` and
+  `CHANGELOG.md`, no Python source).
 
 ---
 

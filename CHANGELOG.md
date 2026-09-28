@@ -21,6 +21,11 @@ retroactively itemized here — see `git log` for the full slice-by-slice histor
   the previous Linux/macOS-only, Python-3.11-only coverage.
 - CI now fails if `pyproject.toml` and `rust/rftvc-py/Cargo.toml` disagree on their
   version core.
+- `pyproject.toml` now declares `readme`, `authors`, `keywords`, `classifiers` and
+  `[project.urls]`; the package ships a `py.typed` marker (PEP 561) in both the wheel
+  and sdist.
+- Tag pushes now publish to TestPyPI, then to PyPI once the TestPyPI upload succeeds,
+  via Trusted Publishing (no stored token).
 
 ### Changed
 - `SurvivalForestTV`/`CompetingRisksForestTV` hyperparameter validation now raises
