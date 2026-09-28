@@ -538,6 +538,19 @@ class SurvivalForestTV(_BaseForestTV):
         (``rftvc.metrics.concordance_index_cp``: each event against the rows of
         other ids at risk at its time, for either resampling unit). Only with
         ``oob_score=True``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from rftvc import SurvivalForestTV, make_survival_y
+    >>> rng = np.random.default_rng(0)
+    >>> X = rng.normal(size=(200, 3))
+    >>> t = rng.exponential(np.exp(-0.5 * X[:, 0]))
+    >>> event = t <= 2.0
+    >>> y = make_survival_y(np.minimum(t, 2.0), event)
+    >>> forest = SurvivalForestTV(n_estimators=200, random_state=0).fit(X, y)
+    >>> forest.predict_risk(X[:5], horizon=1.0).shape
+    (5,)
     """
 
     def __init__(

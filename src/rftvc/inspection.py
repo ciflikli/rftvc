@@ -283,6 +283,21 @@ def permutation_importance(
     baseline loss), ``feature_names``, ``units``; the PE-only decompositions
     (``importances_window``, ``importances_cause``, ``importances_id``,
     ``zero_rate_share``, ``n_truncated_events``, ``n_unpermuted``) are ``None``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from rftvc import SurvivalForestTV, make_survival_y, inspection
+    >>> rng = np.random.default_rng(0)
+    >>> X = rng.normal(size=(200, 3))
+    >>> t = rng.exponential(np.exp(-0.5 * X[:, 0]))
+    >>> y = make_survival_y(np.minimum(t, 2.0), t <= 2.0)
+    >>> forest = SurvivalForestTV(n_estimators=100, random_state=0, oob_score=True).fit(X, y)
+    >>> result = inspection.permutation_importance(
+    ...     forest, X, y, oob=True, n_repeats=3, n_bootstrap=0, random_state=0
+    ... )
+    >>> result.importances.shape
+    (3, 3)
     """
     is_landmark, competing = _family(estimator)
     if is_landmark:
@@ -549,6 +564,19 @@ def hazard_effect(estimator, X, y, *, feature, values=None, windows=8, kind="ave
     dummy per remaining level) and refit; then compare each dummy's coefficient sign
     against ``hazard_effect``'s own two-point contrast for that same level against that
     same reference.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from rftvc import SurvivalForestTV, make_survival_y, inspection
+    >>> rng = np.random.default_rng(0)
+    >>> X = rng.normal(size=(200, 3))
+    >>> t = rng.exponential(np.exp(-0.5 * X[:, 0]))
+    >>> y = make_survival_y(np.minimum(t, 2.0), t <= 2.0)
+    >>> forest = SurvivalForestTV(n_estimators=100, random_state=0).fit(X, y)
+    >>> result = inspection.hazard_effect(forest, X, y, feature=0, values=[-1.0, 0.0, 1.0], windows=4)
+    >>> result.hazard.shape
+    (3, 4)
     """
     if kind not in ("average", "individual"):
         raise ValueError(f"kind must be 'average' or 'individual', got {kind!r}")
@@ -674,6 +702,28 @@ def path_effect(
     Bunch with ``per_subject`` (``(n_subjects, n_horizons)`` or CR
     ``(n_subjects, n_causes, n_horizons)``/``(n_subjects, n_horizons)`` for one
     ``cause``), ``mean``, ``horizons``, ``id_labels``.
+
+    Examples
+    --------
+    One subject's forward covariate path, held flat, then shifted by ``delta=1.0``
+    from time 2 onward:
+
+    >>> import numpy as np
+    >>> from rftvc import SurvivalForestTV, make_survival_y, inspection
+    >>> rng = np.random.default_rng(0)
+    >>> X = rng.normal(size=(200, 2))
+    >>> t = rng.exponential(np.exp(-0.5 * X[:, 0]))
+    >>> y = make_survival_y(np.minimum(t, 5.0), t <= 5.0)
+    >>> forest = SurvivalForestTV(n_estimators=100, random_state=0).fit(X, y)
+    >>> n_steps = 5
+    >>> Xp = np.column_stack([np.zeros(n_steps), np.zeros(n_steps)])
+    >>> iv = make_survival_y(
+    ...     np.arange(1.0, n_steps + 1), np.zeros(n_steps, dtype=bool), start=np.arange(0.0, n_steps)
+    ... )
+    >>> ids = np.zeros(n_steps, dtype=int)
+    >>> result = inspection.path_effect(forest, Xp, iv, ids, feature=1, delta=1.0, from_time=2.0, horizons=[3.0, 4.0])
+    >>> result.per_subject.shape
+    (1, 2)
     """
     is_landmark, competing = _family(estimator, fn="path_effect")
     if is_landmark:
@@ -883,6 +933,19 @@ def drop_column_importance(
       model's own per-fold per-event PE score, a diagnostic independent of any unit),
       ``n_events``, ``n_ids``, ``n_folds``, ``feature_names``, ``units`` (column indices
       per unit, including the appended ``"_noise"`` column when requested).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from rftvc import SurvivalForestTV, make_survival_y, inspection
+    >>> rng = np.random.default_rng(0)
+    >>> X = rng.normal(size=(200, 3))
+    >>> t = rng.exponential(np.exp(-0.5 * X[:, 0]))
+    >>> y = make_survival_y(np.minimum(t, 2.0), t <= 2.0)
+    >>> forest = SurvivalForestTV(n_estimators=50, random_state=0)
+    >>> result = inspection.drop_column_importance(forest, X, y, cv=3, random_state=0)
+    >>> result.importances_mean.shape
+    (3,)
     """
     is_landmark, competing = _family(estimator, fn="drop_column_importance", fitted=False)
     if is_landmark:
