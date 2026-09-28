@@ -3,10 +3,10 @@
 Stage 4 of CRISPI. Input: `docs/plans/design.md` (Approach 2 for Part A, Approach 3 for Part B — both user-confirmed 2026-09-28), `docs/plans/research.md`. **Revised 2026-09-28 after `codex:rescue` plan review** — see "Codex review findings applied" at the end of each slice.
 
 ## Status
-- [ ] Slice 1: PE-score-oracle-gap convergence check  <-- CURRENT
-- [ ] Slice 2: lifelines cross-check against known truth (genuinely static DGP)
-- [ ] Slice 3: Validation inventory doc (evidence vs. claims)
-- [ ] Slice 4: Conformal-coverage spike (empirical-only, no theoretical guarantee claimed)
+- [x] Slice 1: PE-score-oracle-gap convergence check (PR #52)
+- [x] Slice 2: lifelines cross-check against known truth (genuinely static DGP) (PR #53)
+- [x] Slice 3: Validation inventory doc (evidence vs. claims) (PR #54)
+- [x] Slice 4: Conformal-coverage spike (empirical-only, no theoretical guarantee claimed) — inconclusive, see docs/plans/conformal-prediction-investigation.md
 
 Each slice: own branch/PR, Codex plan review before code (per CLAUDE.md skill triggers / [[rftvc-dev-workflow]]), Codex diff review before merge.
 
