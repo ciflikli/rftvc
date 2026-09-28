@@ -12,7 +12,7 @@ sessions concurrently; within a track, slices are ordered by real dependency.
 - [x] T1-slice-2 `_estimator.py` `TypeError`/`ValueError` split (`_check_int`,
       `_resolve_max_features`, `_resolve_n_draw`)
 - [x] T1-slice-3 `ntime` coarsening `UserWarning`
-- [ ] T1-slice-4 Version-sync mechanism (`__init__.py`, `pyproject.toml`, both `Cargo.toml`s,
+- [x] T1-slice-4 Version-sync mechanism (`__init__.py`, `pyproject.toml`, both `Cargo.toml`s,
       CI version-agreement check)
 - [ ] T2-slice-1 `pyproject.toml` packaging metadata + `py.typed`
 - [ ] T2-slice-2 CI gap fixes (`ci.yml` Python 3.10 floor + Windows)
@@ -405,6 +405,20 @@ Rust checks — cheap enough to run on every PR):
   smoke check as part of this slice's manual verification, not necessarily a CI test).
 - CI fails if `pyproject.toml` and `rust/rftvc-py/Cargo.toml` version cores diverge.
 - Fast test suite green.
+
+**T1-slice-4 done — deviations from the plan:**
+- No version bump: `pyproject.toml` (`0.1.0.dev0`, core `0.1.0`) and both `Cargo.toml`s
+  (`0.1.0`) already agreed on the core, so the CI check passes as-is; version bumping is
+  deferred to actual release time per the plan's own convention note.
+- New `tests/test_package.py` reads `pyproject.toml`/`rust/rftvc-py/Cargo.toml` with a
+  plain regex, not `tomllib` — `tomllib` is 3.11+ only and T2-slice-2 (not yet landed)
+  adds a Python 3.10 CI leg; a `tomllib`-based test would break there.
+- Verified with `uv pip install --python .venv -e .` +
+  `.venv/bin/python -c "import rftvc; print(rftvc.__version__)"` → `0.1.0.dev0`, matching
+  the plan's manual smoke-check note.
+- Full fast suite (`pytest -m "not slow and not network"`) green: 674 passed, 4 skipped,
+  96 xfailed (this branch is based on `main` post-T1-slice-1/2, pre-T1-slice-3, hence the
+  count differing from that PR's).
 
 ---
 
