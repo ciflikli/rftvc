@@ -1,5 +1,7 @@
 """S6: coarse grid mode (design.md D8): table-driven fixtures and independent references."""
 
+import warnings
+
 import numpy as np
 import pytest
 from hypothesis import given, settings
@@ -167,3 +169,29 @@ def test_invalid_ntime():
     X, y, ids = _cp_data(10, seed=0)
     with pytest.raises(ValueError, match="ntime"):
         SurvivalForestTV(ntime=0).fit(X, y, ids)
+
+
+def test_lossy_coarsening_warns():
+    ids, start, stop, event = _arrays(TABLE)
+    X = np.zeros((len(TABLE), 1))
+    f = SurvivalForestTV(n_estimators=1, max_depth=0, max_samples=1.0, ntime=2, random_state=0)
+    with pytest.warns(UserWarning, match="ntime coarsening"):
+        f.fit(X, make_survival_y(stop, event, start=start), ids)
+
+
+def test_lossless_coarsening_does_not_warn():
+    # No delayed entry, one event per id: the coarse grid loses nothing.
+    y = make_survival_y([1.0, 2.0], [True, True], start=[0.0, 0.0])
+    f = SurvivalForestTV(n_estimators=1, max_depth=0, max_samples=1.0, ntime=2, random_state=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        f.fit(np.zeros((2, 1)), y, ["a", "b"])
+    assert f.n_coarsen_dropped_rows_ == 0
+    assert f.n_coarsen_lost_events_ == 0
+
+
+def test_no_ntime_does_not_warn():
+    X, y, ids = _cp_data(15, seed=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        SurvivalForestTV(n_estimators=1, random_state=0).fit(X, y, ids)

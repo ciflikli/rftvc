@@ -11,7 +11,7 @@ sessions concurrently; within a track, slices are ordered by real dependency.
       `_competing.py` + `inspection.py`)
 - [x] T1-slice-2 `_estimator.py` `TypeError`/`ValueError` split (`_check_int`,
       `_resolve_max_features`, `_resolve_n_draw`)
-- [ ] T1-slice-3 `ntime` coarsening `UserWarning`
+- [x] T1-slice-3 `ntime` coarsening `UserWarning`
 - [ ] T1-slice-4 Version-sync mechanism (`__init__.py`, `pyproject.toml`, both `Cargo.toml`s,
       CI version-agreement check)
 - [ ] T2-slice-1 `pyproject.toml` packaging metadata + `py.typed`
@@ -305,6 +305,23 @@ the attributes only exist when coarsening actually ran.
 - Fitting with lossless (or no) coarsening emits no such warning.
 - Fast test suite green (existing `ntime` tests updated if any assert "no warnings" via
   `-W error` or similar strictness that this new warning would now trip).
+
+**T1-slice-3 done — deviations from the plan:**
+- Tests live in `tests/test_coarsen.py` (the module that already owns `ntime`/coarsening
+  tests), not a `tests/test_estimator.py` (which doesn't exist in this repo).
+- The plan's suggested companion "no false positive" case (`ntime` fine enough to drop
+  nothing) needed care: `TABLE`'s own rows always drop `B` regardless of grid resolution
+  (delayed entry + event inside the same bin as the origin is a structural loss, not a
+  granularity one — confirmed via `test_huge_ntime_is_the_exact_event_set`). Used a
+  separate minimal two-id, no-delayed-entry fixture instead of reusing `TABLE` for the
+  lossless case. Also added a plain `ntime=None` case (`test_no_ntime_does_not_warn`).
+- Existing lossy-`ntime` tests (`test_single_node_matches_nelson_aalen_on_hand_coarsened_rows`,
+  `test_event_times_are_the_coarse_grid_even_when_a_point_loses_its_events`, others in this
+  file) were left unwrapped — no `-W error`/strict-warnings config exists in
+  `pyproject.toml`, so the new warning doesn't fail them; it only appears in pytest's
+  warnings summary.
+- Full fast suite (`pytest -m "not slow and not network"`) green: 675 passed, 4 skipped,
+  96 xfailed.
 
 ---
 

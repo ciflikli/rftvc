@@ -118,6 +118,14 @@ class _BaseForestTV(BaseEstimator):
             self.coarse_grid_ = d.grid
             self.n_coarsen_dropped_rows_ = d.n_rows - d.kept.size
             self.n_coarsen_lost_events_ = d.lost
+            if self.n_coarsen_dropped_rows_ or self.n_coarsen_lost_events_:
+                warnings.warn(
+                    f"ntime coarsening dropped {self.n_coarsen_dropped_rows_} row(s) and "
+                    f"{self.n_coarsen_lost_events_} event(s); see n_coarsen_dropped_rows_ / "
+                    "n_coarsen_lost_events_ on the fitted estimator.",
+                    UserWarning,
+                    stacklevel=2,
+                )
         else:  # no stale coarse-mode metadata from an earlier fit
             for name in ("coarse_grid_", "n_coarsen_dropped_rows_", "n_coarsen_lost_events_"):
                 if hasattr(self, name):
