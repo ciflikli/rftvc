@@ -68,6 +68,14 @@ def test_oracle_noise_is_null_and_x0_matters():
     assert res.importances_mean[0] > 0  # x0
 
 
+def test_random_state_accepts_generator():
+    X, y, ids = _data(200, 3)
+    est = SurvivalForestTV(n_estimators=10, random_state=0, n_jobs=1)
+    a = _dci(est, X, y, ids=ids, random_state=np.random.default_rng(0))
+    b = _dci(est, X, y, ids=ids, random_state=np.random.default_rng(0))
+    np.testing.assert_array_equal(a.importances_mean, b.importances_mean)
+
+
 def test_groups_single_copy_is_near_zero_grouped_is_positive():
     X, y, ids = _data(300, 1)
     z_copy = X[:, 1].copy()

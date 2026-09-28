@@ -9,11 +9,18 @@ from typing import NamedTuple
 import numpy as np
 from joblib import effective_n_jobs
 from sklearn.base import BaseEstimator
-from sklearn.utils import check_random_state
 from sklearn.utils.validation import check_array, check_is_fitted
 
 from . import _blocks, _core
-from ._validation import check_counting_process, check_intervals, check_survival_y, make_survival_y, split_frame
+from ._validation import (
+    check_counting_process,
+    check_intervals,
+    check_random_state_or_generator,
+    check_survival_y,
+    make_survival_y,
+    rng_seed,
+    split_frame,
+)
 
 
 def _as_codes(event):
@@ -121,7 +128,7 @@ class _BaseForestTV(BaseEstimator):
         self.n_units_ = d.n_units
         self.min_ids_leaf_ = self._resolve_min_ids_leaf(d.n_units)
         self.n_draw_ = self._resolve_n_draw(d.n_units)
-        rng = check_random_state(self.random_state)
+        rng = check_random_state_or_generator(self.random_state)
         fit_X, fit_start, fit_stop, fit_event = d.fit_rows
         self.forest_ = _core.fit_forest(
             fit_X,
@@ -138,7 +145,7 @@ class _BaseForestTV(BaseEstimator):
             min_events_leaf=self.min_events_leaf,
             max_features=self._resolve_max_features(X.shape[1]),
             max_bins=self.max_bins,
-            seed=int(rng.randint(np.iinfo(np.int64).max, dtype=np.int64)),
+            seed=rng_seed(rng),
             n_jobs=effective_n_jobs(self.n_jobs),
             **self._engine_kwargs(),
         )
@@ -483,7 +490,7 @@ class SurvivalForestTV(_BaseForestTV):
         For future periods use a time-based splitter (``rftvc.model_selection``).
     n_jobs : int or None, default=None
         Threads for fitting and prediction; ``-1`` uses all cores.
-    random_state : int, RandomState or None, default=None
+    random_state : int, RandomState instance, Generator, or None, default=None
 
     Attributes
     ----------

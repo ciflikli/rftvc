@@ -44,6 +44,17 @@ def test_deterministic_across_n_jobs():
     np.testing.assert_array_equal(*preds)
 
 
+def test_random_state_accepts_generator():
+    X, y = _data()
+    fits = [
+        SurvivalForestTV(n_estimators=10, random_state=np.random.default_rng(0))
+        .fit(X, y)
+        .predict_cumulative_hazard(X)
+        for _ in range(2)
+    ]
+    np.testing.assert_array_equal(*fits)
+
+
 def test_hazard_aggregation_is_below_survival_aggregation():
     """Jensen: exp(-mean Λ_b) <= mean exp(-Λ_b) pointwise."""
     X, y = _data()
