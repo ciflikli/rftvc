@@ -94,6 +94,20 @@ max_samples, bootstrap, n_jobs, random_state
         training null of ``metrics.piecewise_exponential_score``.
     n_ids_, n_units_, coarse_grid_, n_coarsen_dropped_rows_, n_coarsen_lost_events_, forest_
         As in ``SurvivalForestTV``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from rftvc import CompetingRisksForestTV, make_competing_risks_y
+    >>> rng = np.random.default_rng(0)
+    >>> X = rng.normal(size=(200, 3))
+    >>> t = rng.exponential(np.exp(-0.5 * X[:, 0]))
+    >>> cause = rng.integers(1, 3, size=200)
+    >>> event = np.where(t <= 2.0, cause, 0)
+    >>> y = make_competing_risks_y(np.minimum(t, 2.0), event)
+    >>> forest = CompetingRisksForestTV(n_estimators=200, random_state=0).fit(X, y)
+    >>> forest.predict_cumulative_incidence(X[:5], [1.0]).shape
+    (5, 2, 1)
     """
 
     _AGGREGATES = ("hazard", "cif")

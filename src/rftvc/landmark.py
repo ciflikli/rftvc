@@ -338,6 +338,25 @@ class LandmarkSurvivalForest(_LandmarkBase):
         one window of width ``block_length`` on the landmark time ``s``.
     id, start, stop, event, measured_at : str
         Column names in the input frames.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import polars as pl
+    >>> from rftvc import LandmarkSurvivalForest, SurvivalForestTV
+    >>> rng = np.random.default_rng(0)
+    >>> rows = []
+    >>> for i in range(60):
+    ...     z = rng.normal()
+    ...     t = rng.exponential(np.exp(-0.5 * z))
+    ...     rows.append((i, 0.0, min(t, 5.0), bool(t <= 5.0), z))
+    >>> df = pl.DataFrame(rows, schema=["id", "start", "stop", "event", "z"], orient="row")
+    >>> model = LandmarkSurvivalForest(
+    ...     horizon=2.0, history_features=["z"], landmarks=[0.0, 1.0, 2.0],
+    ...     forest=SurvivalForestTV(n_estimators=100, random_state=0),
+    ... ).fit(df)
+    >>> model.predict_risk(df, s=0.0).shape
+    (60, 3)
     """
 
     def __init__(
@@ -419,6 +438,26 @@ class LandmarkCompetingRisksForest(_LandmarkBase):
     score_cause : int or None
         Default cause of ``predict_risk``, set on the forest; ``None`` is the
         first label of the fitted ``causes_``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import polars as pl
+    >>> from rftvc import LandmarkCompetingRisksForest, CompetingRisksForestTV
+    >>> rng = np.random.default_rng(0)
+    >>> rows = []
+    >>> for i in range(80):
+    ...     z = rng.normal()
+    ...     t = rng.exponential(np.exp(-0.5 * z))
+    ...     cause = int(rng.integers(1, 3))
+    ...     rows.append((i, 0.0, min(t, 5.0), cause if t <= 5.0 else 0, z))
+    >>> df = pl.DataFrame(rows, schema=["id", "start", "stop", "event", "z"], orient="row")
+    >>> model = LandmarkCompetingRisksForest(
+    ...     horizon=2.0, history_features=["z"], landmarks=[0.0, 1.0, 2.0],
+    ...     forest=CompetingRisksForestTV(n_estimators=100, random_state=0),
+    ... ).fit(df)
+    >>> model.predict_risk(df, s=0.0, cause=1).shape
+    (80, 4)
     """
 
     def __init__(

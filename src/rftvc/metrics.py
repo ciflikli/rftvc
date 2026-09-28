@@ -215,6 +215,21 @@ def brier_landmark(
     return_info : bool, default=False
         Also return a dict: ``exact`` (no IPCW needed), counts of cases,
         controls, censored-before-``w`` and clipped weights.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from rftvc import SurvivalForestTV, make_survival_y
+    >>> from rftvc.metrics import brier_landmark
+    >>> rng = np.random.default_rng(0)
+    >>> X = rng.normal(size=(200, 2))
+    >>> t = rng.exponential(np.exp(-0.5 * X[:, 0]))
+    >>> y = make_survival_y(np.minimum(t, 2.0), t <= 2.0)
+    >>> forest = SurvivalForestTV(n_estimators=100, random_state=0).fit(X, y)
+    >>> risk = forest.predict_risk(X, horizon=1.0)
+    >>> score = brier_landmark(y, risk, w=1.0)
+    >>> 0.0 <= score <= 1.0
+    True
     """
     stop, event = _landmark_outcomes(y_test, "y_test", cause)
     risk = _check_pred(risk, stop.size, "risk").ravel()
@@ -431,6 +446,22 @@ def concordance_index_cr(y, risk, cause, ids=None):
     Rows of the case's id are excluded when ``ids`` is given. Concordant when
     the case's risk is larger; ties count ½. With a single cause there are no
     type-B pairs and this equals ``concordance_index_cp``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from rftvc import CompetingRisksForestTV, make_competing_risks_y
+    >>> from rftvc.metrics import concordance_index_cr
+    >>> rng = np.random.default_rng(0)
+    >>> X = rng.normal(size=(200, 2))
+    >>> t = rng.exponential(np.exp(-0.5 * X[:, 0]))
+    >>> cause = rng.integers(1, 3, size=200)
+    >>> event = np.where(t <= 2.0, cause, 0)
+    >>> y = make_competing_risks_y(np.minimum(t, 2.0), event)
+    >>> forest = CompetingRisksForestTV(n_estimators=100, random_state=0).fit(X, y)
+    >>> risk = forest.predict_cumulative_incidence(X, [2.0])[:, 0, 0]
+    >>> bool(0.0 <= concordance_index_cr(y, risk, cause=1) <= 1.0)
+    True
     """
     _check_cause(cause)
     start, stop, labels = competing_risks_labels(y)
@@ -732,6 +763,23 @@ def piecewise_exponential_score(
         zero predicted (unmixed) rate; above 1% the windows are too fine for
         the model, and a ``UserWarning`` is raised. ``null_total`` is the null's
         own score on the same cells.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from rftvc import SurvivalForestTV, make_survival_y
+    >>> from rftvc.metrics import event_windows, piecewise_exponential_score
+    >>> rng = np.random.default_rng(0)
+    >>> X = rng.normal(size=(200, 2))
+    >>> t = rng.exponential(np.exp(-0.5 * X[:, 0]))
+    >>> y = make_survival_y(np.minimum(t, 2.0), t <= 2.0)
+    >>> forest = SurvivalForestTV(n_estimators=100, random_state=0).fit(X, y)
+    >>> windows = event_windows(forest, 4)
+    >>> H = forest.predict_cumulative_hazard(X, times=windows)
+    >>> null = np.interp(windows, forest.event_times_, forest.baseline_cumhaz_)
+    >>> score = piecewise_exponential_score(y, H, windows, null_cumhaz=null)
+    >>> isinstance(score.total, float)
+    True
     """
     if reduce not in ("per_event", "sum"):
         raise ValueError(f"reduce must be 'per_event' or 'sum', got {reduce!r}")

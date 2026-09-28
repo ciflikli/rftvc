@@ -345,6 +345,31 @@ def landmark_cross_validate(
         the ``n_times`` times ``w/n_times, ..., w`` (the ``integrated_brier`` grid).
         For competing risks: ``cause``, ``risk`` (``F_k(w)``) and ``cif`` (a list
         of ``F_k`` at those times) instead of ``survival``.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import polars as pl
+    >>> from rftvc import LandmarkSurvivalForest, SurvivalForestTV
+    >>> from rftvc.model_selection import RollingOriginSplit, landmark_cross_validate
+    >>> rng = np.random.default_rng(0)
+    >>> rows = []
+    >>> for i in range(80):
+    ...     z = rng.normal()
+    ...     t = rng.exponential(np.exp(-0.3 * z)) * 6
+    ...     stop = min(t, 6.0)
+    ...     n_full = int(stop)
+    ...     for p in range(n_full):
+    ...         rows.append((i, float(p), float(p + 1), False, z))
+    ...     if stop > n_full:
+    ...         rows.append((i, float(n_full), stop, bool(t <= 6.0), z))
+    >>> df = pl.DataFrame(rows, schema=["id", "start", "stop", "event", "z"], orient="row")
+    >>> forest = SurvivalForestTV(n_estimators=50, min_ids_leaf=5, random_state=0)
+    >>> model = LandmarkSurvivalForest(horizon=2.0, history_features=["z"], step=2.0, forest=forest)
+    >>> cv = RollingOriginSplit(1, test_size=2, gap=2)
+    >>> scores = landmark_cross_validate(model, df, cv)
+    >>> scores.columns
+    ['fold', 'landmark', 'n', 'n_cases', 'n_censored', 'n_clipped', 'brier']
     """
     df = _as_polars(df)
     if model.horizon is None:

@@ -17,7 +17,7 @@ sessions concurrently; within a track, slices are ordered by real dependency.
 - [x] T2-slice-1 `pyproject.toml` packaging metadata + `py.typed`
 - [x] T2-slice-2 CI gap fixes (`ci.yml` Python 3.10 floor + Windows)
 - [x] T2-slice-3 `wheels.yml` TestPyPI → PyPI publish job with dry-run step
-- [ ] T3-slice-1 Docstring `Examples` sections across the public API
+- [x] T3-slice-1 Docstring `Examples` sections across the public API
 - [ ] T3-slice-2 `api.rst` `CR_DTYPE`/`SURV_DTYPE` entries + `compatibility.rst` support matrix
 - [x] T3-slice-3 `README.md` (new)
 - [x] T3-slice-4 `CHANGELOG.md` (new, Keep a Changelog, fresh start)
@@ -806,6 +806,36 @@ floats, unless a fixed `random_state` makes exact values worth pinning).
   one).
 - `docs` CI job (`sphinx-build -E -W --keep-going`) still passes with the new sections
   rendered.
+
+**T3-slice-1 done — deviations from the plan:**
+- Used the dedicated `tests/test_docstring_examples.py` route (`doctest.testmod` per
+  module, parametrized), not `--doctest-modules` in `pyproject.toml`'s `addopts` — safer
+  given `testpaths = ["tests"]` already scopes collection there; adding
+  `--doctest-modules` would need a separate `testpaths` entry for `src/rftvc` to reach
+  these modules at all, a bigger, riskier config change for the same effect.
+  `hazard_effect`'s `path_effect` is genuinely the hardest to make runnable (needs a
+  hand-built forward covariate path with correctly-chained `(start, stop]` rows, not
+  just fit data) — verified by executing each candidate example standalone before
+  writing it into a docstring, not just by inspection.
+  Every example was found to need `bool(...)` around a chained numpy-bool comparison in
+  one case (`concordance_index_cr`'s doctest) — `np.True_` prints differently from
+  `True`, which `doctest` treats as a literal mismatch.
+- `docs` CI job verified locally (`sphinx-build -E -W --keep-going`) — build succeeded,
+  zero warnings, all 6 touched modules' generated API pages render with their new
+  `Examples` sections.
+- Full fast suite (`pytest -m "not slow and not network"`) green: 686 passed, 4 skipped,
+  96 xfailed (6 new doctest-collection tests, one per module, each running multiple
+  `Examples` blocks — 36+ individual doctest assertions).
+- Codex review of PR #50 caught a real issue, fixed: `path_effect`'s example shifted
+  ``feature=1``, a column with no real effect on the synthetic hazard (only column 0
+  drives it), and asserted only `.shape` — a broken shift/contrast implementation would
+  have passed the doctest silently (confirmed: Codex replaced the shift with a no-op in
+  memory and all 40 inspection-module doctest assertions still passed). Rewrote the
+  example to shift `feature=0` (the column that actually drives the hazard, with a
+  known-sign effect: `rate = exp(-0.5 * X[:, 0])`, so raising it *lowers* risk) from a
+  time inside a row (exercising the row-split path, not just a boundary) and assert the
+  contrast is negative at both horizons, not just shaped correctly. Re-verified robust
+  to thread count (`RAYON_NUM_THREADS=1` and `4`, both green).
 
 ---
 
