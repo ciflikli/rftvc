@@ -12,10 +12,14 @@ gate was run, threshold calibrated from an out-of-band pilot (seeds
 10_000..10_004, not these seeds; see bench/cr_forest_truth_check.py's module
 docstring): over R=10 replications (seeds 0-9) on scenario A, mean per-cause
 ISE <= 0.10.
+
+Deliberately NOT marked ``slow``: the whole point of this test is a check
+that actually runs in the default merge-gate CI tier (the gap it closes was
+exactly that no fitted-model-vs-truth check for competing risks ran in CI at
+all) — at ~2.5s for the full gate, there's no speed reason to exclude it.
 """
 
 import numpy as np
-import pytest
 
 from bench.cr_forest_truth_check import ISE_THRESHOLD, replicate, run
 
@@ -26,7 +30,6 @@ def test_replicate_smoke():
     assert np.all(np.isfinite(err))
 
 
-@pytest.mark.slow
 def test_forest_ise_within_tolerance_of_truth():
     res = run(n_reps=10)
     assert res.mean() <= ISE_THRESHOLD

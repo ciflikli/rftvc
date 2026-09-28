@@ -11,25 +11,32 @@ here).
 Reuses `bench.s14_cr_sim`'s scenario-A DGP and its `training_rows`/
 `test_paths`/`true_cif`/`ise` helpers unchanged — no new DGP, no new
 closed-form-truth math (that's already independently truth-checked). This
-script adds a single **default-hyperparameter** `CompetingRisksForestTV` fit
-(`criterion="composite"`, `aggregate="cif"`, `split_cause=None` — the
-library's actual defaults, one of the arms the S14 bake-off already
-compared) against the closed-form `true_cif`. It does not re-run the
-bake-off or re-litigate which criterion/aggregate is best — that was already
-decided; this is a plain regression-style truth check on what ships by
-default.
+script adds a single `CompetingRisksForestTV` fit at its actual **library
+defaults** (`n_estimators=500`, `criterion="composite"`, `aggregate="cif"`,
+`split_cause=None` — matching `CompetingRisksForestTV.__init__`'s own
+defaults exactly, one of the arms the S14 bake-off already compared) against
+the closed-form `true_cif`. It does not re-run the bake-off or re-litigate
+which criterion/aggregate is best — that was already decided; this is a
+plain regression-style truth check on what ships by default.
+
+This gate runs in the **default (fast) test tier, not `slow`** — deliberate:
+the whole point of this slice is a check that actually runs in CI on every
+push, and at ~2.5s for the full R=10 gate (500-tree competing-risks fits are
+cheap at this DGP's scale) there is no speed reason to exclude it from the
+merge gate the way the R=50 bake-off/importance-pilot sims are (those cost
+much more per replication).
 
 Pass rule (declared here, before the gate's own R=10 replications were run,
 threshold calibrated from an out-of-band pilot, seeds `10_000..10_004`, 5
 replications at this module's own defaults — n_train=500, n_test=200,
-n_estimators=200: per-seed per-cause ISE = [0.0517, 0.0341], [0.0534,
-0.0411], [0.0511, 0.0528], [0.0476, 0.0393], [0.0441, 0.0399]; overall mean
-≈ 0.0455, max single value ≈ 0.0534): over R=10 replications (seeds 0-9) on
-scenario A, mean per-cause ISE (averaged over both causes and all
-replications) <= 0.10 — roughly double the pilot mean and well above the
-pilot's max single value, enough headroom for run-to-run variability while
-still failing on a real regression (e.g. an ISE blowup to several times the
-observed scale).
+n_estimators=500, the library default: per-seed per-cause ISE = [0.0524,
+0.0346], [0.0528, 0.0409], [0.0501, 0.0514], [0.0469, 0.0398], [0.0435,
+0.0365]; overall mean ≈ 0.0449, max single value ≈ 0.0528): over R=10
+replications (seeds 0-9) on scenario A, mean per-cause ISE (averaged over
+both causes and all replications) <= 0.10 — roughly double the pilot mean
+and well above the pilot's max single value, enough headroom for
+run-to-run variability while still failing on a real regression (e.g. an
+ISE blowup to several times the observed scale).
 """
 
 import numpy as np
@@ -38,7 +45,7 @@ from bench.s14_cr_sim import GRID, ise, test_paths, training_rows, true_cif  # n
 from rftvc import CompetingRisksForestTV
 
 ISE_THRESHOLD = 0.10
-N_ESTIMATORS = 200
+N_ESTIMATORS = 500  # the library default (CompetingRisksForestTV.__init__)
 
 
 def replicate(seed, n_train=500, n_test=200, n_estimators=N_ESTIMATORS):
