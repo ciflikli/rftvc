@@ -1,9 +1,13 @@
 name: wheels
 
 # abi3 wheels (one per platform, CPython >= 3.10) built with maturin, then
-# installed and smoke-tested on each OS, then published: TestPyPI on every
-# tag push (dry run via `--repository testpypi`), PyPI only on a tag matching
-# the release pattern after the TestPyPI step succeeds.
+# installed and smoke-tested on each OS, then published on any v*-tagged push:
+# TestPyPI first (a real upload, not a simulated one — PyPI has no dry-run mode
+# for gh-action-pypi-publish; "dry run" here means "against the test index"),
+# then PyPI, gated on the same tag and on the TestPyPI upload having succeeded.
+# Both jobs also verify the tag's version matches pyproject.toml's before
+# uploading anything, so a stale/forgotten version bump fails loudly instead
+# of re-publishing (PyPI rejects filename reuse) an already-released version.
 on:
   push:
     tags: ["v*"]
@@ -116,6 +120,15 @@ jobs:
     permissions:
       id-token: write
     steps:
+      - uses: actions/checkout@v4
+      - name: Verify the tag matches pyproject.toml's version
+        run: |
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          PY_VER=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/version = "([^"]+)"/\1/')
+          if [ "$TAG_VER" != "$PY_VER" ]; then
+            echo "tag $GITHUB_REF_NAME (version $TAG_VER) != pyproject.toml version $PY_VER"
+            exit 1
+          fi
       - uses: actions/download-artifact@v4
         with:
           pattern: wheel-*

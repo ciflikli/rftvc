@@ -739,6 +739,18 @@ ever executes.
 - Full fast suite (`pytest -m "not slow and not network"`) green: 680 passed, 4 skipped,
   96 xfailed (unaffected — this slice touches only `.github/workflows/wheels.yml` and
   `CHANGELOG.md`, no Python source).
+- Codex review of PR #49 caught two real issues, both fixed: (1) neither publish job
+  checked that the pushed tag's version actually matched `pyproject.toml`'s — a
+  forgotten version bump before tagging would build and try to publish the wrong
+  version (PyPI rejects filename reuse, so this would fail, but obscurely, deep in the
+  publish step rather than with a clear message). Added a "verify tag matches
+  pyproject.toml's version" step at the start of `publish-testpypi` (which `publish-pypi`
+  inherits transitively via `needs: [publish-testpypi]`, since both run against the same
+  tag/commit). Verified the check's shell logic locally for both the matching and
+  mismatching cases. (2) the header comment's "PyPI only on a tag matching the release
+  pattern" was imprecise — both jobs actually share the identical tag condition; PyPI's
+  extra gate is `needs: [publish-testpypi]` succeeding, not a stricter tag pattern.
+  Reworded for accuracy.
 
 ---
 
