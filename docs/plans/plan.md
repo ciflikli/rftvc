@@ -7,6 +7,24 @@ Stage 4 of CRISPI. Input: `docs/plans/design.md` (Approach 2 for Part A, Approac
 - [x] Slice 2: lifelines cross-check against known truth (genuinely static DGP) (PR #53)
 - [x] Slice 3: Validation inventory doc (evidence vs. claims) (PR #54)
 - [x] Slice 4: Conformal-coverage spike (empirical-only, no theoretical guarantee claimed) — inconclusive, see docs/plans/conformal-prediction-investigation.md
+- [x] Slice 5: CompetingRisksForestTV fitted-model-vs-truth CI gate (closes the row-2 gap from Slice 3's inventory)
+
+## Slice 5: CompetingRisksForestTV fitted-model-vs-truth CI gate
+
+**Why:** user follow-up after reviewing Slice 3's inventory (`docs/plans/simulation-validation-findings.md`) — competing risks had no CI-gated check that a fitted `CompetingRisksForestTV` gets close to known truth; only the DGP's own closed-form truth was checked in CI, and the actual forest-vs-truth comparison (`bench/s14_cr_sim.py run()`) computes no pass/fail decision at all, ever.
+
+**Files:**
+- `bench/cr_forest_truth_check.py` (new) — reuses `bench.s14_cr_sim`'s scenario-A DGP and `training_rows`/`test_paths`/`true_cif`/`ise` helpers unchanged. Fits `CompetingRisksForestTV` at its actual defaults (`criterion="composite"`, `aggregate="cif"`, `split_cause=None` — one of the bake-off's own arms, not a new comparison), `replicate(seed) -> (2,)` per-cause ISE, `run(n_reps) -> (n_reps, 2)`.
+- `tests/test_cr_forest_truth.py` (new) — fast smoke test (small n, finite-value check), `@pytest.mark.slow` gate with a predeclared absolute ISE threshold (0.10, calibrated from an out-of-band pilot, seeds 10000-10004, distinct from the gate's own seeds 0-9).
+
+**Explicit scope note:** scenario A only, default hyperparameters only — does not re-run the S14 bake-off's arms sweep (still manual-only) or cover scenarios B/C. Closes the narrower "does the shipped default get close to truth at all" gap, not the full bake-off question.
+
+**Docs updated:** `docs/plans/simulation-validation-findings.md` — new row 2b, and row 2/"does not establish" text updated to reflect the narrower (not full) closure.
+
+**Acceptance criteria:**
+- Fast smoke test passes in the default merge-gate suite.
+- Slow gate's threshold stated before the sim was run, calibrated from a seed range distinct from the gate's own.
+- Findings doc accurately scopes what's now covered vs. still open (full bake-off, scenarios B/C, external-tool cross-check for competing risks all remain open).
 
 Each slice: own branch/PR, Codex plan review before code (per CLAUDE.md skill triggers / [[rftvc-dev-workflow]]), Codex diff review before merge.
 
