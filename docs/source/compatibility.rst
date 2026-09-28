@@ -41,3 +41,13 @@ adapted tests run for both. All other ``check_estimator`` checks pass.
 ``LandmarkSurvivalForest`` and ``LandmarkCompetingRisksForest`` fit a DataFrame
 and need no ``y``, so they are outside ``check_estimator``'s scope. ``clone``, nested ``get_params`` (``forest__...``)
 and pickling are tested directly.
+
+Support matrix
+---------------
+
+- Python: >= 3.10 (``requires-python = ">=3.10"``, no declared ceiling); CI tests
+  3.10 and 3.13.
+- scikit-learn: >= 1.6.
+- Platforms: Linux (x86_64, aarch64), macOS (aarch64, x86_64), Windows (x64) —
+  prebuilt abi3 wheels for each, built and smoke-tested in ``wheels.yml``.
+- polars >= 1.0, numpy >= 1.24, narwhals >= 1.30.

@@ -1,5 +1,6 @@
 """S20: guard the specific claims the foundation/importance user-guide pages must (not) make."""
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,24 @@ def test_changelog_exists_and_is_keep_a_changelog_shaped():
     assert text.startswith("# Changelog")
     assert "## [Unreleased]" in text
     assert "keepachangelog.com" in text
+
+
+def test_compatibility_page_states_a_support_matrix():
+    text = (REPO_ROOT / "docs" / "source" / "compatibility.rst").read_text()
+    assert "Support matrix" in text
+    assert "3.10" in text
+    assert "scikit-learn" in text
+
+
+def test_compatibility_page_matches_pyprojects_declared_versions():
+    text = (REPO_ROOT / "docs" / "source" / "compatibility.rst").read_text()
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+    requires_python = re.search(r'^requires-python = ">=([^"]+)"', pyproject, re.MULTILINE).group(1)
+    assert requires_python in text, f"compatibility.rst doesn't mention the declared Python floor {requires_python!r}"
+    for dep in re.search(r"^dependencies = \[(.*)\]", pyproject, re.MULTILINE).group(1).split(","):
+        name, version = re.match(r'\s*"([a-z-]+)>=([^"]+)"', dep).groups()
+        pattern = rf"{re.escape(name)}:?\s*>=\s*{re.escape(version)}"
+        assert re.search(pattern, text), f"compatibility.rst doesn't mention {name} >= {version} together"
 
 
 def test_foundation_page_states_the_four_assumptions():
