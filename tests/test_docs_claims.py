@@ -21,6 +21,13 @@ def test_readme_exists_and_has_stable_substrings():
         assert phrase in text, f"missing README substring: {phrase!r}"
 
 
+def test_changelog_exists_and_is_keep_a_changelog_shaped():
+    text = (REPO_ROOT / "CHANGELOG.md").read_text()
+    assert text.startswith("# Changelog")
+    assert "## [Unreleased]" in text
+    assert "keepachangelog.com" in text
+
+
 def test_foundation_page_states_the_four_assumptions():
     text = _text("foundation.rst")
     for phrase in ["current-state", "predictab", "independent censoring", "id-level", "resampling"]:

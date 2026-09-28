@@ -1,0 +1,30 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Entries begin at the release-readiness pass (2026-09); earlier development is not
+retroactively itemized here — see `git log` for the full slice-by-slice history.
+
+## [Unreleased]
+
+### Added
+- `random_state` now accepts a `numpy.random.Generator` everywhere it appears
+  (`SurvivalForestTV`, `CompetingRisksForestTV`, `inspection.permutation_importance`,
+  `inspection.drop_column_importance`), matching what `inspection.py` already
+  supported internally.
+- A `UserWarning` when `ntime` coarsening drops rows or loses events, pointing at the
+  fitted estimator's `n_coarsen_dropped_rows_`/`n_coarsen_lost_events_` attributes.
+- CI now tests 6 combinations (Linux, macOS, Windows × Python 3.10, 3.13), replacing
+  the previous Linux/macOS-only, Python-3.11-only coverage.
+- CI now fails if `pyproject.toml` and `rust/rftvc-py/Cargo.toml` disagree on their
+  version core.
+
+### Changed
+- `SurvivalForestTV`/`CompetingRisksForestTV` hyperparameter validation now raises
+  `TypeError` for a wrong-type argument and `ValueError` only for an out-of-range value
+  of the correct type (previously both raised `ValueError`).
+- `rftvc.__version__` now reflects installed package metadata instead of a
+  hand-maintained literal.

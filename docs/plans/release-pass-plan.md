@@ -20,7 +20,7 @@ sessions concurrently; within a track, slices are ordered by real dependency.
 - [ ] T3-slice-1 Docstring `Examples` sections across the public API
 - [ ] T3-slice-2 `api.rst` `CR_DTYPE`/`SURV_DTYPE` entries + `compatibility.rst` support matrix
 - [x] T3-slice-3 `README.md` (new)
-- [ ] T3-slice-4 `CHANGELOG.md` (new, Keep a Changelog, fresh start)
+- [x] T3-slice-4 `CHANGELOG.md` (new, Keep a Changelog, fresh start)
 
 ---
 
@@ -949,3 +949,26 @@ against `git log` immediately before merging this slice.
   lands (not a placeholder).
 - No attempt to retroactively itemize all 33 prior PRs — explicitly scoped to start
   from the release pass, per research Q7's finding and the task instruction.
+
+**T3-slice-4 done — deviations from the plan:**
+- Entries trued up against `git log` at merge time (T1-slice-1 through T1-slice-4,
+  T2-slice-2 all merged): added a `py.typed` bullet was dropped — that's T2-slice-1
+  (not yet landed) — and added a CI-coverage bullet for T2-slice-2 (Python 3.10 +
+  Windows now tested) under `### Added`, which the plan's skeleton didn't anticipate
+  since it predates that slice merging.
+- `README.md` (T3-slice-3) intentionally NOT listed — it's a Track 3 doc addition, and
+  the acceptance criterion scopes entries to "every Track 1/2 change," not Track 3.
+- New test: `tests/test_docs_claims.py::test_changelog_exists_and_is_keep_a_changelog_shaped`
+  (starts with `# Changelog`, contains `## [Unreleased]`, references
+  `keepachangelog.com`), following the file's existing guard convention.
+- Full fast suite (`pytest -m "not slow and not network"`) green: 678 passed, 4 skipped,
+  96 xfailed.
+- Codex review of PR #47 caught three real issues, all fixed: (1) the CI-coverage bullet
+  said "existing Linux/macOS + Python 3.13 coverage" — factually wrong, the pre-T2-slice-2
+  matrix was Python 3.11 only, not 3.13; reworded to state the 6-combination replacement
+  plainly. (2) T1-slice-4's CI version-agreement check (pyproject.toml vs. Cargo.toml)
+  had no entry of its own — added one under `### Added`. (3) the placeholder `### Fixed`
+  section ("release-pass fixes land here as they merge") was removed — Keep a Changelog
+  omits empty sections, and there was nothing to list there: every "fix PR review
+  findings" commit (PRs #42, #43, #46) corrected its own PR's diff before merge, so the
+  net merged behavior already reflects the fix with nothing separately "Fixed."
