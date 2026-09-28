@@ -9,7 +9,8 @@ Stage 4 of CRISPI. Input: `docs/plans/design.md` (Approach 2 for Part A, Approac
 - [x] Slice 4: Conformal-coverage spike (empirical-only, no theoretical guarantee claimed) — inconclusive, see docs/plans/conformal-prediction-investigation.md
 - [x] Slice 5: CompetingRisksForestTV fitted-model-vs-truth CI gate (closes the row-2 gap from Slice 3's inventory) (PR #57)
 - [x] Slice 6: trend-scenario permutation-importance CI gate (closes part of the row-3 gap — trend only, not timing/CR/landmark) (PR #58)
-- [x] Slice 7: timing-window permutation-importance CI gate (closes another part of the row-3 gap — ports the design's real unmodified rule, not a recalibrated threshold)
+- [x] Slice 7: timing-window permutation-importance CI gate (closes another part of the row-3 gap — ports the design's real unmodified rule, not a recalibrated threshold) (PR #59)
+- [x] Slice 8: competing-risks permutation-importance CI gate (completes S17's row-3 coverage — trend/timing/CR all closed)
 
 ## Slice 7: timing-window permutation-importance CI gate
 
@@ -153,6 +154,25 @@ Each slice: own branch/PR, Codex plan review before code (per CLAUDE.md skill tr
 - Module docstring explicitly disclaims a formal split-conformal guarantee and states the exact target, calibration-set definition, and weighting rule (points 1-3 above) before any code that uses them.
 
 **Codex review findings applied:** named the calibration target explicitly; replaced the unworkable `X_calib`-based signature with OOB-on-training-rows calibration matching how `_rebuild_design`/`oob_cumhaz` actually work; specified the exact IPCW-style weighting rule instead of leaving it to invent at implementation time; replaced the single-seed `±0.05 at n=2000` criterion with repeated-replication coverage + explicit uncertainty reporting; removed the implied split-conformal theoretical guarantee.
+
+---
+
+## Slice 8: competing-risks permutation-importance CI gate
+
+**Why:** completes the S17 row-3 sweep started in Slices 6-7. Same pattern as Slice 7: the real design rule was verified to transfer to the reduced scale, so it's ported unmodified rather than recalibrated.
+
+**Files:**
+- `bench/cr_importance_truth_check.py` (new) — reuses `bench.tvc_perm_sim`'s competing-risks oracle scenario and its stats helpers unchanged, same reduced scale as Slices 6-7. `run(n_reps) -> (n_reps, 2)` of `(d_s1, d_s2)`; `check(res) -> (pass_cause1, pass_cause2, ub_s2, delta1)`.
+- `tests/test_cr_importance_truth.py` (new) — fast smoke test, plus the gate: Holm-reject on `d_s1`, `d_s2`'s upper bound <= `0.1 * oracle(cause 1)` (the design's real 0.1×, not the old pilot's loosened 0.3×). R=15, not `slow`-marked.
+
+**Explicit scope note:** competing-risks importance scenario only — this finishes S17 (all three of row 3's oracle scenarios now closed: trend/3b, timing/3c, competing risks/3d). S19's landmark-importance scenarios remain a separate, unrelated gap.
+
+**Docs updated:** `docs/plans/simulation-validation-findings.md` — new row 3d, rows 3/3b/3c and "does not establish" text updated to reflect S17 being fully covered.
+
+**Acceptance criteria:**
+- Gate runs in the default merge-gate suite.
+- Rule verified to hold at reduced scale via multiple independent out-of-band seed ranges before locking in.
+- Findings doc accurately states S17 is now fully closed while S19 remains open.
 
 ---
 
