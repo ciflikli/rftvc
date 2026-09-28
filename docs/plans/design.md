@@ -1,220 +1,117 @@
-# Design: `rftvc`, a scikit-learn-compatible survival forest with time-varying covariates
+# Design: simulation-based statistical validation + conformal prediction feasibility
 
-Status: **v2, approved defaults** (2026-09-25). Inputs: `research.md` (corrected), `research-review.md`, `design-principles.md` v2, `design-review.md`.
-v2 folds in all 4 key and 10 minor findings from `design-review.md` (see Changelog).
+Stage 3 of CRISPI. Input: `docs/plans/questions.md`, `docs/plans/research.md`.
 
 ## Executive summary
-- `rftvc` is a general-purpose random survival forest for Python with a Rust engine.
-- The engine reads **counting-process rows** `(id, start, stop, event, X)`, with left truncation and time-varying covariates handled natively. Row weights are **unit** weights; resampling and OOB are done by subject (`id`).
-- **Prediction targets** are served by data-building functions and one meta-estimator, **not** by sklearn `Pipeline` transformers: row-reshaping steps change `y` and `ids`, which a `Pipeline` cannot carry.
-- **Error estimation** is an explicit user choice (new subjects vs future periods), made through CV splitters.
-- **v1 split criterion:** the exact LTRC log-rank on (optionally coarsened) event times. Other criteria plug in through a trait.
 
-## Decisions
-| # | Decision | Status |
-|---|---|---|
-| D1 | Rust core (PyO3 + maturin + rayon + rust-numpy); thin Python layer | user-confirmed |
-| D2 | Covariates mostly external; goal = dynamic prediction accuracy | user-confirmed |
-| D3 | General purpose; domain examples only in docs/case studies | user-confirmed |
-| D4 | v1 excludes: internal-covariate path scenarios, informative visit processes, competing risks | default |
-| D5 | Two public workflows: (a) the core estimator on counting-process data; (b) `make_landmark_data()` + `LandmarkSurvivalForest` meta-estimator. **No Pipeline-based stacking** | default (v2) |
-| D6 | v1 criterion = LTRC log-rank, **unit weights only**; confirmed by the S8 bake-off (`docs/bench/s8-bakeoff.md`) | default (v2); S8 |
-| D7 | Engine input = numpy; polars in data builders; `narwhals` for DataFrame-agnostic input | default |
-| D8 | Time coarsening defined as **snapping times to the grid before counting**, so the score is an exact log-rank on the coarsened data | default (v2) |
-| D9 | Unobserved future covariates are never filled silently: `extrapolate="none"` by default | default (v2) |
+Simulation-based validation does **not** need new infrastructure — the repo already has a four-times-repeated closed-form-DGP / fast-smoke-test / slow-pilot-test / manual-`bench`-run pattern (`tests/sim.py`, `bench/{s14_cr_sim,tvc_perm_sim,tvc_landmark_sim}.py`). The open question was always scope, not mechanism. Recommended approach: **generalize, don't rebuild** — add the two ground-truth checks that don't exist yet (PE-score-converges-to-known-ceiling; a `lifelines`/`scikit-survival`-vs-closed-truth cross-check) as new slices in the existing pattern, and write a single library-wide plan document (mirroring `rc-validation-plan.md`'s Decisions format) that inventories what's already validated so it's visible in one place, rather than scattered across four slice-specific plan files.
 
-## Approaches considered
-- **A. Own Rust counting-process forest + data builders.** Recommended.
-  - Native left truncation and TVCs; id-level resampling.
-  - Histogram and grid speedups; no private sklearn API.
-  - Cost: most build effort, two languages.
-- **B. Existing engines on landmark data.** Stack landmarks with the clock reset, then fit scikit-survival RSF or per-horizon LightGBM.
-  - Fast to build, but no within-follow-up TVCs, row-level bootstrap only, and memory limits.
-  - Kept as **baseline and test reference**.
-- **C. Extend sklearn/sksurv Cython tree internals.** Rejected: private API that breaks across versions, row-based design, limited parallelism.
+Conformal prediction is **feasible for the single-event, horizon-based case**, materially easier than expected because the OOB full-curve engine (`oob_cumhaz`/`oob_cause_cumhaz`) already exists in Rust and is unit-tested — it just isn't public API. It is **not** feasible to ship as a general-purpose, competing-risks-covered feature right now: the literature has no settled competing-risks conformal-survival method, and [[rftvc-general-purpose]] treats competing risks as load-bearing, not optional. Recommendation: **investigate/prototype only in this pass** — a design note and a follow-up slice for single-event horizon-based conformal risk intervals using OOB calibration, explicitly out-of-scope for competing risks and full-curve calibration until the field settles further.
 
-## Architecture (Approach A)
-```
-rftvc/
-  _estimator.py      SurvivalForestTV              core estimator (counting-process data)
-  landmark.py        make_landmark_data(), LandmarkData, LandmarkSurvivalForest (meta-estimator)
-  person_period.py   make_person_period_data()     discrete-time view (baselines)
-  _validation.py     check_counting_process(), structured-y validation
-  model_selection.py RollingOriginSplit, GroupTimeSplit, landmark_cross_validate()
-  metrics.py         brier_landmark, integrated_brier, cindex_dynamic, calibration_table
-rust/rftvc-core/
-  data.rs  grid.rs  criterion.rs  splitter.rs  tree.rs  forest.rs  predict.rs
-```
+---
 
-### Data contract (core estimator)
-- **`X`**: `(n_rows, p)` float.
-- **`y`**: structured array with fields `start`, `stop` (float) and `event` (bool). Rules: `start < stop`, no NaN.
-- **`ids`**: `(n_rows,)`, passed as a fit/predict argument. Separately, the CV splitter's `groups=ids` is supplied by the user or by `LandmarkData.groups`. Metadata routing is documented with `set_fit_request(ids=True)`.
-- **Per-id rules**, validated by `check_counting_process`:
-  - rows are **contiguous and non-overlapping**: `stop_j == start_{j+1}`. A gap raises an error, unless `gap_policy="split_id"`, which treats each segment as delayed re-entry. That option is documented as an assumption.
-  - only the last row may have `event=1` (single event, v1).
-- **Predictability:** X on the row `(start, stop]` must be known at `start`. If an optional `measured_at` column is supplied, the checker errors when `measured_at > start`.
-- **sklearn compatibility matrix** (tested in the plan):
-  - tags: `requires_y`, a custom target type
-  - `n_features_in_`, `feature_names_in_`
-  - `check_estimator`, with explicit, documented exclusions for checks that assume a scalar `y`.
+## Part A — Simulation-based validation
 
-### Time grid and coarsening (D8)
-1. **Exact mode** (`ntime=None`): the grid is all unique event times.
-2. **Coarse mode** (`ntime=K`): choose K grid points from event-time quantiles, then transform every row *before* any counting:
-   - `start' = g(start)` and `stop' = g(stop)`, where `g(t)` is the smallest grid point `≥ t`.
-   - Drop rows where `start' == stop'`. Such a row carries no at-risk time on the grid. If it carries an event, the event moves to the id's previous row. That row already ends at the same grid point, because `g(prev stop) = g(start)`. If there is no previous row (the id entered and failed within one bin), the id is dropped and counted in a fit diagnostic.
-   - The statistic is then the exact LTRC log-rank on the coarsened data, including ties. Within-bin entry, event and censoring are fully defined by `g`.
-3. **v1 default is `ntime=None`.** Coarse mode is opt-in until benchmarks justify a default.
-4. Fixture tests put an entry, an event and a censoring inside one coarse bin and compare both modes against a delayed-entry reference (lifelines / R `survival`).
+### Approach 1: One big new "sim-validation" test suite from scratch
 
-### Core algorithm: LTRC log-rank with histograms
-On the (possibly coarsened) grid `t_1 < … < t_K`, for a node:
-- **At risk:** `Y_k = #{r : start_r < t_k ≤ stop_r}`.
-- **Events:** `d_k = #{r : event_r, stop_r = t_k}`. After coarsening, every `stop` with an event lies on the grid.
+Write a new, unified simulation harness from first principles, covering all estimators/outputs in one plan.
 
-**Index convention:**
-- `a_r` = first `k` with `t_k > start_r`.
-- `b_r` = first `k` with `t_k > stop_r`. `K` if none.
-- Row `r` is at risk for `k ∈ [a_r, b_r)`. If `a_r ≥ b_r`, it contributes nothing.
+- **Against**: ignores that `tests/sim.py` + three `bench/*_sim.py` families already do this per-slice, well, with predeclared pass rules. Duplicates work, risks drifting from the established fast/slow/bench three-tier convention, and the existing files already have Codex-reviewed methodology (`docs/plans/s18-plan.md`'s VIM-bias note, `rc-validation-plan.md`'s relevance-vs-direction lesson).
 
-**Per candidate feature:**
-1. Build a `bins × (K+1)` difference array: add `+1` at `(bin_r, a_r)` and `−1` at `(bin_r, b_r)`, then take a prefix sum over k. Events go into `(bin_r, idx(stop_r))`.
-   - Time: `O(n_node + bins·K)`. Memory: `bins·K` per feature being evaluated.
-2. Cumulative-sum over bins to get the left-child profiles; score each threshold in `O(K)`.
-3. **Sibling subtraction** (optional, benchmarked): accumulate rows only for the smaller child. This saves at most half of the row-accumulation work. It costs retained parent histograms for the evaluated features. No general "halves the work" claim.
-4. **Variance:** the hypergeometric log-rank variance, valid for the **integer unit-weight counts** used in v1. Weighted criteria are deferred until a weighted score and variance are specified.
+### Approach 2: Generalize the existing per-slice pattern, fill the two real gaps
 
-```rust
-pub trait SplitCriterion: Sync {
-    fn score(&self, left: &Profile, parent: &Profile) -> f64;
-}
-pub struct Profile<'a> { pub at_risk: &'a [f64], pub events: &'a [f64] } // len K, integer-valued in v1
-pub struct LtrcLogRank;
-impl SplitCriterion for LtrcLogRank {
-    fn score(&self, l: &Profile, p: &Profile) -> f64 {
-        let (mut num, mut var) = (0.0, 0.0);
-        for k in 0..p.at_risk.len() {
-            let (y, d, yl) = (p.at_risk[k], p.events[k], l.at_risk[k]);
-            if y < 2.0 || d == 0.0 { continue; }
-            num += l.events[k] - d * yl / y;
-            var += d * (yl / y) * (1.0 - yl / y) * (y - d) / (y - 1.0);
-        }
-        if var > 0.0 { num * num / var } else { 0.0 }
-    }
-}
+Treat the four existing sim suites as already-done validation; write a plan that (a) documents them as a coherent whole for the first time, (b) adds the two genuinely-missing checks research surfaced — PE score converging to its theoretical ceiling as n grows (Q3), and a closed-truth cross-check against `lifelines`/`scikit-survival` in addition to `rftvc` itself (Q5) — using the same fast-smoke/slow-pilot/manual-bench convention.
+
+- **For**: minimal new surface area, reuses a pattern that's already been through Codex review four times, keeps CI cost near-zero (fast smoke tests only in the merge gate, exactly like today).
+- **For**: directly answers the "is our implementation statistically valid" question with an inventory plus two new checks, rather than a from-scratch rebuild whose main value would be organizational, not statistical.
+- **Against**: less "impressive" as a single new deliverable; requires reading/understanding four existing files before writing anything new.
+
+### Approach 3: Approach 2, plus a convergence sweep (n → ∞) as a new capability
+
+Same as Approach 2, but add a genuinely new capability: a parametrized sweep (vary n, censoring rate) that plots/asserts monotone improvement in ISE/PE-score-gap, not just a single-n pass/fail. This is closer to a real "does the estimator converge" study than existing suites (which mostly run one n with R replications, not a range of n).
+
+- **For**: this is the strongest form of "statistically valid" — asymptotic behavior, not just single-n plausibility.
+- **Against**: real new computational cost (multiple n × multiple reps × multiple estimators); must live entirely in `bench/` (manual-run), not `slow`-marked pytest, per research's finding that even single-n R=10-20 sims are already `slow`-tier.
+
+**Recommendation: Approach 2 now, Approach 3's convergence sweep as an explicit follow-up slice inside the same plan, deferred/optional.** It gets the real statistical-validity gaps closed with low risk and reuses proven methodology; the convergence sweep is valuable but is genuinely new work (not "already exists, just needs assembling") and shouldn't block landing the cheaper wins.
+
+### Representative shape (PE-score-ceiling check, new)
+
+```python
+# bench/pe_score_convergence_sim.py (new, mirrors bench/s14_cr_sim.py's shape)
+def true_rate_score(hazard_fn, windows, ids, times) -> PEScore:
+    """Known-hazard PEScore ceiling: log-likelihood of the *true* piecewise rate
+    on the same windows the fitted model is scored on."""
+    ...
+
+def run(n_values=(200, 1000, 5000), n_estimators=500, seed=0) -> pd.DataFrame:
+    """For each n: fit SurvivalForestTV, compute PEScore vs true_rate_score's
+    ceiling, return gap-to-ceiling per n. Mirrors tests/sim.py's ISE pattern
+    but for PEScore instead of survival-curve ISE."""
+    ...
 ```
 
-### Leaf-size rule with ids that straddle a split
-- One id's intervals can route to both children, because X changes over time.
-- **Rule:** `ids(child)` = the distinct ids with ≥1 row in that child. An id **may count in both** children. A split is admissible only if `|ids(L)| ≥ min_ids_leaf`, `|ids(R)| ≥ min_ids_leaf`, and each child has at least `min_events_leaf` events.
-- **Implementation:**
-  1. Rank candidates by score.
-  2. Check the exact distinct-id counts for the top candidates, using a per-node id→(min_bin, max_bin) scan. That makes each check `O(n_ids_node)`.
-  3. Take the first admissible candidate.
-- Node diagnostics report both row counts and distinct-id counts.
+```python
+# tests/test_pe_score_convergence_truth.py (fast smoke tier)
+def test_true_rate_score_matches_numerical_integration():
+    """Closed-form true_rate_score vs numerical integration of the known
+    hazard — same pattern as test_cr_sim_truth.py, tolerance 1e-9."""
 
-### Dependence knobs
-| Param | Default | Meaning |
-|---|---|---|
-| `resample_unit` | `"id"` | or `"block"` (S10): id × time windows of width `block_length`, rows split at window boundaries, or windows of a `block_time` fit argument. `"row"` stays deferred |
-| `max_samples` / `bootstrap` | 0.632 of ids, without replacement / `False` | subsampling keeps OOB id-clean (D10) |
-| `min_ids_leaf` | 15 | distinct resampling units (ids, or id-blocks) per child (rule above); `"auto"` = max(15, √n_units) (D12) |
-| `min_events_leaf` | 3 | events per child |
-| `ntime` | `None` | exact; `K` = coarse mode (D8) |
-| `max_bins` / `max_features` | 255 / `"sqrt"` | |
-| `oob_score` | `False` | with `"id"`: a *new-subject* estimate. With `"block"`: a buffered block OOB (`oob_buffer`, default 1), an estimate for *held-out periods of training subjects* (S10, `docs/bench/s10-block.md`). Future-period claims require `RollingOriginSplit` or `GroupTimeSplit`; there is no automatic detection heuristic |
+@pytest.mark.slow
+def test_pe_score_gap_shrinks_with_n():
+    """One-sided: gap-to-ceiling at n=5000 < gap at n=200, R=10 reps."""
+```
 
-`row_weight` is **removed from v1**. Normalising per id or by overlap changes the estimand (review finding 4). Inverse-visit or overlap weighting can come back later as a separately specified estimand with exact per-row formulas.
+---
 
-### Prediction
-All methods take an explicit `times` grid and use the rows supplied for each id.
+## Part B — Conformal prediction
 
-1. **Per interval** `(start, stop]`: route X down each tree and add the leaf's Nelson–Aalen increments on grid points in `(start, stop]`.
-2. **Per id:** the cumulative hazard is `Λ(t) = Σ` over rows. Rows are contiguous by contract, so there are no gaps.
-3. **Prediction origin:** `origin=u` (default: the id's first `start`) returns the conditional survival `S(t | T > u) = exp(−(Λ(t) − Λ(u)))`.
-4. **Beyond the last `stop`:** `extrapolate="none"` returns NaN.
-   - `"locf"` is an opt-in *named scenario*: covariates stay at their last value.
-   - Alternatively, the user appends scenario rows for a specified future path. This is valid for external covariates only.
-5. **Ensemble:** `aggregate="hazard"` (the average of Λ over trees) is the default, with `"survival"` as an option. They are different ensemble quantities; the choice is validated by calibration in the bake-off slice. S8 kept `hazard`: `survival` averaging did not improve calibration on both landmark datasets, and it was worse on the known-truth simulation.
+### Approach 1: Full scope now — single-event + competing risks, horizon + full-curve
 
-### Landmark workflow (replaces the Pipeline idea)
-`make_landmark_data(df, id, start, stop, event, landmarks, horizon, history_features, step=None) -> LandmarkData(X, y, ids, groups, s)`.
+- **Against**: research found no settled competing-risks conformal-survival method in the literature (Q8/Q11) — this would mean either inventing a novel method (out of scope for a library feature, that's a paper) or shipping something not properly validated, which directly contradicts the point of this whole exercise (statistical validity). Reject.
 
-For each landmark `s`, write `T` for the event time, `C` for the censoring time, and `U = min(T, C)`:
-1. **Risk set:** ids with `U ≥ s`, i.e. event-free *and* uncensored at `s`. Ids that have not yet entered by `s` are excluded.
-2. **Row:** `start = 0`, `stop = min(U, s+w) − s`, `event = 1{T ≤ min(C, s+w)}`.
-3. **Features:** summaries of `H(s)` (information up to `s` only; a look-ahead check raises an error) plus `s`.
-4. **Role of `s`:**
-   - `s` is a covariate, so the forest can learn landmark-dependent effects by splitting on it (the forest analogue of a supermodel's `s`-interactions).
-   - It does **not** correct for selection or censoring.
-   - Validity rests on censoring being independent of `T` given `H(s)` and `s`. This is documented.
-5. With the clock reset there is no delayed entry *within* the landmark dataset. Selection into it is handled by conditioning on `U ≥ s`.
+### Approach 2: Single-event, horizon-based only, OOB-calibrated — ship now
 
-`LandmarkSurvivalForest(landmarks, horizon, history_features, **forest_params)`:
-- a meta-estimator whose `fit(df)` builds the landmark data internally and fits a `SurvivalForestTV`
-- `predict_risk(df_at_s, s)` returns `P(T ≤ s+w | T > s, H(s))`
-- it owns the joint transform of X, y, ids and groups, so it works with `landmark_cross_validate()`, which expands the splitter's groups and time blocks consistently.
+Expose `oob_cumhaz`/`oob_cause_cumhaz`-style per-row OOB curves as public API (or reuse the private call pattern `inspection.py` already relies on), add a `rftvc.calibration` module implementing weighted-conformal (IPCW-style, reusing the existing `KaplanMeierCensoring` building block per Q10) calibrated risk-at-horizon intervals for `SurvivalForestTV` only.
 
-It is not a sklearn `Pipeline`, and the docs say so.
+- **For**: matches the maturity of the literature (single-event general-right-censoring conformal survival is a converging, multi-paper-validated area per Q8) and the maturity of the codebase's own internals (OOB full-curve engine already unit-tested).
+- **For**: `predict_risk(X, horizon)` already exists as the exact shape to calibrate — no new prediction concept, just an interval around an existing one.
+- **Against**: doesn't cover competing risks or TVC-landmark estimators — a visible gap against [[rftvc-general-purpose]]'s "don't ship partial generality" lesson. Must be documented explicitly as a scoped-down v1, not silently partial.
 
-### Model selection & metrics
-- **`RollingOriginSplit(time_col, n_splits, test_size, gap)`:** errors if `gap < horizon` when used through `landmark_cross_validate`.
-- **`GroupTimeSplit`:** groups and time blocks together.
-- **Nested CV** is the documented default workflow.
-- **IPCW metrics** (`brier_landmark(s, w)`, `integrated_brier`):
-  - The censoring survival is estimated **within each training fold**, on the **landmark risk set** (`U ≥ s`), by KM of `C` on the time-since-`s` clock.
-  - Assumption: marginal independent censoring given being at risk at `s`. An optional user `censoring_model` gets the same fold and risk-set data.
-  - Positivity: weights truncated at `G ≥ 0.05` (configurable), with a diagnostic of how many weights were truncated.
-  - **Exact path:** when every test id in the `(s, w)` risk set has `U ≥ s+w` or an observed event before `s+w`, no IPCW is needed and plain scores are exact.
-- **`cindex_dynamic(kind="cumulative"|"incident", s, w)`, `calibration_table(s, w)`.**
+### Approach 3: Prototype/investigate only, no shipped code this pass
 
-## Validation strategy (feeds plan.md)
-1. **Oracles:**
-   - A single-node tree equals the delayed-entry Nelson–Aalen (lifelines).
-   - The score equals R `survdiff` for right-censored data only. For counting-process data it equals an independent naive reference (`tests/ref/logrank_ref.py`), because `survdiff` rejects counting-process input.
-   - Coarse mode equals the exact log-rank on pre-coarsened data.
-   - With no TVCs or truncation, results are close to sksurv RSF.
-2. **Simulations with known truth:** Cox-type TVCs, non-proportional hazards and interactions, left truncation, many vs few rows per id. Metrics: L2 distance to the true S, and landmark Brier score.
-3. **Benchmarks:**
-   - Datasets: PBC2 / `pbcseq`, Stanford heart transplant, a BTSCS case study, a ≥1M-row synthetic set.
-   - Comparators: lifelines Cox with TVCs, `LTRCforests`, `randomForestRHF` (optional), BoXHED 2.0, Approach B.
-4. **sklearn compatibility matrix tests.**
-5. **Performance targets** (set in S6 from `docs/bench/s6-perf.md`; M-series, 10 cores, 100 trees, p = 10). These are regression bounds, about 1.5× the measured values:
-   - `ntime=100`: 100k rows < 3 s; 1M rows < 35 s; peak RSS < 3.5 GB at 1M rows.
-   - Exact grid: 100k rows (K ≈ 64k) < 12 s; 1M rows < 180 s.
-   - Coarse mode keeps exact-mode test C within 0.005 on the benchmark data.
-   - Stored leaves dominated peak memory; S9 cut forest memory by ~60% and peak RSS at 1M rows to ~1.5 GB (`docs/bench/s9-leaf.md`).
+Write the design note (this document) plus a short spike script under `bench/` proving the OOB-calibration mechanism works numerically on a known-coverage synthetic case, but land no public API change yet — treat competing-risks and full-curve calibration as blocking a "v1" release of the feature until the literature or a follow-up research pass resolves them.
 
-## Risks & mitigations
-| Risk | Mitigation |
-|---|---|
-| Log-rank optimises separation, not calibration | pluggable criterion; S8 bake-off judged on landmark Brier score and calibration: grouped-likelihood and Poisson criteria tied with log-rank, KM-Gini was worse (`docs/bench/s8-bakeoff.md`) |
-| Exact grid slow on large K | coarse mode (D8, S6: 6× faster at 1M rows, same C) + O(1) updates [Sverdrup et al. 2025] as later optimisation |
-| Top-candidate id checks reject many splits | bounded retries; diagnostics; tune `min_ids_leaf` |
-| Leakage via user features | `measured_at` check; landmark look-ahead check; gap ≥ horizon check |
-| sklearn routing / check_estimator friction | explicit compatibility matrix; `ids` also accepted as a DataFrame column name |
-| Rust build friction | maturin abi3 wheels via cibuildwheel in CI |
+- **For**: matches what the user actually asked ("investigate whether we can include") rather than assuming a build decision was already made.
+- **Against**: less immediately useful; defers value.
 
-## Out of scope for v1
-- Competing risks and multi-state models.
-- Recurrent events beyond "first event after landmark".
-- Joint models for internal covariates.
-- Weighted criteria.
-- GPU, oblique splits, honest/causal forests.
+**Recommendation: Approach 3 for this pass (the user asked to investigate, not build), with Approach 2 as the concretely-scoped next step if the user wants to proceed.** Concretely: this design doc + a coverage-validation spike script (using the Part A simulation infra — a known-hazard DGP is exactly what's needed to check conformal coverage claims empirically) is the deliverable now. A `plan.md` slice for Approach 2 can be written next if you confirm you want to build it, following the same Codex-review-before-code discipline as every other slice.
 
-## Resolved user decisions (2026-09-25)
-- D10 Resampling: **subsample 0.632 of ids without replacement** (default); `bootstrap=True` option for parity benchmarks.
-- D11 Aggregation: **`aggregate="hazard"`** default (keeps conditional survival consistent across origins); `"survival"` option. Revisited in S8 and kept.
-- D12 Leaf size: **`min_ids_leaf=15`** default; `"auto"` = `max(15, sqrt(n_ids))`; tune by CV.
+### Representative shape (spike only, not shipped API)
 
-## Changelog
-- v2:
-  - D8: coarsening by snapping times (review K1).
-  - D5: meta-estimator instead of Pipeline (K2).
-  - Exact landmark row formulas and the role of `s` (K3).
-  - `row_weight` removed (K4).
-  - Index convention (m1); unit-weight variance (m2); softened sibling-subtraction claim (m3).
-  - Straddling-id leaf rule (m4); OOB only with `resample_unit="id"`, no heuristic (m5).
-  - D9: no LOCF by default (m6); IPCW fitted per fold and landmark risk set, with truncation (m7).
-  - `groups` vs `ids` (m8); compatibility matrix (m9); contiguous rows plus `origin`/`times` in prediction (m10).
+```python
+# bench/conformal_coverage_spike.py (new, exploratory — proves the mechanism,
+# not shipped API)
+def weighted_conformal_risk_interval(estimator, X_calib, calib_oob_cumhaz,
+                                       censoring_km, horizon, alpha=0.1):
+    """IPCW-weighted split-conformal lower/upper bound on risk-at-horizon,
+    calibrated on OOB rows (estimator.forest_.oob_cumhaz(...) internal call,
+    per research Q9). Candès/Lei/Wasserman 2021 + Davidov et al. 2025
+    general-right-censoring weighting."""
+    ...
+
+def check_coverage(n=2000, alpha=0.1, seed=0) -> float:
+    """Fit on tests/sim.py's known-hazard DGP, calibrate via OOB, check
+    empirical coverage on held-out data ≈ 1-alpha. This is the empirical
+    validity check for the conformal method itself, using Part A's
+    infrastructure."""
+    ...
+```
+
+---
+
+## Open decisions for the user before Stage 4 (plan.md)
+
+1. Part A: confirm Approach 2 (generalize + fill two gaps), with the n-sweep as optional/deferred — or do you want the sweep in scope now?
+2. Part B: confirm Approach 3 (investigate/spike only, no shipped API this pass) — or do you already want to commit to building Approach 2's scoped single-event feature?
+3. Should `plan.md` (Stage 4) cover both parts, or just Part A (with Part B's spike as a smaller standalone follow-up once you decide on question 2)?

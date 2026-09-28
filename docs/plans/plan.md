@@ -1,343 +1,109 @@
-# Implementation Plan: `rftvc`
+# Implementation Plan: Simulation-Based Statistical Validation + Conformal Prediction Spike
 
-Source of truth: `design.md` (v2, approved defaults, D1–D12). Each slice is vertical: Rust → Python API → tests, and mergeable on its own.
-Rule: after each slice, run the full test suite, tick the box, and note any deviations under the slice.
+Stage 4 of CRISPI. Input: `docs/plans/design.md` (Approach 2 for Part A, Approach 3 for Part B — both user-confirmed 2026-09-28), `docs/plans/research.md`. **Revised 2026-09-28 after `codex:rescue` plan review** — see "Codex review findings applied" at the end of each slice.
 
 ## Status
-- [x] S1: Walking skeleton — a single survival tree, right-censored, fixed covariates (branch `feat/s1-skeleton`)
-- [x] S2: Forest — id subsampling, rayon, hazard aggregation (branch `feat/s2-forest`)
-- [x] S3: Counting-process TVCs + left truncation (branch `feat/s3-tvc`)
-- [x] S4: Landmark workflow (branch `feat/s4-landmark`)
-- [x] S5: Model selection + metrics (+ id-level OOB) (branch `feat/s5-model-selection`)
-- [x] S6: Coarse grid mode + performance pass + benchmarks (branch `feat/s6-coarse-grid`)
-- [x] S7: sklearn compatibility matrix, DataFrame input, wheels, docs/case studies (branch `feat/s7-compat`)
-- [x] S8: Criterion + aggregation bake-off (branch `feat/s8-bakeoff`)
-- [x] S9: Leaf-storage slimming (branch `feat/s9-leaf-slim`)
-- [x] S10: Block resampling with its own OOB spec (branch `feat/s10-block-resampling`)
-- [x] S11–S14: Competing risks — plan and status in `cr-plan.md` (design: `cr-design.md`)
-- [ ] S16–S20: TVC foundation/importance/effects — plan and status in `tvc-plan.md` (design: `tvc-design.md`)
+- [ ] Slice 1: PE-score-oracle-gap convergence check  <-- CURRENT
+- [ ] Slice 2: lifelines cross-check against known truth (genuinely static DGP)
+- [ ] Slice 3: Validation inventory doc (evidence vs. claims)
+- [ ] Slice 4: Conformal-coverage spike (empirical-only, no theoretical guarantee claimed)
 
-Conventions: Python ≥3.10; Rust stable; `uv` for the Python environment; `pytest`, `hypothesis`; `cargo test`. Test oracles are lifelines and scikit-survival (dev dependencies), plus `tests/ref/logrank_ref.py`: an independent, deliberately naive O(n·K) LTRC log-rank reference (risk sets, events, numerator, hypergeometric variance, ties). Fixtures are generated once and committed as `.npz`. **Oracle conventions:** Nelson–Aalen uses `NelsonAalenFitter(nelson_aalen_smoothing=False)` with an explicit `timeline=` equal to the event grid; cumulative hazard is right-continuous (the value immediately after each event time). Statistical/benchmark tests are marked `@pytest.mark.slow` and are **not** merge gates. Setup: `git init` on branch `main`; slice work happens on `feat/sN-*` branches (commit only when the user asks).
+Each slice: own branch/PR, Codex plan review before code (per CLAUDE.md skill triggers / [[rftvc-dev-workflow]]), Codex diff review before merge.
 
 ---
 
-## S1: Walking skeleton (single tree, right-censored, exact grid)
+## Slice 1: PE-score-oracle-gap convergence check
+
+**Why:** research Q3 — no existing test checks whether `PEScore` approaches an oracle bound as n grows. This is the most direct "is the model statistically correct" check available.
+
+**Correction from plan review:** `PEScore.total` is a rate mixed `(1-alpha)` with a training-set null (default `alpha=0.01`, `metrics.py:715`) — an *unmixed* true-hazard log-likelihood is **not** the ceiling of this specific quantity, and there is no guarantee the oracle score upper-bounds every finite realization. The check must compare against an **oracle computed under the same mixing/reduction convention**, on a **fixed, independent evaluation set** (not the training fold), and treat convergence as a **replication-level mean-gap trend**, not a per-sample bound.
+
 **Files:**
-- `pyproject.toml`: maturin build, `rftvc` package
-- `rust/rftvc-core/{Cargo.toml, src/lib.rs, data.rs, grid.rs, criterion.rs, splitter.rs, tree.rs}`
-- `src/rftvc/{__init__.py, _estimator.py, _validation.py}`
-- `tests/{test_tree_oracle.py, test_validation.py}`; `rust/.../tests/logrank.rs`
-- `.github/workflows/ci.yml`: build and test on Linux and macOS
+- `bench/pe_score_convergence_sim.py` (new):
+  - `oracle_pe_score(hazard_fn, windows, ids, times, alpha) -> PEScore` — computes the *same* `piecewise_exponential_score` mixing/reduction (same `alpha`, same null-mixing formula in `metrics.py:715-783`) but feeding the **true** per-window rate from `hazard_fn` in place of the model's predicted `cumhaz`. This is the oracle under matching convention, not a raw unmixed log-likelihood.
+  - `run(n_values, n_estimators, n_eval, seed) -> pd.DataFrame` — for each `n` in `n_values`: draw a training set of size `n`, fit `SurvivalForestTV`; draw a **separate, fixed-size (`n_eval`), fixed-seed evaluation set reused identically across all `n`**; score the fitted model and the oracle on that same evaluation set with the **same `windows`/`event_windows` grid, fixed across all `n`** (compute the grid once from the eval set, not per training fit — closes the `zero_rate_share`-confounding risk research §3 flagged). Record `gap = oracle_score - model_score` per `n` per replication.
+- `tests/test_pe_score_convergence_truth.py` (new):
+  - `test_oracle_pe_score_matches_numerical_integration()` (fast, merge-gate tier) — `oracle_pe_score`'s per-window rate vs `scipy.integrate` numerical check, tolerance `1e-9`, pattern from `tests/test_cr_sim_truth.py`.
+  - `test_pe_score_mean_gap_shrinks_with_n()` (`@pytest.mark.slow`) — predeclared *before* running: mean `gap` over R=10 replications at the largest `n` < mean `gap` at the smallest `n`, one-sided t-test on the paired-replication differences (matching `tests/sim.py:95-99`'s convention). State the rule in the test docstring before the sim code is written.
 
-**Signatures:**
-- Rust:
-  - `Grid::exact(event_times) -> Grid`
-  - `Profile`, `trait SplitCriterion`, `LtrcLogRank` (as in design.md)
-  - `build_tree(data: &NodeData, params: &TreeParams, rng) -> Tree`
-  - `Tree::leaf_hazard(leaf) -> &[f64]`
-- Python:
-  - `SurvivalForestTV(n_estimators=1, max_features=None, min_ids_leaf=15, min_events_leaf=3, max_bins=255, random_state=None)`
-  - `.fit(X, y, ids=None)`: `y` is structured (`start`, `stop`, `event`). S1 accepts only `start == 0`.
-  - `.predict_cumulative_hazard(X, times)`
-  - `_validation.check_survival_y(y)`
+**Acceptance criteria:**
+- Fast test passes in default merge-gate suite.
+- Oracle and model are scored on the *same* held-out eval set and *same* window grid at every `n` — verified by an assertion in `run()` that windows are identical across `n` values, not just "the same code path."
+- Slow test's pass rule is stated in the docstring before the sim is implemented, not fit to results afterward.
 
-**Tests:**
-- A single-node tree (`max_depth=0`) matches `NelsonAalenFitter(nelson_aalen_smoothing=False)` on the event grid to within 1e-10, including tied-event fixtures.
-- The `LtrcLogRank` score equals R `survdiff` chi-square on 3 right-censored fixtures (ties included). `survdiff` is valid here because S1 has `start == 0`. It also equals `logrank_ref.py`.
-- The histogram splitter finds the same best split as a brute-force O(n²) Python reference, checked with hypothesis on small random data.
-- `check_survival_y` rejects `start ≥ stop`, NaN, and a wrong dtype.
+**Codex review findings applied:** oracle now uses matching alpha-mixing convention (not raw unmixed log-likelihood); scoring moved to a fixed independent eval set reused across `n`; windows/event_windows fixed across the sweep instead of re-derived per `n`; "ceiling" reframed as "oracle under matching convention," not an upper bound claim.
 
-**Accept:** CI is green on 2 OSes; `pip install -e .` works; the oracle tests pass.
+---
 
-**S1 done (2026-09-25). Deviations / notes:**
-- Rust is a workspace of two crates, not one: `rust/rftvc-core` (pure Rust, `cargo test`-able) and `rust/rftvc-py` (PyO3 cdylib `rftvc._core`). This is because pyo3 `extension-module` cannot link in `cargo test` on macOS.
-- `rand` is replaced by an in-crate SplitMix64 (`rng.rs`), so random streams are stable across dependency upgrades.
-- R fixtures are stored as JSON (`tests/fixtures/survdiff.json`), generated by `make_survdiff_fixtures.py`, not `.npz`.
-- `logrank_ref.py` also contains `nelson_aalen_ref` (delayed entry) for S3.
-- Node profiles use the node's **own** event times (`K_node`), not the global grid: cost `O(n log K + bins_used·K_node)`.
-- `max_bins` accepts 2..=256 (default 255).
-- In S1, `min_ids_leaf` counts rows (one row per id is enforced). Distinct-id counting arrives in S3.
-- Additional public API: `make_survival_y`, `apply`, `predict_survival_function`, `max_depth`.
-- Not yet: pickling of fitted estimators (the `_core.Tree` pyclass). Needed by S2 (joblib) / S7 (`check_estimator`).
-- CI is written but **not yet run**: there is no remote.
-- Split search checked against brute force: 60 hypothesis cases in CI, plus a one-off 2000-case stress run with 0 mismatches.
+## Slice 2: lifelines cross-check against known truth (genuinely static DGP)
 
-## S2: Forest
-**Files:** `rust/.../forest.rs`, `predict.rs`; `_estimator.py`; `tests/test_forest.py`.
+**Why:** research Q5 — `lifelines` is already a dev dependency used for real-data comparisons, never checked against a known-hazard DGP.
 
-**Signatures:**
-- Params: `n_estimators=500`, `max_features="sqrt"`, `resample_unit="id"` (the only v1 value; `"row"` is deferred and removed from the v1 public contract), `max_samples=0.632`, `bootstrap=False` (D10), `aggregate="hazard"|"survival"` (D11), `min_ids_leaf=15|"auto"` (D12), `n_jobs`.
-- `predict_survival_function(X, times)`, `predict_risk(X, horizon)`.
+**Correction from plan review:** `tests/sim.py`'s DGP has `z` redrawn every interval (`tests/sim.py:31-33`, an AR/time-varying covariate) — restricting the *model* to use only `x0` does not make the DGP's own conditional survival truth static, because `z`'s path still drives the actual hazard. A genuinely static comparison needs a **new DGP with a covariate fixed at baseline for each subject**, not a subsetted TVC one. Also corrected: `KaplanMeierFitter` ignores covariates entirely (not a fair comparator against a covariate-driven truth); `CoxTimeVaryingFitter` *does* handle TVC (contrary to the original plan's rationale for avoiding it) — the right static-case comparator is `lifelines.CoxPHFitter`.
 
-**Tests:**
-- Ids are subsampled whole: no id is split between in-bag and OOB (checked by instrumenting bags).
-- Deterministic under `random_state` for any `n_jobs`.
-- `hazard` survival ≤ `survival` survival pointwise (Jensen property).
-- `min_ids_leaf` resolution: `"auto"` gives 15 when n_ids ≤ 225 and ⌊√n_ids⌋ above. Boundary fixtures at n_ids = 224, 225, 226, 400.
-- `resample_unit` values other than `"id"` raise an error.
-- **Benchmark report (slow, not a gate):** GBSG2 against scikit-survival RSF. Committed fixed folds, seeds, preprocessing, parameter mapping (`min_ids_leaf` ↔ `min_samples_leaf`, one row per id) and prediction times. C-index and IBS via `sksurv.metrics`. Report the differences with a ±0.02 tolerance rationale.
-
-**Accept:** a 500-tree fit on GBSG2 takes under 5 s on 8 cores. This is a provisional bound, revisited in S6.
-
-**S2 done (2026-09-25). Deviations / notes:**
-- `max_samples=None` is the default. It resolves to 0.632 without bootstrap and 1.0 with it, so `bootstrap=True` alone gives a classic bootstrap (the plan had `max_samples=0.632`).
-- Per-tree survival under `aggregate="survival"` is `exp(-Λ_b)` (Nelson–Aalen based), not Kaplan–Meier. This keeps both rules on the hazard scale and makes the Jensen ordering exact.
-- Bags are not stored. Each is recomputed from its per-tree seed (`in_bag_ids`) for OOB (S5) and diagnostics.
-- Resampling draws whole ids through `Groups`, so it is ready for multiple rows per id. Fitting still requires one row per id until S3; the whole-id test becomes meaningful there.
-- Pickling works through a flat struct-of-arrays state (`FlatForest`). On load it validates offsets, index ranges and child ordering (no cycles).
-- `Forest` stores `n_features`; prediction rejects a wrong X width in Rust as well as in Python.
-- The S1 `_core.fit_tree` / `Tree` API is replaced by `_core.fit_forest` / `Forest`. The S1 oracle tests now run on a one-tree, full-sample forest.
-- CI triggers are trimmed to pushes to `main` plus PRs, so jobs no longer run twice.
-- **Benchmark (`docs/bench/s2-gbsg2.md`, M-series, 10 cores):**
-  - parity run ΔC = −0.002, ΔIBS = +0.001 against sksurv RSF
-  - fit time 0.04 s vs sksurv 0.28 s per fold
-  - Accept (< 5 s) met.
-
-## S3: Counting-process TVCs + left truncation
-**Files:** `_validation.py` (`check_counting_process`); `rust/.../splitter.rs` (entry/exit index convention, straddling-id leaf rule); `predict.rs`; `tests/test_tvc.py`, `tests/sim.py`.
-
-**Signatures:**
-- `fit(X, y, ids)` with general `start`.
-- `check_counting_process(y, ids, measured_at=None, gap_policy="error"|"split_id")`
-- `predict_*(X, y_rows, ids, times, origin=None, extrapolate="none"|"locf")`
-
-**Tests:**
-- A single node equals `NelsonAalenFitter(nelson_aalen_smoothing=False).fit(durations, events, entry=...)` on the event grid.
-- The log-rank score equals `logrank_ref.py` on delayed-entry fixtures with ties. (`survdiff` rejects counting-process data, so it is not used here.)
-- The index convention holds at boundary cases: `start` and `stop` exactly on grid points, and a row with no contribution.
-- Straddling ids: `|ids(L)|` and `|ids(R)|` match a brute-force distinct count; inadmissible splits are skipped. A fixture with one id straddling both children sits exactly at the resolved `min_ids_leaf` boundary: admitted at the value, rejected one below.
-- `origin=None` equals `origin=` the id's first `start`; with an explicit `origin=u`, `S(t | u)` equals `S(t)/S(u)` under hazard aggregation.
-- `extrapolate="none"` (the default) gives NaN beyond the last `stop`. `"locf"` equals the result of explicitly appending a row with the last covariates up to `max(times)`.
-- Appended scenario rows (a user-specified future path) change the prediction only after the last observed `stop`.
-- The checker catches gaps, overlaps, an event not on the last row, and `measured_at > start`.
-- **Simulation (slow, not a gate):** Cox-type TVC truth. The DGP and seeds are committed in `tests/sim.py`.
-  - Metric: integrated L2 error on S(t), using the trapezoid rule on a fixed grid up to the 90th percentile of follow-up.
-  - Comparison: 20 replications, paired against a fixed-covariate forest given baseline X only.
-  - Pass rule, declared in advance: the upper 95% bound of the mean paired difference (forest − baseline) is < 0.
-
-**Accept:** all oracle and unit tests pass; the simulation report is committed.
-
-**S3 done (2026-09-25). Deviations / notes:**
-- **Distinct-id counting is exact at every threshold, with no candidate ranking.** Each resampling unit's rows stay contiguous through stable partitioning, so a unit's lowest and highest bin come from one pass: `ids_left(b) = #{min_bin <= b}`, `ids_right(b) = #{max_bin > b}`. This is simpler and exact, replacing the design's "rank the top candidates, then check".
-- **Unit = position in the bag**, so bootstrap copies of an id are distinct units.
-- **Prediction API:** `predict_cumulative_hazard(X, times, *, intervals=None, ids=None, origin=None, extrapolate="none")` (also `predict_survival_function` / `predict_risk`).
-  - With `intervals`, the output has one row per subject, in first-appearance order.
-  - The result is the conditional `Λ(t) − Λ(origin)`.
-  - It is NaN for `t < origin`, and beyond the last `stop` unless `extrapolate="locf"`.
-- `aggregate="survival"` on paths averages each tree's *conditional* survival (in log space).
-- `check_counting_process` is public. It numbers ids by first appearance and, under `gap_policy="split_id"`, splits at gaps.
-- **Bug found and fixed: bindings silently misread strided and Fortran-ordered arrays.**
-  - Fields of a numpy structured array have a 17-byte stride, and the numpy crate returned wrong values for them.
-  - The bindings now require contiguous 1-d arrays and C-ordered `X`, and raise `ValueError` otherwise.
-  - The estimator always passed contiguous copies, so fitted models were unaffected. Only direct `_core` calls were.
-- **Simulation (`docs/bench/s3-tvc-sim.md`):**
-  - ISE 0.055 (TVC) vs 0.176 (fixed-covariate baseline); upper 95% bound of the paired difference −0.116. PASS.
-  - Simulator truth validated against 200k-subject empirical survival (max diff 0.003).
-
-## S4: Landmark workflow
-**Files:** `src/rftvc/landmark.py` (polars); `tests/test_landmark.py`.
-
-**Signatures:**
-- `make_landmark_data(df, *, id, start, stop, event, landmarks, horizon, history_features, step=None) -> LandmarkData(X, y, ids, groups, s)`
-- `LandmarkSurvivalForest(landmarks, horizon, history_features, **forest_params).fit(df).predict_risk(df_at_s, s)`
-
-**Tests:**
-- Row formulas: risk set `U ≥ s`; `stop = min(U, s+w) − s`; `event = 1{T ≤ min(C, s+w)}`. Checked on hand-built cases, including censoring before `s+w` and an event exactly at `s+w`.
-- A history feature that uses data after `s` raises an error.
-- `groups` are aligned with the stacked rows.
-- The outputs match a pandas reference implementation on random data (hypothesis).
-
-**Accept:** a `pbcseq` end-to-end example runs and gives risks in [0,1] for each landmark.
-
-**S4 done (2026-09-25). Deviations / notes:**
-- **Risk set is `U > s`, not `U >= s`.** A subject whose event or censoring happens exactly at `s` is not event-free past `s`, and would give a zero-length row. Entry requires first `start <= s`.
-- **Covariates "known at `s`"** are those on rows with `start <= s`, always. A later row stays unknown even if it was measured before `s`, because its existence reveals survival to its start. An earlier version used `measured_at <= s`, which was this existence leak; it was caught in review and fixed. `measured_at` is only validated (`<= start`), so every subject in the risk set has at least one known row.
-- **`history_features`:** a column name means its last value at `s`; `(column, agg)` takes `agg` from last, first, mean, min, max, sum, count. Feature names are `col` or `col_agg`; `landmark` is always the last feature.
-- **Look-ahead guard:** features on the `stop`, `event` or `id` columns raise. The builder only aggregates rows known at `s`, so an aggregation cannot reach past `s` by construction.
-- **`fit(..., layout="stacked")`** is new on `SurvivalForestTV` and `check_counting_process`. An id's landmark rows overlap on the reset clock, so ids only define resampling units; all rows of a subject enter a tree together.
-- **`LandmarkSurvivalForest(horizon, history_features, landmarks | step, forest=SurvivalForestTV(...), column names)`.** This is the meta-estimator form, with the unfitted forest passed as a parameter (sklearn-style), replacing `**forest_params`.
-  - `predict_risk(df, s)` returns a polars frame `[id, landmark, risk]`.
-  - `predict_survival_function(df, s, times)` returns `(ids, S)`.
-  - At prediction, subjects must have entered and be observed through `s`. If an event column is present, subjects with an event at or before `s` are dropped.
-- **Dependencies:** `polars` is a runtime dependency; pandas input is accepted through `pl.from_pandas` (no pyarrow needed).
-- **Fixture:** `tests/fixtures/pbcseq.csv`, exported from R survival 3.8-3. Rows with NA in the used columns are dropped (1,885 visits, 312 patients); visits are converted to a counting process (covariates apply until the next visit; death = event, transplant = censored).
-- **Checks:** row formulas on hand-built cases; a pandas reference (hypothesis, with and without `measured_at`); pbcseq end-to-end (risks in [0,1] only, since performance evaluation is S5); edge cases in the pbcseq conversion (a visit at or after `futime`, transplant = censored).
-- **Estimand, documented:** the stacked super-model treats every (subject, landmark) row as an observation in risk sets and leaf estimates, so subjects at risk at many landmarks weigh more. Only resampling and leaf sizes are per subject. Cluster-aware criteria or weights are future work, alongside the deferred weighting estimands.
-- **Prediction population:** subjects entered and observed through `s` (last `stop >= s`). This includes those whose data end exactly at `s`, the usual case for current data. Training needs `U > s` only because such a subject would have a zero-length row.
-
-## S5: Model selection + metrics
-**Files:** `model_selection.py`, `metrics.py`; `tests/test_model_selection.py`, `tests/test_metrics.py`.
-
-**Signatures:**
-- `RollingOriginSplit(time_col, n_splits, test_size, gap)`
-- `GroupTimeSplit(...)`
-- `landmark_cross_validate(model, df, cv, scoring)`, which does the gap ≥ horizon check.
-- `brier_landmark(y_test_lm, risk, s, w, *, y_censor_train_lm=None, censoring_estimator=None, g_min=0.05)`
-  - Pass exactly one of `y_censor_train_lm` or `censoring_estimator`. Either way, the censoring model is fitted only on training-fold landmark outcomes: restricted to `U ≥ s`, on the reset clock.
-  - `landmark_cross_validate` supplies `y_censor_train_lm` automatically.
-- `integrated_brier`, `cindex_dynamic(kind=...)`, `calibration_table`
-- `oob_score=True` → `oob_score_` (id-level; an error unless `resample_unit="id"`)
-
-**Tests:**
-- No test time falls inside the train window plus the gap; `gap < horizon` raises an error.
-- Parity fixture: the same train/test arrays and survival probabilities go to `brier_landmark` and to `sksurv.metrics.brier_score(survival_train, survival_test, estimate, times)`. The fixture keeps `G` well above `g_min`, and they must match to 1e-10. Truncation is tested separately.
-- The exact (no-IPCW) path is used when follow-up is complete.
-- The truncation diagnostic reports how many weights were clipped.
-- The censoring model is fitted only on training-fold data (spy test).
-
-**Accept:** a nested rolling-origin CV example runs on the BTSCS case-study data.
-
-**S5 done (2026-09-25). Deviations / notes** (slice plan and review log: `s5-plan.md`):
-- **Metrics are per landmark on the reset clock**, so `s` is dropped from the metric signatures: `brier_landmark(y_test, risk, w, *, y_censor=None, censoring_estimator=None, g_min=0.05, return_info=False)`; likewise `integrated_brier(y, surv, times)`, `cindex_dynamic(y, risk, w, kind)`, `calibration_table(y, risk, w, n_bins)`. They are plain right-censored metrics (`start == 0`).
-- **IPCW source (user decision after plan review):** in `landmark_cross_validate`, `G_s` is a reverse KM fitted on **the test fold's risk set at each landmark** (pec/riskRegression convention). Time splits never have training data at a test landmark, so "training fold at `s`" was impossible; pooling earlier landmarks would assume stationary censoring. `G_s` sees outcomes only, never predictions. The spy test checks it sees exactly that landmark's test outcomes.
-- **Weighting conventions:** cases `event & stop <= w` weighted `1/G(stop−)`; controls `stop >= w` weighted `1/G(w−)`. Left limits make administrative censoring at `w` (every surviving landmark row) a control. sksurv parity (1e-10) holds when no test non-event has `stop == w` and no censoring time coincides with a test `stop` or `w`; the fixtures ensure that.
-- **Exact path:** when no test subject is censored before `w`, weights are 1 and no censoring model is used (checked with an exploding estimator).
-- **`cindex_dynamic`:** `"cumulative"` = cumulative/dynamic AUC at `w` (sksurv parity); `"incident"` = integrated incident/dynamic concordance over `(0, w]` (Heagerty & Zheng), estimated by Uno's truncated C (sksurv parity). Events at exactly `w` count as cases (sksurv uses `< tau`).
-- **`calibration_table`** is descriptive: `1 − KM(w)` per quantile bin assumes independent censoring within bins.
-- **New public helpers:** `metrics.concordance_index_cp` (counting-process C with time-varying risks; equals R `concordance(Surv(start, stop, event) ~ risk, reverse=TRUE)` on committed fixtures, and Harrell's C for `start == 0`), `metrics.KaplanMeierCensoring` (sklearn-cloneable; `predict(times, left=...)` is the `censoring_estimator` protocol). `check_survival_y(..., require_events=False)` for metric inputs.
-- **Splitters (time in model units):** `RollingOriginSplit(n_splits, *, test_size, gap, time_col=None)`: right-closed test windows stacked back from the last time; train = times `<= min(test) − gap`. `GroupTimeSplit` crosses `GroupKFold` folds with those windows (no group on both sides). Empty folds raise.
-- **`landmark_cross_validate(model, df, cv, scoring, *, horizon, n_times, censoring_estimator, g_min, param_grid, inner_cv, refit)`:** splits the stacked landmark rows by `s` (groups = ids). Time splitters: `gap >= model.horizon` is enforced and the training frame is administratively censored at the earliest test landmark (the fit never sees later data; checked by a spy). Other splitters must keep ids disjoint (new-subject CV, e.g. `GroupKFold`). Nested CV via `param_grid` + `inner_cv`, selecting by mean `refit` score. Returns a polars frame per (fold, landmark) with counts (`n`, `n_cases`, `n_censored`, `n_clipped`) and scores; a score that is undefined at a landmark (e.g. no cases) is NaN.
-- **OOB:** `oob_score=True` gives `oob_prediction_` (per-row ensemble mortality `Σ_k Λ(t_k | x_row)` over trees without the row's id; Rust `Forest::oob_mortality`, bags recomputed from seeds) and `oob_score_ = concordance_index_cp` (rows of the same id never compared). Checked against a manual per-tree oracle from leaf profiles. Rows of ids in every bag are NaN and left out with a warning; no OOB id at all raises. `gap_policy="split_id"` that actually splits an id raises (segments are resampled separately, so OOB would leak).
-- **Accept dataset:** there is no BTSCS dataset in the repo yet, so the example uses a simulated unit×period panel (`tests/sim_panel.py`: staggered entry, AR(1) external covariate, first onset only). `bench/s5_nested_cv.py` → `docs/bench/s5-nested-cv.md`: 3 outer × 2 inner rolling-origin folds, 2,000 units, ~2 s; C/D AUC ≈ 0.70. A real BTSCS case study remains S7.
-- `concordance_index_cp` is a Python Fenwick sweep, `O((n + E) log n)`; a Rust port can come with S6 if profiling asks for it.
-
-## S6: Coarse grid + performance
-**Files:** `grid.rs` (`Grid::quantile(K)` + snapping per D8); `splitter.rs` (sibling subtraction, benchmarked); `benches/`; `bench/compare.py`.
-
-**Tests:**
-- **Table-driven D8 fixtures** assert the exact coarsened rows `(id, start', stop', event)` and the diagnostic count for:
-  - a non-first collapsed event row, whose event moves to the prior row;
-  - a first-row collapsed event, where the id is dropped and counted;
-  - in-bin entry and in-bin censoring.
-- The single-node cumulative hazard on coarsened data equals `logrank_ref.py`/lifelines applied to **hand-constructed** coarsened rows (an independent oracle, not a second implementation of snapping).
-- Coarse mode equals exact mode run on those hand-constructed rows.
-
-**Accept:**
-- A profiling report exists (`docs/scratch/perf.md`).
-- Fit time and peak memory against scikit-survival RSF at n = 10k/100k/1M rows are recorded.
-- Performance targets are written back into design.md.
-
-**S6 done (2026-09-25). Deviations / notes** (slice plan and review log: `s6-plan.md`):
-- **`ntime=K` (coarse mode, D8).** The grid is the inverse-CDF quantiles of the event times at `j/K` (≤ K points, each an event time, the last the maximum).
-  - **Clarifies D8: the snapping grid also includes the earliest `start`.** With event points alone, `g(0) = t_1` would delay every subject entering at 0.
-  - Other entries round up: an entry inside `(t_{k−1}, t_k]` is at risk from `t_{k+1}`. Censoring inside a bin counts as at risk through the bin end, as in discrete-time conventions.
-  - Times past the last grid point are clamped to it, which leaves every risk set unchanged.
-- **Chains vs resampling groups.** Collapsed rows are dropped per *chain*: an id's contiguous rows, or each row when `layout="stacked"`. A dropped event moves to the chain's previous kept row, or is lost and counted.
-  - Diagnostics: `coarse_grid_`, `n_coarsen_dropped_rows_`, `n_coarsen_lost_events_`.
-  - `n_ids_`, `min_ids_leaf_` and `n_draw_` are resolved after coarsening.
-  - `oob_prediction_` keeps the original rows (NaN for dropped ones); `oob_score_` uses the kept rows and their coarsened outcomes.
-- **Oracles:**
-  - table-driven D8 fixtures, including stacked chains;
-  - a naive Python coarsening reference (`tests/ref/coarsen_ref.py`, hypothesis);
-  - single-node Λ equals `nelson_aalen_ref` and lifelines on hand-coarsened rows;
-  - coarse forest (and its OOB) equals an exact forest on reference-coarsened rows, to 1e-12.
-- **Performance pass** (`docs/scratch/perf.md`); trees are unchanged by each step:
-  - a precomputed log-rank node scorer (`SplitCriterion::node_scorer`, multiply-adds only);
-  - bin-by-bin accumulation into one O(K) difference array, with prefix sums only for admissible thresholds;
-  - node profile reuse, O(1) grid lookup tables and a single gather of each feature's bins per node.
-  - Exact mode at 100k rows: 19.4 s / 2.6 GB → 10.2 s / 0.46 GB.
-- **Sibling subtraction not implemented:** row accumulation was ~3% of the profile, and subtraction is unspecified with node-local grids and per-node feature sampling.
-- **Benchmarks (`docs/bench/s6-perf.md`, `bench/compare.py`),** matched bootstrap settings, 100 trees, 10 threads:
-  - 10k rows: rftvc 0.5 s (exact) / 0.15 s (`ntime=100`) vs sksurv RSF 47 s (7.3 GB; ~73 GB projected at 100k; `low_memory=True` timed out at 100k after 30 min), with equal test C.
-  - rftvc at 1M rows: 113 s exact, 18 s coarse, 2.3–2.4 GB.
-  - Coarse C is within 0.002 of exact at every size.
-- **Targets** are written into design.md (Validation strategy 5).
-- **Deferred:** leaf storage (drop `d`/`y` from fitted leaves; this changes `leaf_profile` and the pickle format). Done in S9. The default stays `ntime=None` (D8.3); S8's bake-off can revisit it.
-
-## S7: Compatibility, packaging, docs
 **Files:**
-- `_estimator.py`: tags, `n_features_in_`, `feature_names_in_`, `set_fit_request(ids=True)`, narwhals input.
-- `tests/test_sklearn_compat.py`: `check_estimator` with a documented exclusion list.
-- `.github/workflows/wheels.yml`: cibuildwheel, abi3.
-- `docs/`: user guide covering the three data views and the choice of error estimator (new subjects vs future periods); case studies for PBC2 and BTSCS.
+- `bench/lifelines_truth_check.py` (new):
+  - A new closed-form hazard `hazard(x) = lambda0 * exp(beta * x)` (Weibull or exponential baseline, single **static** covariate `x` fixed per-subject at t=0 — no time-varying component), with `true_survival(t, x)` computed in closed form (reuse `tests/sim.py:64`'s `S(t) = exp(-Λ(t))` pattern, but for the static hazard).
+  - Predeclare, in the module docstring, before any results: train/test split sizes, the evaluation time grid, `SurvivalForestTV`/`CoxPHFitter` hyperparameters, number of replications, and the pass rule.
+  - Fit `SurvivalForestTV` and `lifelines.CoxPHFitter` on the same static-covariate data; compare each to `true_survival` via ISE (same metric convention as `tests/sim.py`). To avoid instability from dividing by a near-zero best-observed ISE (plan-review finding), use an **additive tolerance band** (`rftvc_ISE <= best_ISE + fixed_epsilon`, epsilon predeclared and justified relative to typical ISE magnitude at the chosen n) rather than a multiplicative ratio.
+- `tests/test_lifelines_truth.py` (new, `@pytest.mark.slow`) — asserts the predeclared additive-tolerance rule over R replications with a fixed seed.
 
-**Accept:** wheels install on Linux, macOS and Windows; the compatibility matrix is documented; docs build.
+**Explicit scope note (module docstring):** single-event, genuinely static-covariate case only. Does not exercise TVC or competing risks — those stay covered by Slice 1 and the existing `bench/*_sim.py` suites. `CoxPHFitter`, not `CoxTimeVaryingFitter`, is the correct comparator here specifically *because* the DGP is static; a TVC cross-check against `CoxTimeVaryingFitter` is explicit future work, not this slice.
 
-**S7 done (2026-09-25). Deviations / notes** (slice plan and review logs: `s7-plan.md`):
-- **Inputs (narwhals, D7):**
-  - `X` may be a pandas, polars or pyarrow DataFrame, which sets `feature_names_in_`; names are checked at predict.
-  - `ids` may name a column of `X`; that column is never a feature and is dropped at predict.
-  - `y` and `intervals` may be DataFrames.
-  - Dependencies: `scikit-learn>=1.6` (tags API, `expected_failed_checks`) and `narwhals>=1.30`.
-- **New estimator methods:** `predict` (ensemble mortality risk score, the sksurv convention) and `score` (counting-process concordance). With these, `Pipeline`, `cross_validate` and `GridSearchCV` work. `ids` routes via `set_fit_request` / `set_score_request`.
-- **Compatibility matrix:**
-  - `check_estimator` passes every check that does not build a numeric `y`.
-  - The 23 that do are declared expected failures. Each maps to a survival-adapted test in `tests/test_sklearn_compat.py`.
-  - The docs table is generated from that mapping.
-  - `LandmarkSurvivalForest`: `clone`, nested params and pickling are tested directly.
-- **Library fix (plan review): `gap_policy="split_id"` no longer changes the resampling unit.** `CountingProcess` now separates chains (`group`: contiguity, coarsening, paths) from resampling units (`unit`: the original id). Fitting, leaf-size counts and OOB use `unit`, so the S5 OOB guard is removed.
-- **Wheels:** `wheels.yml` uses `PyO3/maturin-action`, not cibuildwheel (deviation), to build abi3 wheels for Linux x86_64/aarch64, macOS arm64/x86_64 and Windows x64, plus an sdist. They are installed from the built files only and smoke-tested on 5 runners × Python 3.10/3.13. Nothing is published.
-- **Docs:** Sphinx + numpydoc + pydata theme (user decision), in `docs/source`. They cover a user guide (three data views, time grid, path prediction, error-estimate choice), the API reference, the compatibility matrix and the case studies. A new `docs` CI job runs `sphinx-build -W`, with a `docs` dependency group.
-- **Case studies** (scripts in `examples/`, results committed as CSV):
-  - **PBC2 (`pbcseq`):** new-patient CV at landmarks 1–4 y, horizon 2 y. Landmark super-model Brier 0.079 / AUC 0.88; counting-process forest (LOCF after s) 0.085 / 0.87; Kaplan–Meier 0.112.
-  - **BTSCS (user decision): Cunningham & Lemke (2013) war-duration data,** the basis of the author's thesis (Ciflikli 2018).
-    - Downloaded on demand with a pinned SHA-256, not redistributed (no licence stated).
-    - Preprocessing follows `stset`/`stcox`, with two stated departures: the onset is the war's earliest `clstartdate`, and 7 overlapping rows are re-started.
-    - 280 of 382 wars kept after listwise deletion.
-    - New-war CV C: forest 0.636 vs Cox 0.654 (reported as found); OOB 0.626.
-    - The landmark model was dropped for BTSCS because `make_landmark_data` does not support gaps; PBC2 shows the landmark workflow.
-- `person_period.py` (design.md) is deferred.
+**Acceptance criteria:**
+- DGP's covariate is fixed per-subject at simulation start — verified by an assertion/test that no covariate value changes across a subject's rows.
+- Pass rule (additive tolerance, its epsilon, and why) stated in the module docstring before the comparison code.
 
-## S8: Bake-off (research slice)
-**Files (as planned; superseded, see "S8 done"):** `bench/criteria/` (numba prototypes: RHF-style hazard likelihood, Poisson, horizon-Brier); `docs/scratch/bakeoff.md`. Delivered: Rust prototypes and `bench/criteria/` (removed after the decision; history `a49cf55`), write-up `docs/bench/s8-bakeoff.md`.
-
-**Scope:** criteria × aggregation (`hazard`/`survival`) × datasets, all under nested CV. Primary metric: landmark Brier score and calibration.
-
-**Accept:** a written recommendation; the winning criterion is ported to Rust behind `SplitCriterion` (its own slice if substantial); D11 is revisited.
-
-**S8 done (2026-09-26). Deviations / notes** (slice plan, pre-registered rule and review log: `s8-plan.md`; results: `docs/bench/s8-bakeoff.md`):
-- **Prototypes in Rust, not numba** (plan review): every candidate is a function of node summaries the splitter already builds.
-  - `Profile` gained `times`, `exposure` (person-time) and `n_units`; `SurvData` gained `duration`.
-  - `SplitCriterion::score` takes the right child's unit count, because units may straddle a split.
-  - `fit_forest` takes the criterion. Log-rank stays bit-identical at +3–4% fit time. These stay as the extension point (user decision).
-- **Candidates:**
-  - `grouped_lik`: grouped-time binomial likelihood;
-  - `poisson`: constant hazard per node over person-time;
-  - `km_gini`: a KM Gini heuristic at τ. It replaced the planned "horizon-Brier", which is not a Brier objective under censoring.
-- **Protocol:**
-  - landmark nested CV on PBC2 and the simulated panel, plus core-forest runs on `sim.py` (known truth) and the war data;
-  - subject-cluster bootstrap and paired t-intervals;
-  - a decision rule fixed before the runs.
-- **Result: nothing adopted.** `logrank` stays the only criterion and `aggregate="hazard"` stays (D11).
-  - `grouped_lik` / `poisson` tie with log-rank and are slightly worse on `sim.py`.
-  - `km_gini` barely splits landmark stacks (straddling units).
-- **Removed after the decision:** the challengers, `split_criterion` / `criterion_horizon` and the harness (history: `a49cf55`).
-- **Kept:** `landmark_cross_validate(return_predictions=True)`, which returns the out-of-fold rows behind every score.
-- Output: `docs/bench/s8-bakeoff/` (CSVs, `decisions.csv`, run log). Full run 395 s.
+**Codex review findings applied:** replaced the TVC-subsetted DGP with a genuinely static one; swapped `KaplanMeierFitter` (no covariates) for `CoxPHFitter` (correct static comparator); corrected the mischaracterization of `CoxTimeVaryingFitter`; replaced the ratio-to-best-ISE rule with an additive-tolerance rule to avoid near-zero-denominator instability.
 
 ---
 
-## S9: Leaf-storage slimming
-**Files:** `tree.rs` (flat leaf storage), `flat.rs` (pickle format v2), `rftvc-py/src/lib.rs`; `bench/s9_leaf.py`; `docs/bench/s9-leaf.md`.
+## Slice 3: Validation inventory doc
 
-**Accept:** predictions bit-identical to S8; forest memory at 1M rows falls ≥ 50%; old and corrupt pickle states rejected without panics.
+**Why:** research §1/§7 — assemble what's already validated in one place, and now, per plan review, be explicit about what each check does and doesn't prove.
 
-**S9 done (2026-09-26). Deviations / notes** (slice plan and review log: `s9-plan.md`; results: `docs/bench/s9-leaf.md`):
-- Leaves keep only event-time indices and the cumulative hazard, stored flat per tree (offsets + two arrays). `d` / `y` are gone; `Leaf` and the unused `Tree::leaf_hazard` are removed.
-- `forest_.leaf_profile(tree, leaf)` returns `(event_times, cumhaz)`. `forest_.nbytes` gives the forest's heap size.
-- Pickle state v2 (`format_version = 2`, `cumhaz` in place of `d`, `y`). Pre-S9 states are rejected ("refit the model"), not migrated: the package is pre-release.
-- The loader now also rejects non-finite or unsorted grids and impossible scalars (e.g. `n_features = 0`, which used to panic in prediction). These were plan-review findings; they predate S9.
-- At 1M rows: forest memory −59–61%; peak RSS 2.0–2.3 → 1.5 GB (one row per id) and 1.4 → 1.0–1.1 GB (TVC); pickles −23–31%; fit time unchanged.
+**Correction from plan review:** `tests/test_sim.py` checks `SurvivalForestTV` against a *fixed-covariate baseline*'s relative performance, not an independent truth-check of the generator itself (the original plan's Slice 3 draft overstated this). The inventory must state each check's **actual assertion**, not a general "validates X" claim, and note blind spots (manual-only bench runs that aren't gated in CI at all, scenarios never simulated).
 
----
+**Files:**
+- `docs/plans/simulation-validation-plan.md` (new) — structured like `rc-validation-plan.md`: scope framing, numbered Decisions, Tasks checklist tied to Slices 1-2.
+- `docs/plans/simulation-validation-findings.md` (new) — one row per existing + new check, with columns: **what it actually asserts** (verbatim-close to the test's real assertion, not a paraphrase upward), DGP used, pass rule, fast/slow/manual-bench tier, and **known blind spots** (e.g. "manual-only, not CI-gated," "single scenario, not swept over censoring rates").
 
-## S10: Block resampling with its own OOB spec
-**Files:** `_blocks.py` (splitting, units, OOB sets), `_estimator.py`, `landmark.py`, `forest.rs` / binding (`oob_mortality` with per-row unit sets); `tests/test_blocks.py`; `bench/s10_block.py`; `docs/bench/s10-block.md`; user guide "Choosing the error estimate".
+**Acceptance criteria:**
+- Every existing `bench/*_sim.py` + `tests/test_*_sim_truth.py` pair listed with its actual assertion (verified against the test's real code, not summarized from memory) and at least one blind spot.
+- Document does **not** claim to prove general statistical validity — it states, per the plan-review finding, that passing every listed check does not rule out bugs outside the tested scenarios, and lists what scenarios are *not* covered.
 
-**Accept:** block OOB is correct against a first-principles reference and approximately matches conditional refits; its estimand is documented and contrasted with new-subject and future-period estimates.
-
-**S10 done (2026-09-26). Deviations / notes** (slice plan, user decisions and review log: `s10-plan.md`; results: `docs/bench/s10-block.md`):
-- `resample_unit="block"` with `block_length`. Blocks are an id's person-time in `(kL, (k+1)L]`, and rows are split at boundaries. A `block_time=` fit argument forms blocks on another clock, with no splitting; it is required for stacked layouts, and `LandmarkSurvivalForest` passes `s`. `min_ids_leaf` / `max_samples` count blocks (`n_units_`).
-- `block_time` was planned as deferred; the plan review made it necessary, because stacked rows all start at 0.
-- Buffered block OOB (`oob_buffer`, default 1) estimates held-out periods of training subjects. `oob_n_trees_` gives each row's ensemble size. The engine's `oob_mortality` takes per-row unit sets; id-mode results are unchanged.
-- Oracles: one block per id is bit-identical to id resampling; one block per row equals row units. Splitting leaves the Nelson–Aalen estimate unchanged.
-- Guards (diff review): block indices must stay below 2**52 (exact `float64` boundaries), and `oob_buffer` is capped.
-- Bench: OOB approximately matches conditional refits (these re-bin features on reduced data). On landmark stacks, `h = 0` leaks (C 0.891 vs 0.837 new-patient) and `block_length >= horizon` with `h = 1` does not (0.836). `LandmarkSurvivalForest` warns when `block_length * oob_buffer < horizon`.
+**Codex review findings applied:** corrected `test_sim.py`'s claimed assertion; replaced the original "reader can answer what would fail if the Rust core had a bug" acceptance criterion (too broad, per review) with an explicit per-check blind-spots column and an explicit non-completeness statement.
 
 ---
 
-## Deferred (post-v1)
-- O(1) log-rank updates (Sverdrup et al. 2025).
-- Weighted criteria / overlap weights.
-- Multi-state models (competing risks are done: S11–S14, `cr-plan.md`; cause codes are generic labels, C8).
-- Recurrent events.
+## Slice 4: Conformal-coverage spike (empirical investigation only, no shipped API, no theoretical guarantee claimed)
+
+**Why:** design.md Part B Approach 3 (user-confirmed) — investigate, don't ship.
+
+**Correction from plan review (substantial — original spike was underspecified on exactly the points that matter for a conformal method):**
+1. **Target must be named explicitly.** This spike targets **P(event by horizon | X)**, the true conditional risk at a fixed horizon — not survival time itself and not the raw censored event indicator. State this in the module docstring.
+2. **OOB is not an independent split-conformal calibration set**, and the plan must not claim a formal split-conformal coverage guarantee. `oob_cumhaz`'s internal call path (`inspection.py:120-133`) goes through `estimator._rebuild_design(X, y, ids, ...)`, which requires the **original fit-time data** (it fingerprint-checks against it) and returns OOB predictions **for the fitted training rows**, not for an arbitrary external `X_calib`. So: calibration in this spike happens **on the training set's own OOB rows** (one calibration observation per training subject, using each subject's `oob_cumhaz` at `horizon`), not on a separately-passed calibration split. Rows with `oob_n_trees_ == 0` are excluded from calibration (mirrors how `oob_score_` already excludes them, `_estimator.py:639-648`). A genuinely fresh, non-training test set is then scored with ordinary `predict_risk(X_test, horizon)` (not OOB) to check coverage.
+3. **Censoring-adjustment weighting rule must be stated concretely**, not just "IPCW-style": use `rftvc.metrics.KaplanMeierCensoring` (reverse-KM censoring-survival estimator, `metrics.py:51-78`) to weight calibration residuals by `1/Ĝ(min(T_i, horizon))`, following the general-right-censoring weighting scheme research Q8 identified across the literature (Candès/Lei/Wasserman 2021 and its 2025 general-right-censoring extension) — this is a documented, specific rule, not left to implementation-time invention.
+4. **Coverage check must use repeated simulations with reported uncertainty**, not a single seed. `check_coverage` runs R≥30 independent replications at each `alpha`, reports mean empirical coverage **and** a Monte Carlo confidence interval on that mean (e.g. normal approximation over replications), not a single point estimate.
+
+**Files:**
+- `bench/conformal_coverage_spike.py` (new, exploratory, `src/rftvc/` untouched):
+  - Module docstring states up front: target is `P(event by horizon | X)`; calibration set is training-set OOB rows (not an external split); this is an **empirical coverage investigation**, not a claim of a formal split-conformal guarantee (OOB rows are not i.i.d.-exchangeable with a fresh calibration draw in the classical sense); single-event `SurvivalForestTV` only, non-TVC (reuse Slice 2's static DGP so the target risk has a clean closed form to validate against); a "coverage does not hold" or "inconclusive" result is an acceptable, reportable outcome, not a failure of the slice.
+  - `weighted_conformal_risk_interval(fitted_estimator, horizon, alpha) -> (lower, upper) per test row` — calibrates on `fitted_estimator`'s own training-set OOB rows internally (per point 2 above; no `X_calib` argument, since there is no separable calibration split in this design), applies `KaplanMeierCensoring`-based weighting (per point 3), returns bounds for `predict_risk(X_test, horizon)` rows passed in.
+  - `check_coverage(n_train, n_test, alpha, n_reps=30, seed=0) -> dict` — R independent replications on Slice 2's static known-hazard DGP; each replication: fit, calibrate on OOB, predict+bound on fresh test draw, record empirical coverage against the DGP's true `P(event by horizon | X)`; returns mean coverage, MC confidence interval, and per-replication raw values (for later inspection, not just the summary).
+- No changes to `src/rftvc/`.
+
+**Acceptance criteria:**
+- `check_coverage` reports mean coverage ± an explicit Monte Carlo CI at 2-3 `alpha` values, R≥30 replications each — not a single-seed point estimate.
+- Findings are written up regardless of outcome (coverage holds, coverage fails, or inconclusive) — per design.md's investigate-only framing, "it doesn't work at this n" is a valid, useful result.
+- Module docstring explicitly disclaims a formal split-conformal guarantee and states the exact target, calibration-set definition, and weighting rule (points 1-3 above) before any code that uses them.
+
+**Codex review findings applied:** named the calibration target explicitly; replaced the unworkable `X_calib`-based signature with OOB-on-training-rows calibration matching how `_rebuild_design`/`oob_cumhaz` actually work; specified the exact IPCW-style weighting rule instead of leaving it to invent at implementation time; replaced the single-seed `±0.05 at n=2000` criterion with repeated-replication coverage + explicit uncertainty reporting; removed the implied split-conformal theoretical guarantee.
+
+---
+
+## Notes for implementation-stage context recovery
+
+- Every slice reuses existing building blocks (`KaplanMeierCensoring`, the `slow`/`network` pytest marker convention, `oob_cumhaz`'s existing private call pattern via `_rebuild_design`) — but Slice 2 and Slice 4 now require **new, genuinely static DGPs** (not reuse of `tests/sim.py`'s TVC one), per the plan-review correction. Don't silently fall back to the TVC DGP because it's already there — that was the mistake this revision fixes.
+- Slice 4 explicitly does not touch `src/rftvc/` and does not claim a formal conformal guarantee — if implementation drifts toward either, that's a plan deviation requiring a note and a check-in with the user.
+- This plan went through one round of `codex:rescue` plan review (2026-09-28) before any code was written; all five findings from that review are applied above, each tagged "Codex review findings applied" in its slice.
