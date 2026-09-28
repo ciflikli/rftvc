@@ -26,9 +26,15 @@ S19's landmark-importance scenarios, remain open — the same manual-only gap,
 explicit future work, not closed by this slice.
 
 Pilot (seeds 10000-10009, 10 replications, this module's own reduced scale;
-not the gate's own seeds 0-14): `imp_z1` mean ≈ 0.380 (oracle `oz1` =
-0.6146, ratio ≈ 62%), std ≈ 0.067, min 0.276, max 0.515; `imp_z2` mean ≈
-0.017 (oracle `oz2` = 0.0 exactly), std ≈ 0.043.
+not the gate's own seeds 0-14): `imp_z1` mean ≈ 0.380 (oracle `oz1` ≈ 0.613
+-0.615, ratio ≈ 62%), std ≈ 0.067, min 0.276, max 0.515; `imp_z2` mean ≈
+0.017 (oracle `oz2` = 0.0 exactly), std ≈ 0.043. `oz1` is not a fixed
+constant: `trend_oracle`'s own `permutation_importance` call (in
+`bench.tvc_perm_sim`, unchanged here) has no fixed `random_state`, so its
+value drifts by about ±0.002 run to run — negligible next to the margin
+below, but the gate itself always compares against a freshly-computed `oz1`
+at test time, never a hardcoded number, so this drift does not affect
+correctness.
 
 Pass rule (declared here, before the gate's own R=15 replications were run):
 over R=15 replications (seeds 0-14), `mean(imp_z1) >= 0.45 * oz1` (≈ 0.277,
