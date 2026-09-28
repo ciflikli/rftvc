@@ -7,7 +7,25 @@ Stage 4 of CRISPI. Input: `docs/plans/design.md` (Approach 2 for Part A, Approac
 - [x] Slice 2: lifelines cross-check against known truth (genuinely static DGP) (PR #53)
 - [x] Slice 3: Validation inventory doc (evidence vs. claims) (PR #54)
 - [x] Slice 4: Conformal-coverage spike (empirical-only, no theoretical guarantee claimed) — inconclusive, see docs/plans/conformal-prediction-investigation.md
-- [x] Slice 5: CompetingRisksForestTV fitted-model-vs-truth CI gate (closes the row-2 gap from Slice 3's inventory)
+- [x] Slice 5: CompetingRisksForestTV fitted-model-vs-truth CI gate (closes the row-2 gap from Slice 3's inventory) (PR #57)
+- [x] Slice 6: trend-scenario permutation-importance CI gate (closes part of the row-3 gap — trend only, not timing/CR/landmark)
+
+## Slice 6: trend-scenario permutation-importance CI gate
+
+**Why:** user follow-up after Slice 5, prioritizing "manual-only R=50 statistical gates never run in CI" as the highest-value remaining gap (S17/S19 importance measures). Scoped to the trend scenario only, matching Slice 5's narrow-slice precedent.
+
+**Files:**
+- `bench/trend_importance_truth_check.py` (new) — reuses `bench.tvc_perm_sim`'s trend scenario (`trend_data`/`trend_replicate`/`trend_oracle`) unchanged, at a reduced scale (`n_train=n_eval=300, n_estimators=60` vs. the design's `1000/1000/200`) for CI speed. `run(n_reps) -> (n_reps, 2)` of `(imp_z1, imp_z2)`.
+- `tests/test_trend_importance_truth.py` (new) — fast smoke test, plus a gate with thresholds freshly calibrated for the reduced scale via an out-of-band pilot (seeds 10000-10009) — **not** the original design's 50%/10%-of-oracle numbers, which were calibrated for the full 1000/1000/200 scale and aren't portable without their own recalibration. Deliberately not `slow`-marked (~5.5s), per Slice 5's lesson that a `slow`-marked gate never actually runs in CI.
+
+**Explicit scope note:** trend scenario only. S17's timing-window and competing-risks oracle scenarios, and all of S19's landmark-importance scenarios, remain manual-only — explicit future work (Slice 7+), not closed here.
+
+**Docs updated:** `docs/plans/simulation-validation-findings.md` — new row 3b, row 3 and "does not establish" text updated.
+
+**Acceptance criteria:**
+- Gate runs in the default merge-gate suite (no `-m` flag needed).
+- Thresholds calibrated from a seed range distinct from the gate's own, stated before the gate was run.
+- Findings doc scopes exactly what's closed (trend, reduced scale) vs. still open (timing, CR-perm, landmark, and the design's original full-scale numbers).
 
 ## Slice 5: CompetingRisksForestTV fitted-model-vs-truth CI gate
 
