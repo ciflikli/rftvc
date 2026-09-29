@@ -9,6 +9,7 @@ from typing import NamedTuple
 import numpy as np
 from joblib import effective_n_jobs
 from sklearn.base import BaseEstimator
+from sklearn.utils import Bunch
 from sklearn.utils.validation import check_array, check_is_fitted
 
 from . import _blocks, _core
@@ -336,6 +337,51 @@ class _BaseForestTV(BaseEstimator):
         """Leaf index per (row, tree), shape ``(n_samples, n_estimators)``."""
         X, _, _ = self._check_predict(X, None)
         return self.forest_.apply(X, effective_n_jobs(self.n_jobs))
+
+    def export_tree(self, tree=0):
+        """One tree's split structure, in scikit-learn's ``Tree`` attribute convention.
+
+        ``children_left``/``children_right``/``feature``/``threshold`` match
+        ``sklearn.tree._tree.Tree``'s own sentinels exactly: ``children_left``/
+        ``children_right`` are ``-1`` at a leaf (``TREE_LEAF``); ``feature``/
+        ``threshold`` are ``-2``/``-2.0`` there (``TREE_UNDEFINED``), so sklearn
+        tooling patterns for walking a tree (as ``sklearn.tree.plot_tree`` /
+        ``export_text`` do) carry over directly. ``leaf`` (rftvc-specific, not
+        part of sklearn's convention) gives the leaf index at each leaf node,
+        ``-1`` at a split; a leaf's Nelson-Aalen cumulative hazard curve is
+        ``self.forest_.leaf_profile(tree, leaf)`` -> ``(event_times, cumhaz)``
+        with ``cumhaz`` shape ``(n_event_times, n_causes)``.
+
+        Parameters
+        ----------
+        tree : int, default=0
+            Index of the tree among the ones actually fitted (not ``n_estimators``,
+            which can differ from the fitted count after ``set_params``).
+
+        Returns
+        -------
+        Bunch with ``children_left``, ``children_right``, ``feature``,
+        ``threshold``, ``leaf`` (arrays of length ``node_count``, node 0 is
+        the root), ``node_count``, ``n_leaves``, and ``feature_names``
+        (``feature_names_in_`` if the forest was fit on named columns, else ``None``).
+        """
+        check_is_fitted(self, "forest_")
+        if not (isinstance(tree, numbers.Integral) and not isinstance(tree, (bool, np.bool_))):
+            raise TypeError(f"tree must be an int, got {type(tree).__name__}")
+        n_trees = self.forest_.n_trees
+        if not 0 <= tree < n_trees:
+            raise ValueError(f"tree must be in [0, {n_trees}), got {tree}")
+        children_left, children_right, feature, threshold, leaf = self.forest_.tree_arrays(tree)
+        return Bunch(
+            children_left=children_left,
+            children_right=children_right,
+            feature=feature,
+            threshold=threshold,
+            leaf=leaf,
+            node_count=children_left.shape[0],
+            n_leaves=self.forest_.n_leaves(tree),
+            feature_names=getattr(self, "feature_names_in_", None),
+        )
 
     def _check_predict(self, X, times, ids=None):
         """Numeric ``X``, the time grid and ``ids`` (resolved if it names a column).

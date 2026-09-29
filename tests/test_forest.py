@@ -81,6 +81,92 @@ def test_hazard_aggregation_is_mean_of_tree_hazards():
     np.testing.assert_allclose(forest.predict_cumulative_hazard(X), np.mean(per_tree, axis=0), atol=1e-12)
 
 
+def test_export_tree_structure_matches_apply():
+    """Walking children_left/children_right/feature/threshold by hand reaches the same
+    leaf as ``apply`` for every row, and every leaf index shows up in the tree."""
+    X, y = _data()
+    forest = SurvivalForestTV(n_estimators=4, random_state=0).fit(X, y)
+    applied = forest.apply(X)
+    for b in range(4):
+        et = forest.export_tree(b)
+        assert et.node_count == len(et.children_left) == len(et.feature) == len(et.threshold) == len(et.leaf)
+        assert et.n_leaves == forest.forest_.n_leaves(b)
+        assert sorted(et.leaf[et.leaf >= 0]) == list(range(et.n_leaves))
+        for row, x in enumerate(X):
+            node = 0
+            while et.leaf[node] < 0:
+                node = et.children_left[node] if x[et.feature[node]] <= et.threshold[node] else et.children_right[node]
+            assert et.leaf[node] == applied[row, b]
+
+
+def test_export_tree_leaf_sentinels_match_sklearn():
+    """sklearn's own TREE_LEAF (-1, children) / TREE_UNDEFINED (-2, feature/threshold)."""
+    X, y = _data()
+    forest = SurvivalForestTV(n_estimators=3, random_state=0).fit(X, y)
+    et = forest.export_tree(0)
+    is_leaf = et.leaf >= 0
+    assert (et.children_left[is_leaf] == -1).all()
+    assert (et.children_right[is_leaf] == -1).all()
+    assert (et.feature[is_leaf] == -2).all()
+    assert (et.threshold[is_leaf] == -2.0).all()
+    assert (et.feature[~is_leaf] >= 0).all()
+    assert (et.children_left[~is_leaf] >= 0).all()
+    assert (et.children_right[~is_leaf] >= 0).all()
+
+
+def test_export_tree_root_leaf():
+    """max_depth=0 forces a single-node tree: node 0 is a leaf with no children."""
+    X, y = _data()
+    forest = SurvivalForestTV(n_estimators=1, max_depth=0, random_state=0).fit(X, y)
+    et = forest.export_tree(0)
+    assert et.node_count == 1
+    assert et.n_leaves == 1
+    assert et.leaf[0] == 0
+    assert et.children_left[0] == et.children_right[0] == -1
+    assert et.feature[0] == -2
+    assert et.threshold[0] == -2.0
+
+
+def test_export_tree_uses_fitted_tree_count_not_n_estimators_param():
+    """set_params after fit must not desync tree-index validation from the actual forest."""
+    X, y = _data()
+    forest = SurvivalForestTV(n_estimators=3, random_state=0).fit(X, y)
+    forest.set_params(n_estimators=10)
+    et = forest.export_tree(2)  # still valid: the fitted forest has 3 trees
+    assert et.node_count > 0
+    with pytest.raises(ValueError, match=r"tree must be in \[0, 3\)"):
+        forest.export_tree(5)  # would be valid for n_estimators=10, not for the fitted forest
+
+
+def test_export_tree_leaf_hazard_matches_leaf_profile():
+    X, y = _data()
+    forest = SurvivalForestTV(n_estimators=3, random_state=1).fit(X, y)
+    et = forest.export_tree(0)
+    leaf = int(et.leaf[et.leaf >= 0][0])
+    times, cumhaz = forest.forest_.leaf_profile(0, leaf)
+    assert cumhaz.shape == (len(times), 1)
+
+
+def test_export_tree_feature_names():
+    pd = pytest.importorskip("pandas")
+    X, y = _data(p=3)
+    Xdf = pd.DataFrame(X, columns=["a", "b", "c"])
+    forest = SurvivalForestTV(n_estimators=2, random_state=0).fit(Xdf, y)
+    assert list(forest.export_tree(0).feature_names) == ["a", "b", "c"]
+    assert SurvivalForestTV(n_estimators=2, random_state=0).fit(X, y).export_tree(0).feature_names is None
+
+
+def test_export_tree_invalid_tree_index():
+    X, y = _data()
+    forest = SurvivalForestTV(n_estimators=3, random_state=0).fit(X, y)
+    with pytest.raises(ValueError, match="tree must be in"):
+        forest.export_tree(3)
+    with pytest.raises(ValueError, match="tree must be in"):
+        forest.export_tree(-1)
+    with pytest.raises(TypeError, match="tree must be an int"):
+        forest.export_tree(1.5)
+
+
 @pytest.mark.parametrize(("n_ids", "expected"), [(224, 15), (225, 15), (226, 15), (400, 20), (1000, 31)])
 def test_min_ids_leaf_auto(n_ids, expected):
     X, y = _data(n=n_ids)

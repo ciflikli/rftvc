@@ -337,6 +337,27 @@ def test_leaf_profile_is_two_dimensional():
     np.testing.assert_array_equal(cumhaz[:, 0], sf.predict_cumulative_hazard(X[:1], times)[0])
 
 
+def test_export_tree_two_causes():
+    X, y, ids = _cr_data(150, 0)
+    forest = CompetingRisksForestTV(n_estimators=3, min_events_leaf=2, random_state=0).fit(X, y, ids)
+    applied = forest.apply(X)
+    for b in range(3):
+        et = forest.export_tree(b)
+        assert et.node_count == len(et.children_left)
+        assert et.n_leaves == forest.forest_.n_leaves(b)
+        is_leaf = et.leaf >= 0
+        assert (et.feature[is_leaf] == -2).all() and (et.threshold[is_leaf] == -2.0).all()
+        assert (et.children_left[is_leaf] == -1).all() and (et.children_right[is_leaf] == -1).all()
+        for row, x in enumerate(X):
+            node = 0
+            while et.leaf[node] < 0:
+                node = et.children_left[node] if x[et.feature[node]] <= et.threshold[node] else et.children_right[node]
+            assert et.leaf[node] == applied[row, b]
+    leaf = int(forest.export_tree(0).leaf[forest.export_tree(0).leaf >= 0][0])
+    times, cumhaz = forest.forest_.leaf_profile(0, leaf)
+    assert cumhaz.shape == (len(times), 2)  # two causes
+
+
 # --- validation --------------------------------------------------------------
 
 
