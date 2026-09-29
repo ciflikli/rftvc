@@ -107,7 +107,7 @@ class _BaseForestTV(BaseEstimator):
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()
         tags.target_tags.required = True
-        tags.input_tags.allow_nan = False
+        tags.input_tags.allow_nan = True
         return tags
 
     def _engine_kwargs(self):
@@ -185,7 +185,7 @@ class _BaseForestTV(BaseEstimator):
         """
         X, names, ids_values = split_frame(X, ids)
         self.ids_column_ = ids if isinstance(ids, str) else None
-        X = check_array(X, dtype=np.float64, order="C")
+        X = check_array(X, dtype=np.float64, order="C", ensure_all_finite="allow-nan")
         if names is not None:
             self.feature_names_in_ = names
         elif hasattr(self, "feature_names_in_"):
@@ -348,7 +348,9 @@ class _BaseForestTV(BaseEstimator):
         tooling patterns for walking a tree (as ``sklearn.tree.plot_tree`` /
         ``export_text`` do) carry over directly. ``leaf`` (rftvc-specific, not
         part of sklearn's convention) gives the leaf index at each leaf node,
-        ``-1`` at a split; a leaf's Nelson-Aalen cumulative hazard curve is
+        ``-1`` at a split. ``missing_goes_right`` records each split's NaN route;
+        a NaN ``threshold`` means "missing versus observed" (missing left).
+        A leaf's Nelson-Aalen cumulative hazard curve is
         ``self.forest_.leaf_profile(tree, leaf)`` -> ``(event_times, cumhaz)``
         with ``cumhaz`` shape ``(n_event_times, n_causes)``.
 
@@ -361,7 +363,7 @@ class _BaseForestTV(BaseEstimator):
         Returns
         -------
         Bunch with ``children_left``, ``children_right``, ``feature``,
-        ``threshold``, ``leaf`` (arrays of length ``node_count``, node 0 is
+        ``threshold``, ``leaf``, ``missing_goes_right`` (arrays of length ``node_count``, node 0 is
         the root), ``node_count``, ``n_leaves``, and ``feature_names``
         (``feature_names_in_`` if the forest was fit on named columns, else ``None``).
         """
@@ -371,13 +373,14 @@ class _BaseForestTV(BaseEstimator):
         n_trees = self.forest_.n_trees
         if not 0 <= tree < n_trees:
             raise ValueError(f"tree must be in [0, {n_trees}), got {tree}")
-        children_left, children_right, feature, threshold, leaf = self.forest_.tree_arrays(tree)
+        children_left, children_right, feature, threshold, leaf, missing_goes_right = self.forest_.tree_arrays(tree)
         return Bunch(
             children_left=children_left,
             children_right=children_right,
             feature=feature,
             threshold=threshold,
             leaf=leaf,
+            missing_goes_right=missing_goes_right,
             node_count=children_left.shape[0],
             n_leaves=self.forest_.n_leaves(tree),
             feature_names=getattr(self, "feature_names_in_", None),
@@ -402,7 +405,7 @@ class _BaseForestTV(BaseEstimator):
             raise ValueError(
                 f"X has feature names {list(names)}, but the forest was fitted with {list(fitted)}"
             )
-        X = check_array(X, dtype=np.float64, order="C")
+        X = check_array(X, dtype=np.float64, order="C", ensure_all_finite="allow-nan")
         if X.shape[1] != self.n_features_in_:
             raise ValueError(f"X has {X.shape[1]} features, expected {self.n_features_in_}")
         times = self.event_times_ if times is None else np.asarray(times, dtype=float).ravel()

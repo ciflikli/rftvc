@@ -4,6 +4,8 @@ scikit-learn compatibility
 ``SurvivalForestTV`` and ``CompetingRisksForestTV`` are scikit-learn estimators.
 
 - ``get_params`` / ``set_params`` / ``clone`` and pickling work.
+- Both forest estimators accept NaN feature values during fit and prediction
+  (``allow_nan=True``); positive and negative infinity remain invalid.
 - ``n_features_in_`` is set on fit, and ``feature_names_in_`` too when ``X`` is
   a DataFrame (pandas, polars, pyarrow, via narwhals).
 

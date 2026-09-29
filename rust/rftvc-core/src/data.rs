@@ -5,11 +5,21 @@ use crate::grid::Grid;
 /// For feature `f` with sorted edges `e`, `bin(x) = #{j : e_j < x}`, so
 /// `bin(x) <= b  <=>  x <= e_b`. A split at bin `b` therefore sends raw
 /// values `x <= edges[f][b]` left, which is what prediction uses.
+///
+/// `NaN` is a legitimate ("missing") value: `edges` are computed from the
+/// non-missing values of a column only, and `missing[i]` is set wherever
+/// `x` was `NaN` there. `bins[i]` is never meaningful for a missing entry
+/// (routing/splitting on it must check `missing` first) -- `bin_of` still
+/// returns a well-defined value for `NaN` (bin `0`, since no edge is `< NaN`)
+/// so nothing panics if it's read anyway, but it carries no information.
 #[derive(Clone, Debug)]
 pub struct Binned {
     pub n_rows: usize,
     pub n_features: usize,
     pub bins: Vec<u8>,
+    pub missing: Vec<bool>,
+    /// Fast path for features with no missing values anywhere in training X.
+    pub feature_has_missing: Vec<bool>,
     pub edges: Vec<Vec<f64>>,
 }
 
@@ -19,14 +29,28 @@ impl Binned {
         assert!((2..=256).contains(&max_bins), "max_bins must be in 2..=256");
         assert_eq!(x.len(), n_rows * n_features);
         let mut bins = vec![0u8; n_rows * n_features];
+        let mut missing = vec![false; n_rows * n_features];
+        let mut feature_has_missing = vec![false; n_features];
         let mut edges = Vec::with_capacity(n_features);
         for f in 0..n_features {
-            let mut col: Vec<f64> = (0..n_rows).map(|i| x[i * n_features + f]).collect();
-            col.sort_by(|a, b| a.partial_cmp(b).expect("NaN in X"));
+            let mut col: Vec<f64> = (0..n_rows)
+                .map(|i| x[i * n_features + f])
+                .filter(|v| !v.is_nan())
+                .collect();
+            // NaN was filtered out above; every remaining f64 (including +/-inf) is
+            // totally ordered by partial_cmp, so this can never actually be None.
+            col.sort_by(|a, b| a.partial_cmp(b).expect("unreachable: NaN already filtered"));
             let e = feature_edges(&col, max_bins);
             let out = &mut bins[f * n_rows..(f + 1) * n_rows];
+            let miss = &mut missing[f * n_rows..(f + 1) * n_rows];
             for i in 0..n_rows {
-                out[i] = bin_of(&e, x[i * n_features + f]);
+                let v = x[i * n_features + f];
+                if v.is_nan() {
+                    miss[i] = true;
+                    feature_has_missing[f] = true;
+                } else {
+                    out[i] = bin_of(&e, v);
+                }
             }
             edges.push(e);
         }
@@ -34,6 +58,8 @@ impl Binned {
             n_rows,
             n_features,
             bins,
+            missing,
+            feature_has_missing,
             edges,
         }
     }
@@ -41,6 +67,11 @@ impl Binned {
     #[inline]
     pub fn column(&self, f: usize) -> &[u8] {
         &self.bins[f * self.n_rows..(f + 1) * self.n_rows]
+    }
+
+    #[inline]
+    pub fn missing_column(&self, f: usize) -> &[bool] {
+        &self.missing[f * self.n_rows..(f + 1) * self.n_rows]
     }
 }
 

@@ -163,8 +163,23 @@ fn structurally_consistent_but_invalid_states_error() {
     let flat = valid_flat();
     let split = flat.node_feature.iter().position(|&f| f >= 0).unwrap();
     let mut bad = flat.clone();
+    bad.node_missing_right.clear();
+    assert!(
+        bad.to_forest().is_err(),
+        "v4 needs missing routes for every node"
+    );
+    let mut bad = flat.clone();
     bad.node_threshold[split] = f64::NAN;
-    assert!(bad.to_forest().is_err(), "NaN threshold");
+    bad.node_missing_right[split] = true;
+    assert!(
+        bad.to_forest().is_err(),
+        "missingness split must route NaN left"
+    );
+    // A NaN threshold is now a legitimate v4 MissingVsObserved sentinel (not
+    // corruption); infinity is never valid under any interpretation.
+    let mut bad = flat.clone();
+    bad.node_threshold[split] = f64::INFINITY;
+    assert!(bad.to_forest().is_err(), "infinite threshold");
 
     let leaf = (0..flat.event_offsets.len() - 1)
         .find(|&l| flat.event_offsets[l + 1] - flat.event_offsets[l] >= 2)
@@ -206,6 +221,7 @@ fn survival_aggregation_is_finite_for_large_hazards() {
         node_offsets: vec![0, 1, 2],
         node_feature: vec![-1, -1],
         node_threshold: vec![0.0, 0.0],
+        node_missing_right: vec![false, false],
         node_left: vec![0, 0],
         node_right: vec![0, 0],
         leaf_offsets: vec![0, 1, 2],

@@ -348,9 +348,10 @@ def plot_tree(forest_or_tree, tree=0, *, max_depth=None, feature_names=None):
     feat = np.asarray(et.feature)
     thr = np.asarray(et.threshold)
     leaf = np.asarray(et.leaf)
+    missing_right = np.asarray(getattr(et, "missing_goes_right", np.ones_like(leaf, dtype=bool)))
     depth, x, cut, visited = _tree_layout(cl, cr, leaf, max_depth)
 
-    unit_x, unit_y, margin, box_w, box_h = 110, 80, 30, 100, 40
+    unit_x, unit_y, margin, box_w, box_h = 155, 80, 30, 140, 40
     width = margin * 2 + (x[visited].max() + 1) * unit_x
     height = margin * 2 + (depth[visited].max() + 1) * unit_y
     cx = margin + x * unit_x + box_w / 2
@@ -374,7 +375,11 @@ def plot_tree(forest_or_tree, tree=0, *, max_depth=None, feature_names=None):
             fill, text = "#eeeeee", "..."
         else:
             fname = f"x[{feat[node]}]" if names is None else _svg_escape(names[feat[node]])
-            text = f"{fname} ≤ {thr[node]:.3g}"
+            if np.isnan(thr[node]):
+                text = f"{fname} missing?"
+            else:
+                direction = "R" if missing_right[node] else "L"
+                text = f"{fname} ≤ {thr[node]:.3g}; NaN → {direction}"
             fill = "#f6e9db"
         parts.append(f'<rect x="{left:.1f}" y="{top:.1f}" width="{box_w}" height="{box_h}" rx="6" fill="{fill}" stroke="#333"/>')
         parts.append(
