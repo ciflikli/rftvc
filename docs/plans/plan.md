@@ -13,7 +13,8 @@ Stage 4 of CRISPI. Input: `docs/plans/design.md` (Approach 2 for Part A, Approac
 - [x] Slice 8: competing-risks permutation-importance CI gate (completes S17's row-3 coverage — trend/timing/CR all closed)
 - [x] Slice 9: S19 landmark-importance CI gates (closes row 4 — history/Markov, copies bootstrap-SE, censoring PE-vs-Brier) (PR #61)
 - [x] Slice 10: n-sweep beyond Slice 1's two points (closes row 5's blind spot) (PR #64)
-- [ ] Slice 11: TVC vs. `CoxTimeVaryingFitter` on a known-truth DGP (closes the TVC half of the external-tool-parity gap)  <-- CURRENT
+- [x] Slice 11: TVC vs. `CoxTimeVaryingFitter` on a known-truth DGP (closes the TVC half of the external-tool-parity gap) (PR #65)
+- [ ] Slice 12: competing risks vs. `randomForestSRC` on a known-truth DGP (closes the CR half of the external-tool-parity gap — the last item on the punchlist)  <-- CURRENT
 
 ## Slice 7: timing-window permutation-importance CI gate
 
@@ -355,6 +356,83 @@ reflect TVC is now covered (landmark remains open).
 - `EPSILON` calibrated from seeds distinct from the gate's own, stated before the gate ran, verified
   across >= 2 independent out-of-band batches.
 - `true_cumhaz` verified against numerical integration to `atol=1e-6`.
+- One `codex:rescue` diff review before merge.
+
+---
+
+## Slice 12: competing risks vs. `randomForestSRC` on a known-truth DGP
+
+**Why:** closes the last item on the external-tool-parity punchlist (`docs/plans/simulation-
+validation-findings.md`). Full CRISPI pass (`docs/plans/cr-rfsrc-{questions,research,design}.md`).
+Research found `randomForestSRC`'s competing-risks `predict()` returns one CIF per input *row*, not
+per subject-path (`subj.unique.count` is literally aliased to `nrow(xvar)` in its source), with no
+documented or found mechanism to chain a subject's TVC rows the way Slice 11 chained
+`CoxTimeVaryingFitter`'s Cox baseline against per-row partial hazards — a Cox model factors into one
+global baseline times a per-row scalar, a random forest's leaf hazard does not. User confirmed (via
+AskUserQuestion) staying in scope on a **static (non-TVC), one-row-per-subject** DGP rather than
+investigating rfsrc path-chaining further — mirrors S14's own real-data comparison, which already
+uses plain 2-variable `Surv(time, status)` rows for exactly this reason. User also confirmed the
+**fixture-regeneration + CI-gated test** approach over a manual reported-only script (Approach B in
+the design doc), to close this consistently with every other slice in this pass (5-11) rather than
+leaving the punchlist's last item weaker than the rest.
+
+**DGP:** two causes, constant-hazard-conditional-on-covariates (`lam_k(x) = RATE_k * exp(BETA_k *
+x)`), single covariate `x ~ N(0,1)`, independent exponential censoring. Closed-form CIF:
+`F_k(t|x) = (lam_k(x)/lam_tot(x)) * (1 - exp(-lam_tot(x)*t))`.
+
+**Fixture contents (Codex review finding, applied):** `tests/fixtures/cr_rfsrc_truth.json` must store
+the ordered test-set covariates (`x`), the grid, the cause labels, and rfsrc's CIF predictions
+*together*, not predictions alone — Python's `rfsrc_ise_from_fixture()` recomputes `true_cif` from
+those same stored `x` values, never from a separately-regenerated test set, to rule out a
+cross-language sample mismatch silently producing a plausible-but-invalid ISE. `bench/cr_rfsrc_fixture.R`
+and `bench/cr_rfsrc_truth_check.py` must declare, before either is written, and keep in sync: `rfsrc`'s
+forest settings (`ntree`, `splitrule` — research found `"random"` is the only splitrule confirmed to
+run error-free at small scale on this build; `"logrankCR"`/default failed on a 60-id set, so start
+from `"random"` and record if a different choice is tried and why), `rftvc`'s matching `n_estimators`,
+the grid-lookup rule converting rfsrc's `time.interest`-indexed CIF onto the shared `GRID` (a
+`searchsorted` step-function lookup, same convention as `bench/s14_cr_parity.R:16-19`'s `findInterval`
+and Slice 11's `_baseline_step_at` — not a `reindex`), and `n_train`/`n_test` sizes. These are
+implementation-stage decisions but must be pinned and stated in the fixture script's header comment
+before the fixture is generated, not discovered ad hoc.
+
+**Files:**
+- `bench/cr_rfsrc_fixture.R` (new) — run once this session against the scratch `randomForestSRC` lib
+  (research found two candidate paths under prior sessions' orphaned scratchpads, both still loadable
+  with only a version-mismatch warning; re-verify the path is still present before running, don't
+  assume from the research doc). Fixed seed, fixed train/test split, `rfsrc(Surv(time, status) ~ .,
+  ...)` 2-variable shape (S14's exact call shape), `ntree`/`splitrule` declared per the fixture-contents
+  note above. Writes `tests/fixtures/cr_rfsrc_truth.json` per that note's schema — mirrors
+  `tests/fixtures/make_*.py`'s pattern, committed invocation command in the script header for
+  reproducibility.
+- `bench/cr_rfsrc_truth_check.py` (new) — `true_cif` (closed form above, verified vs. numerical
+  integration), `simulate`, `replicate(seed, n_train, n_test) -> rftvc_ise` (per-cause ISE pooled to
+  one scalar, `CompetingRisksForestTV` vs. `true_cif`, same pooling convention as
+  `bench/cr_forest_truth_check.py`, `n_estimators` matching the R side's declared `ntree`),
+  `run(n_reps=10) -> np.ndarray`, `rfsrc_ise_from_fixture()` (loads the checked-in JSON, recomputes
+  `true_cif` from the fixture's own stored `x` values, applies the declared grid-lookup rule, asserts
+  all values finite and shapes aligned before computing ISE).
+  `EPSILON` calibrated from >= 2 independent out-of-band seed batches distinct from the gate's own.
+- `tests/test_cr_rfsrc_truth.py` (new) — `test_true_cif_matches_numerical_integration` (fast, exact,
+  both causes), `test_replicate_smoke` (fast, R=1, small scale), and the gate itself:
+  `assert run().mean() <= rfsrc_ise_from_fixture() + EPSILON`, default tier (**not** `slow`) — verify
+  by actually running plain `pytest tests/test_cr_rfsrc_truth.py -v`, not by inspecting the marker
+  (Slice 5's own mistake).
+
+**Explicit disclosed limitation:** the gate compares `rftvc`'s own resampled mean ISE (R=10) against
+`randomForestSRC`'s single fixed-fixture ISE (R=1, no replication) — an asymmetry, not a like-for-like
+bootstrap comparison, because rfsrc never runs inside CI. State this plainly in
+`bench/cr_rfsrc_truth_check.py`'s module docstring and in the findings-doc row, not silently.
+
+**Docs updated:** `docs/plans/simulation-validation-findings.md` — new row for this check; closing
+summary's remaining "competing-risks vs. `randomForestSRC`" still-open bullet removed (landmark
+parity stays open — no external tool exists for that shape at all).
+
+**Acceptance criteria:**
+- New test runs in the plain `pytest` invocation (no `-m` flag) — verified by actually running it.
+- `EPSILON` calibrated from seeds distinct from the gate's own, stated before the gate ran, verified
+  across >= 2 independent out-of-band batches.
+- `true_cif` verified against numerical integration to `atol=1e-6`, both causes.
+- Fixture-generation script and its exact invocation committed alongside the fixture.
 - One `codex:rescue` diff review before merge.
 
 ---
