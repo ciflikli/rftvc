@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rftvc_core::{
     Aggregate, AjOutput, Binned, CifAggregate, CompositeCauseLogRank, Extrapolate, FlatForest,
-    Forest, ForestParams, Grid, Groups, LtrcLogRank, Profile, SingleCause, SplitCriterion,
+    Forest, ForestParams, Grid, Groups, LtrcLogRank, Node, Profile, SingleCause, SplitCriterion,
     SplitParams, SurvData, TreeParams, best_split as core_best_split, cause_profile_on, coarsen,
     exposure_of, fit_forest, node_profile, profile_on,
 };
@@ -96,6 +96,19 @@ fn aggregate(name: &str) -> PyResult<Aggregate> {
 
 /// `(event_times, cumhaz (n_entries, n_causes))` of one leaf.
 type LeafProfile<'py> = (Vec<f64>, Bound<'py, PyArray2<f64>>);
+
+/// One tree's node arrays: `(children_left, children_right, feature, threshold, leaf)`,
+/// matching sklearn's `Tree` sentinels exactly (`children_left`/`children_right` are `-1`
+/// at a leaf, `TREE_LEAF`; `feature`/`threshold` are `-2`/`-2.0`, `TREE_UNDEFINED`).
+/// `leaf[i]` (rftvc-specific) is the leaf index to pass to `leaf_profile` at a leaf node, `-1`
+/// at a split.
+type TreeArrays<'py> = (
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<f64>>,
+    Bound<'py, PyArray1<i64>>,
+);
 
 /// Cause-coded response: codes in `0..=n_causes`, `n_causes` in `1..=255`.
 fn cause_data(
@@ -321,6 +334,45 @@ impl PyForest {
                 .expect("shape")
                 .into_pyarray(py);
         Ok((times, cumhaz))
+    }
+
+    /// One tree's split structure as flat node arrays (see `TreeArrays`). Matches
+    /// scikit-learn's `sklearn.tree._tree.Tree` sentinels exactly: `children_left`/
+    /// `children_right` are `-1` (`TREE_LEAF`) at a leaf; `feature`/`threshold` are
+    /// `-2`/`-2.0` (`TREE_UNDEFINED`) there, not just "unlike a real value".
+    fn tree_arrays<'py>(&self, py: Python<'py>, tree: usize) -> PyResult<TreeArrays<'py>> {
+        let t = self.tree(tree)?;
+        let n = t.nodes.len();
+        let (mut left, mut right, mut feature, mut leaf) = (
+            vec![-1i64; n],
+            vec![-1i64; n],
+            vec![-2i64; n],
+            vec![-1i64; n],
+        );
+        let mut threshold = vec![-2.0f64; n];
+        for (i, node) in t.nodes.iter().enumerate() {
+            match node {
+                Node::Split {
+                    feature: f,
+                    threshold: th,
+                    left: l,
+                    right: r,
+                } => {
+                    feature[i] = *f as i64;
+                    threshold[i] = *th;
+                    left[i] = *l as i64;
+                    right[i] = *r as i64;
+                }
+                Node::Leaf { leaf: lf } => leaf[i] = *lf as i64,
+            }
+        }
+        Ok((
+            left.into_pyarray(py),
+            right.into_pyarray(py),
+            feature.into_pyarray(py),
+            threshold.into_pyarray(py),
+            leaf.into_pyarray(py),
+        ))
     }
 
     /// Id indices each tree was grown on (sorted; repeats under bootstrap).

@@ -10,6 +10,8 @@ scikit-learn compatible Python API.
 - Landmark data building and a landmark super-model for dynamic prediction.
 - Time-aware cross-validation and IPCW landmark metrics.
 - An exact log-rank split criterion, and an opt-in coarse time grid for large data.
+- Optional plotting (`rftvc.viz`, `pip install rftvc[viz]`): survival/hazard/CIF curves,
+  importance and calibration charts (Altair), and a dependency-free SVG tree diagram.
 
 ## Install
 
@@ -23,6 +25,9 @@ cd rftvc
 uv venv
 uv pip install -e . --group dev
 ```
+
+Add `--extra viz` (or `pip install rftvc[viz]` once published) for `rftvc.viz`'s
+Altair-based charts; its SVG tree diagram (`rftvc.viz.plot_tree`) needs no extra install.
 
 ## Quickstart
 
