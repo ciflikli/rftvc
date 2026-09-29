@@ -142,8 +142,10 @@ def test_object_and_integer_dtypes(data):
     Xi = np.round(X * 10).astype(np.int64)
     assert np.isfinite(data.est().fit(Xi, y, ids).predict(Xi)).all()
     assert np.isfinite(data.est().fit(-np.abs(X), y, ids).predict(X)).all()  # negative values are fine
-    with pytest.raises((TypeError, ValueError)):
-        data.est().fit(np.full(X.shape, "a", dtype=object), y, ids)
+    Xcat = np.full(X.shape, "a", dtype=object)
+    est = data.est().fit(Xcat, y, ids)
+    assert est.n_encoded_features_ == X.shape[1]
+    assert np.isfinite(est.predict(Xcat)).all()
 
 
 def test_nan_is_accepted_and_inf_rejected(data):

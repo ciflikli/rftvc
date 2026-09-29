@@ -4,6 +4,7 @@ import numbers
 
 import narwhals as nw
 import numpy as np
+from scipy import sparse
 from sklearn.utils.validation import check_array
 
 
@@ -26,11 +27,20 @@ def categorical_flags(X, names):
     return [isinstance(df.schema[name], (nw.Categorical, nw.Enum)) for name in names]
 
 
+def _dense_array(X):
+    if sparse.issparse(X):
+        check_array(X, accept_sparse=False)
+    X = np.asarray(X)
+    if X.dtype.kind == "c":
+        check_array(X, dtype=np.float64)
+    return X
+
+
 class CategoryEncoder:
     """Keep numeric columns intact and expand nonnumeric columns into indicators."""
 
     def fit_transform(self, X, names=None, categorical=None):
-        X = np.asarray(X)
+        X = _dense_array(X)
         if X.ndim != 2:
             raise ValueError("X must be a two-dimensional array")
         self.n_features_in_ = X.shape[1]
@@ -47,6 +57,8 @@ class CategoryEncoder:
             values = X[:, j]
             observed = [v for v in values if not _missing(v)]
             label = str(names[j]) if names is not None else f"x{j}"
+            if any(isinstance(v, (complex, np.complexfloating)) for v in observed):
+                raise ValueError("Complex data not supported")
             if not (categorical and categorical[j]) and all(
                 isinstance(v, (numbers.Real, np.bool_)) for v in observed
             ):
@@ -84,7 +96,7 @@ class CategoryEncoder:
         return out
 
     def transform(self, X, names=None):
-        X = np.asarray(X)
+        X = _dense_array(X)
         if X.ndim != 2 or X.shape[1] != self.n_features_in_:
             raise ValueError(f"X must have {self.n_features_in_} features")
         if not self.has_categories_:
