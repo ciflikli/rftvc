@@ -10,6 +10,8 @@ retroactively itemized here — see `git log` for the full slice-by-slice histor
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-29
+
 ### Added
 - `SurvivalForestTV.export_tree` / `CompetingRisksForestTV.export_tree`: one tree's split
   structure (`children_left`, `children_right`, `feature`, `threshold`, `leaf`), in
