@@ -40,7 +40,7 @@ class CompetingRisksForestTV(_BaseForestTV):
     n_estimators, max_features, max_depth, min_ids_leaf, max_bins, ntime, resample_unit, block_length, oob_buffer, \
 max_samples, bootstrap, n_jobs, random_state
         As in ``SurvivalForestTV``; ``ntime`` coarsening moves each event's cause
-        label with it.
+        label with it. Categorical covariates use the same fitted one-hot encoding.
     min_events_leaf : int, default=3
         Minimum events of any cause per child.
     aggregate : {"cif", "hazard"}, default="cif"

@@ -73,13 +73,14 @@ def _frame(obj):
     return df if isinstance(df, nw.DataFrame) else None
 
 
-def split_frame(X, ids=None):
-    """Numeric ``X``, its column names and ``ids``, for array or DataFrame input.
+def split_frame(X, ids=None, *, numeric=True):
+    """``X``, its column names and ``ids``, for array or DataFrame input.
 
     A DataFrame ``X`` (pandas, polars, pyarrow, ... via narwhals) gives its
     column names; nullable missing values become NaN. ``ids`` may name a column
     of ``X``: that column is returned as ``ids`` and removed from the features.
-    Arrays pass through with ``names=None``.
+    Arrays pass through with ``names=None``. ``numeric=False`` preserves
+    categorical values for the estimator's fitted encoder.
     """
     df = _frame(X)
     if df is None:
@@ -91,7 +92,8 @@ def split_frame(X, ids=None):
             raise ValueError(f"ids column {ids!r} not in X")
         ids, df = df[ids].to_numpy(), df.drop(ids)
     names = [str(c) for c in df.columns]
-    return df.select(nw.all().cast(nw.Float64)).to_numpy(), np.asarray(names, dtype=object), ids
+    values = df.select(nw.all().cast(nw.Float64)).to_numpy() if numeric else df.to_numpy()
+    return values, np.asarray(names, dtype=object), ids
 
 
 def _structured(y, required, make=make_survival_y):
