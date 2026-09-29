@@ -11,6 +11,7 @@ Stage 4 of CRISPI. Input: `docs/plans/design.md` (Approach 2 for Part A, Approac
 - [x] Slice 6: trend-scenario permutation-importance CI gate (closes part of the row-3 gap — trend only, not timing/CR/landmark) (PR #58)
 - [x] Slice 7: timing-window permutation-importance CI gate (closes another part of the row-3 gap — ports the design's real unmodified rule, not a recalibrated threshold) (PR #59)
 - [x] Slice 8: competing-risks permutation-importance CI gate (completes S17's row-3 coverage — trend/timing/CR all closed)
+- [ ] Slice 9: S19 landmark-importance CI gates (closes row 4 — history/Markov, copies bootstrap-SE, censoring PE-vs-Brier)  <-- CURRENT
 
 ## Slice 7: timing-window permutation-importance CI gate
 
@@ -173,6 +174,85 @@ Each slice: own branch/PR, Codex plan review before code (per CLAUDE.md skill tr
 - Gate runs in the default merge-gate suite.
 - Rule verified to hold at reduced scale via multiple independent out-of-band seed ranges before locking in.
 - Findings doc accurately states S17 is now fully closed while S19 remains open.
+
+---
+
+## Slice 9: S19 landmark-importance CI gates
+
+**Why:** the last open item on the manual-gate punchlist ([[rftvc-roadmap]] "Still open"). Ran a
+full CRISPI pass for this slice specifically (`docs/plans/s19-landmark-gate-{questions,research,design}.md`)
+because it has a real wrinkle Slices 6-8 didn't: one of the three scenarios' design rule is *known
+to already fail* at full R=50 scale (a documented, user-approved deviation in `s19-plan.md`, not a
+bug), so it can't just be ported or recalibrated the way trend/timing/CR were.
+
+**Scenarios (all three, one PR — see design doc Q5: unlike S17's trio, all three already share one
+bench file and one test file, so splitting by PR would not track a real code boundary):**
+
+1. **History/Markov** (`level_history_data`/`replicate`/`oracle` in `bench/tvc_landmark_sim.py`,
+   §7.2): the design's real `hist.mean() >= 0.25 * oracle(history)` rule does **not** get gated —
+   research verified it's worse than a coin flip at any reduced scale tested (43%-101% of the bound
+   across seed batches, matching the full-scale 94%-of-threshold near-miss already on record).
+   Instead: (a) the Markov control's real, unmodified bound
+   `mark.mean() <= 0.05 * oracle(markov)`, R=15 — passes with 3-7x margin at every scale tested; (b)
+   a new, explicitly weaker claim for history — a one-sided t-test that `hist.mean() > 0` is
+   statistically significant, **R=30** (R=15 is not robust enough: p=0.138 in the primary seed
+   batch; R=30 gives p=0.0004/1.5e-6/7.3e-5 at this gate's own seeds 0-29 and two independent
+   out-of-band batches, 10000-10029 and 20010-20039). Reduced scale `n_train=n_eval=200,
+   n_estimators=40` was separately confirmed (at R=15, before the R=30 bump) across seeds
+   0-14/10000-10014/20010-20024 for the Markov control, which needs no rep-count increase.
+2. **Copies bootstrap-SE** (`copies_replicate`, §7.5b): the design's real
+   `se(step=0.5)/se(step=4.0) >= 0.5` ratio ported unmodified, R=15 both `step` arms, at
+   `n_train=n_eval=100, n_estimators=20` — verified across 3 independent seed batches (margins
+   0.56-0.73, never near the 0.5 boundary).
+3. **Censoring PE-vs-Brier** (`censoring_data`/`censoring_replicate`, §7.5b): the design's real
+   rank-*concordance* rule ported unmodified from `bench.tvc_landmark_sim.run()`'s own `pass4` —
+   `(pe_z1.mean() > pe_z2.mean()) == (brier_z1.mean() > brier_z2.mean())`, i.e. the two scoring
+   families' rankings agree, not "both rank z1 above z2" (a stricter claim the design never
+   declared) — not the stricter one-sided-t alternative research tested and rejected either
+   (Brier's per-replicate significance is seed-sensitive at this scale, p=0.109 in one batch,
+   while the raw mean comparison is robust in all 3), R=15, at `n_train=n_eval=150,
+   n_estimators=25` (n=100 breaks the generator: `UndefinedMetricError: no events in (0,
+   windows[-1]] to score`).
+
+**Files:**
+- `bench/landmark_importance_truth_check.py` (new) — reuses `bench.tvc_landmark_sim`'s
+  `level_history_data`/`replicate`/`oracle`/`copies_replicate`/`censoring_data`/
+  `censoring_replicate` and `bench.tvc_perm_sim`'s `one_sided_t` unchanged.
+  - `run_level_history(n_reps_history=30, n_reps_markov=15, n_train=200, n_eval=200, n_estimators=40, seed0=0) -> (hist, mark)` — two `(n_reps,)` arrays.
+  - `check_level_history(hist, mark, oracle_history, oracle_markov) -> (p_history_positive, pass_markov, markov_bound)`.
+  - `run_copies(n_reps=15, n_train=100, n_eval=100, n_estimators=20, seed0=0) -> (small_se, large_se)` — two `(n_reps,)` arrays (`step=0.5`/`step=4.0`).
+  - `check_copies(small_se, large_se) -> (pass_ratio, ratio)`.
+  - `run_censoring(n_reps=15, n_train=150, n_eval=150, n_estimators=25, seed0=0) -> pd.DataFrame` (columns `pe_z1, pe_z2, brier_z1, brier_z2`, as `censoring_replicate` already returns per-row).
+  - `check_censoring(df) -> (pass_agree, pe_rank_z1_larger, brier_rank_z1_larger)`.
+- `tests/test_landmark_sim_truth.py` (extend, not new — already imports the needed generators) —
+  three new default-tier (not `slow`) tests: `test_markov_control_and_history_significance`,
+  `test_copies_se_does_not_shrink_with_more_landmarks`, `test_censoring_pe_and_brier_rankings_agree`.
+  Each states its pass rule and the out-of-band verification (seed ranges, margins) in its own
+  docstring, matching `test_timing_importance_truth.py`'s style. The existing `slow`-tier
+  `test_pilot_pass_rules_point_the_right_way` stays as-is (a looser cross-check at yet another
+  scale/seed range — not fully redundant with the new tests, since it also smoke-tests
+  `copies_replicate`/`censoring_replicate` at their own different reduced scale).
+
+**Explicit scope note:** closes findings-doc row 4 entirely, but the history scenario's gate is
+**not** the design's originally-declared magnitude claim (0.25x oracle) — only a weaker sign +
+significance claim. The 0.25x rule's full-scale failure (`s19-plan.md` lines 121, 127-130) remains
+the user-approved deviation on record; this slice does not attempt to resolve or re-litigate it.
+
+**Docs updated:** `docs/plans/simulation-validation-findings.md` — new row 4 entry (or edited in
+place) documenting exactly what's closed, with the history caveat stated plainly; re-grep the whole
+file (not just the diff) for stale "S19's landmark-importance scenarios remain manual-only"
+cross-references (rows 3b/3c/3d, the closing summary) per [[rftvc-dev-workflow]]'s standing lesson.
+
+**Acceptance criteria:**
+- All three new tests run in the plain `pytest` invocation (no `-m` flag) — verified by actually
+  running it.
+- Every threshold/rep-count matches a value this slice's own design doc verified across >= 2
+  independent out-of-band seed batches distinct from the gate's own seeds (0-14, or 0-29 for
+  history).
+- History gate's docstring explicitly states it asserts a weaker claim than the design's declared
+  rule, and why — mirroring Slice 6's "not the original numbers" framing.
+- `simulation-validation-findings.md` and every stale cross-reference to row 4 updated in this PR.
+- One `codex:rescue` diff review before merge.
 
 ---
 
