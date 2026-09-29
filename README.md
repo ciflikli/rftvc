@@ -15,9 +15,17 @@ scikit-learn compatible Python API.
 
 ## Install
 
-Not yet published to PyPI. Build from source: a [Rust toolchain](https://rustup.rs/)
-(via [maturin](https://www.maturin.rs/)) and [uv](https://docs.astral.sh/uv/) are
-required.
+```console
+pip install rftvc
+```
+
+Add the `viz` extra (`pip install rftvc[viz]`) for `rftvc.viz`'s Altair-based charts;
+its SVG tree diagram (`rftvc.viz.plot_tree`) needs no extra install.
+
+### From source
+
+A [Rust toolchain](https://rustup.rs/) (via [maturin](https://www.maturin.rs/)) and
+[uv](https://docs.astral.sh/uv/) are required.
 
 ```console
 git clone https://github.com/ciflikli/rftvc.git
@@ -25,9 +33,6 @@ cd rftvc
 uv venv
 uv pip install -e . --group dev
 ```
-
-Add `--extra viz` (or `pip install rftvc[viz]` once published) for `rftvc.viz`'s
-Altair-based charts; its SVG tree diagram (`rftvc.viz.plot_tree`) needs no extra install.
 
 ## Quickstart
 
