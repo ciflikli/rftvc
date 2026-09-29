@@ -34,7 +34,9 @@ def _fit(estimator, X, y, ids, seed):
 
 def _predict(fitted, competing, Xr, w, n_jobs):
     forest = fitted.forest_
-    Xr = np.ascontiguousarray(Xr)
+    # A held-out fold may contain a level absent from its training fold. Score it
+    # through the learned missing route; public prediction still rejects it.
+    Xr = fitted._category_encoder_.transform(Xr, unknown="missing")
     if competing:
         return forest.predict_cause_cumhaz(Xr, w, n_jobs)
     return forest.predict_cumhaz(Xr, w, fitted.aggregate, n_jobs)
@@ -455,9 +457,13 @@ def run_landmark_loss(stack_template, df, data, units, cv, scoring, cause, n_see
             times = _score._loss_times(full.horizon, scoring, n_times)
 
             def curve_of(model_, Xr, _times=times):
+                fitted_forest = model_.forest_
+                encoded = fitted_forest._category_encoder_.transform(Xr, unknown="missing")
                 if competing:
-                    return model_.forest_.predict_cumulative_incidence(Xr, _times, cause=cause)
-                return model_.forest_.predict_survival_function(Xr, _times)
+                    cif, _, _ = fitted_forest.forest_.predict_cif(encoded, _times, 1, fitted_forest.aggregate)
+                    return cif[:, fitted_forest._cause_index(cause), :]
+                H = fitted_forest.forest_.predict_cumhaz(encoded, _times, fitted_forest.aggregate, 1)
+                return np.exp(-H)
 
             base = _score._landmark_scores(
                 data.X, data.y, groups, lambda Xr: curve_of(full, Xr), name, full.horizon, times,

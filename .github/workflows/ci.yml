@@ -45,6 +45,9 @@ jobs:
         run: |
           uv venv --python ${{ matrix.python }}
           uv pip install -e . --group dev
+      - name: Categorical release gate
+        shell: bash
+        run: uv run --no-sync pytest -q tests/test_categories.py tests/test_categorical_integration.py
       - name: Python tests
         shell: bash
         run: uv run --no-sync pytest

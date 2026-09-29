@@ -65,6 +65,10 @@ single-level-versus-rest splits; it does not search all multi-level partitions
 as ranger's ``respect.unordered.factors="partition"`` mode does. For columns
 with many rare levels, group levels before fitting to control width.
 
+Landmark models preserve category labels for ``"last"`` and ``"first"``
+history features. Numeric aggregations such as ``"mean"`` and ``"slope"``
+still require numeric source columns.
+
 .. code-block:: python
 
    X = df[["age", "treatment"]]  # treatment contains labels such as "A" and "B"

@@ -87,11 +87,12 @@ def _raw_groups(history_features):
 
 
 def _agg_expr(name, column, agg, start, time):
+    if agg in ("last", "first"):
+        values = pl.col(column).sort_by(start)
+        return (values.last() if agg == "last" else values.first()).alias(name)
     col = pl.col(column).cast(pl.Float64)
     t = pl.col(time).cast(pl.Float64)
     exprs = {
-        "last": col.sort_by(start).last(),
-        "first": col.sort_by(start).first(),
         "mean": col.mean(),
         "min": col.min(),
         "max": col.max(),
@@ -217,7 +218,7 @@ def make_landmark_data(
         raise ValueError("no subject is at risk at any landmark")
     stacked = pl.concat(parts)
     names = [name for name, _, _ in specs] + ["landmark"]
-    X = stacked.select(names).to_numpy().astype(np.float64)
+    X = stacked.select(names).to_numpy()
     lm_event = stacked["_lm_event"].to_numpy()
     if boolean or labels.max(initial=0) <= 1:
         y = make_survival_y(stacked["_stop"].to_numpy(), lm_event != 0)
@@ -253,7 +254,7 @@ def landmark_features(df, s, *, history_features, id="id", start="start", stop="
     feats = _history_features(df.join(at_risk.select(id), on=id), s, specs, id=id, start=start, measured_at=measured_at)
     out = at_risk.join(feats, on=id, how="inner", maintain_order="left").with_columns(pl.lit(float(s)).alias("landmark"))
     names = [name for name, _, _ in specs] + ["landmark"]
-    return out[id].to_numpy(), np.ascontiguousarray(out.select(names).to_numpy().astype(np.float64))
+    return out[id].to_numpy(), np.ascontiguousarray(out.select(names).to_numpy())
 
 
 class _LandmarkBase(BaseEstimator):

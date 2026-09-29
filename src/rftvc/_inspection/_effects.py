@@ -10,7 +10,8 @@ def default_values(x, n=20):
     return np.unique(np.quantile(x, np.linspace(0.0, 1.0, n)))
 
 
-def hazard_grid(Xe, start, stop, predict, w, feature, values, kind, competing, cause_idx):
+def hazard_grid(Xe, start, stop, predict, w, feature, values, kind, competing, cause_idx,
+                category_group=None, category_levels=None):
     """Exposure-weighted window hazard of ``feature`` at ``values``, per window.
 
     ``predict(Xr, rows)`` returns the fixed-profile cumulative hazard of ``Xr``
@@ -19,9 +20,9 @@ def hazard_grid(Xe, start, stop, predict, w, feature, values, kind, competing, c
 
     Returns ``(hazard, support_mask, individual)``:
     - ``hazard``: ``(n_values, M)`` or CR ``(n_values, J, M)``.
-    - ``support_mask``: ``(n_values, M)`` (``v`` inside the 5-95% range of
-      ``feature`` among rows at risk in that window; ``False`` for every ``v``
-      in a window with no row at risk).
+    - ``support_mask``: ``(n_values, M)`` (numeric ``v`` inside the 5-95%
+      range, or categorical ``v`` observed among rows at risk in that window;
+      ``False`` when no row is at risk).
     - ``individual``: ``None`` unless ``kind="individual"``, else the
       per-row rate, ``(n_rows, n_values, M)`` or CR ``(n_rows, n_values, J, M)``,
       ``NaN`` where the row has no exposure in that window.
@@ -29,7 +30,8 @@ def hazard_grid(Xe, start, stop, predict, w, feature, values, kind, competing, c
     n = Xe.shape[0]
     M = w.size - 1
     n_values = len(values)
-    x = Xe[:, feature]
+    categorical = category_group is not None
+    x = None if categorical else Xe[:, feature]
     # observed-support bounds: one window's exposure array alive at a time (O(n), not O(n*M) --
     # the array itself is not retained; recomputed per (value, window) below for the same reason).
     support_lo = np.full(M, np.nan)
@@ -37,7 +39,7 @@ def hazard_grid(Xe, start, stop, predict, w, feature, values, kind, competing, c
     for m in range(M):
         e = _window_exposure_1(start, stop, w[m], w[m + 1])
         at_risk = e > 0
-        if at_risk.any():
+        if at_risk.any() and not categorical:
             support_lo[m], support_hi[m] = np.quantile(x[at_risk], [0.05, 0.95])
 
     hazard = None
@@ -45,7 +47,12 @@ def hazard_grid(Xe, start, stop, predict, w, feature, values, kind, competing, c
     support_mask = np.zeros((n_values, M), dtype=bool)
     for i, v in enumerate(values):
         Xr = Xe.copy()
-        Xr[:, feature] = v
+        if categorical:
+            level = category_levels.index(v)
+            Xr[:, category_group] = 0.0
+            Xr[:, category_group[level]] = 1.0
+        else:
+            Xr[:, feature] = v
         H = predict(Xr, np.arange(n))
         if competing and cause_idx is None:
             J = H.shape[1]
@@ -82,7 +89,10 @@ def hazard_grid(Xe, start, stop, predict, w, feature, values, kind, competing, c
                     hazard[i, m] = (e[at_risk] * rate[at_risk]).sum() / e[at_risk].sum()
                 else:
                     hazard[i, m] = np.nan
-            support_mask[i, m] = bool(at_risk.any()) and (support_lo[m] <= v <= support_hi[m])
+            if categorical:
+                support_mask[i, m] = bool(at_risk.any()) and bool((Xe[at_risk, category_group[level]] == 1).any())
+            else:
+                support_mask[i, m] = bool(at_risk.any()) and (support_lo[m] <= v <= support_hi[m])
     return hazard, support_mask, individual
 
 
