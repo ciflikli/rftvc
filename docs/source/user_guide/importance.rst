@@ -50,6 +50,12 @@ with its derived features jointly, so their consistency is preserved.
 ``conditional_on=[...]`` crosses the strata with bins of other columns, for
 conditional (subgroup) importance.
 
+For a categorical feature, permutation moves all fitted one-hot indicators
+together and reports one importance for the original column. LOCO drops the
+original column before each refit. A held-out fold can contain a category
+absent from its training fold; LOCO scores that level through the learned
+missing-value route. Ordinary prediction still raises on an unseen label.
+
 ``drop_column_importance`` (LOCO)
 -----------------------------------
 

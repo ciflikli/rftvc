@@ -8,6 +8,7 @@ from joblib import effective_n_jobs
 from sklearn.utils import Bunch
 from sklearn.utils.validation import check_is_fitted
 
+from ._categories import _missing, categorical_flags
 from ._competing import CompetingRisksForestTV
 from ._estimator import _BaseForestTV
 from ._inspection import _effects, _loco, _score, _strata, _units
@@ -208,7 +209,8 @@ def permutation_importance(
         every row its own subject; the bootstrap then resamples rows. Must be
         ``None`` for a landmark estimator (ids come from its own id column).
     features : list of names or indices, default=None
-        One unit per feature; default all features. For a landmark estimator,
+        One unit per original feature (all indicators of a categorical column
+        move together); default all features. For a landmark estimator,
         a raw column name expands to every derived feature built on it
         (the default unit); a derived feature name/index is a singleton.
     groups : dict name -> list of columns, default=None
@@ -340,11 +342,15 @@ def permutation_importance(
         H, input_rows, n_input = predict(Xe, np.arange(Xe.shape[0])), None, Xe.shape[0]
     names = getattr(estimator, "feature_names_in_", None)
     ids_column = getattr(estimator, "ids_column_", None)
-    units, unit_names = _units.resolve_units(features, groups, names, Xe.shape[1], ids_column)
+    encoder = estimator._category_encoder_
+    units, unit_names = _units.resolve_units(features, groups, names, encoder.n_features_in_, ids_column)
+    units = [encoder.expand(cols) for cols in units]
     cond = []
     if conditional_on is not None:
         refs = [conditional_on] if isinstance(conditional_on, (str, numbers.Integral)) else list(conditional_on)
-        cond = [_units._column(c, names, Xe.shape[1], ids_column) for c in refs]
+        cond = [int(j) for c in refs for j in encoder.expand(
+            [_units._column(c, names, encoder.n_features_in_, ids_column)]
+        )]
     if isinstance(strata, str) and strata == "time":
         st = _score.Strata("time", None, n_strata, cond, n_bins)
     elif strata is None:
@@ -445,6 +451,11 @@ def _pe_landmark(model, df, features, groups, strata, n_strata, conditional_on, 
     if conditional_on is not None:
         refs = [conditional_on] if isinstance(conditional_on, (str, numbers.Integral)) else list(conditional_on)
         cond = [_units._column(c, names, Xe.shape[1], None) for c in refs]
+    if scoring == "pe":
+        encoder = model.forest_._category_encoder_
+        Xe = encoder.transform(Xe)
+        units = [encoder.expand(cols) for cols in units]
+        cond = [int(j) for c in cond for j in encoder.expand([c])]
     if isinstance(strata, str) and strata in ("time", "landmark"):
         codes = np.unique(s, return_inverse=True)[1]
         st = _score.Strata("user", codes, n_strata, cond, n_bins)
@@ -529,7 +540,8 @@ def hazard_effect(estimator, X, y, *, feature, values=None, windows=8, kind="ave
     feature : str or int
         The covariate to vary. Not the ids column; not ``"landmark"`` for a landmark estimator.
     values : array-like, default=None
-        Grid of values; default 20 quantiles of the observed column (deduplicated).
+        Grid of values; default 20 quantiles for a numeric column, or every
+        fitted level for a categorical column.
     windows : int or array-like, default=8
         Number of scoring windows (``metrics.event_windows``) or their edges.
     kind : "average" or "individual", default="average"
@@ -597,6 +609,8 @@ def hazard_effect(estimator, X, y, *, feature, values=None, windows=8, kind="ave
         if feature == "landmark" or is_landmark_col:
             raise ValueError("'landmark' is constant within a landmark stratum and is not a permutable feature")
         feature_idx = _units._column(feature, names, n_features, None)
+        encoder = estimator.forest_._category_encoder_
+        Xe = encoder.transform(Xe)
         w = _windows(estimator.forest_, windows)
         inner = estimator.forest_.forest_
         threads = effective_n_jobs(None)
@@ -620,20 +634,28 @@ def hazard_effect(estimator, X, y, *, feature, values=None, windows=8, kind="ave
         Xe, ye, start, row_ids, predict, _, _ = _heldout(estimator, X, y, ids, competing, w, threads)
         names = getattr(estimator, "feature_names_in_", None)
         ids_column = getattr(estimator, "ids_column_", None)
-        feature_idx = _units._column(feature, names, Xe.shape[1], ids_column)
+        encoder = estimator._category_encoder_
+        feature_idx = _units._column(feature, names, encoder.n_features_in_, ids_column)
         if competing:
             stop = competing_risks_labels(ye)[1]
         else:
             stop = check_survival_y(ye, require_events=False)[1]
         cause_idx = None if cause is None else estimator._cause_index(cause)
-    if values is None:
-        values = _effects.default_values(Xe[:, feature_idx])
+    category_levels = encoder.categories_[feature_idx]
+    group = encoder.feature_groups_[feature_idx]
+    if category_levels is not None:
+        values = np.asarray(category_levels if values is None else values, dtype=object)
+        if values.ndim != 1 or values.size == 0 or any(v not in category_levels for v in values):
+            raise ValueError(f"values must be observed levels of categorical feature {feature!r}")
+    elif values is None:
+        values = _effects.default_values(Xe[:, group[0]])
     else:
         values = np.asarray(values, dtype=float)
         if values.ndim != 1 or values.size == 0 or not np.isfinite(values).all():
             raise ValueError("values must be a non-empty 1-D array of finite numbers")
     hazard, support_mask, individual = _effects.hazard_grid(
-        Xe, start, stop, predict, w, feature_idx, values, kind, competing, cause_idx
+        Xe, start, stop, predict, w, int(group[0]), values, kind, competing, cause_idx,
+        category_group=group if category_levels is not None else None, category_levels=category_levels,
     )
     feature_name = str(names[feature_idx]) if names is not None else str(feature_idx)
     return Bunch(
@@ -686,6 +708,7 @@ def path_effect(
         The covariate to shift.
     delta : float or callable
         The shift from ``from_time`` onward: a constant, or ``f(values, start) -> values``.
+        A categorical feature requires a callable mapping its labels to fitted labels.
     from_time : float
         Absolute analysis time the shift starts at, on the same clock as ``intervals``.
     horizons : array-like of float
@@ -734,7 +757,7 @@ def path_effect(
         raise TypeError("path_effect is not defined for landmark estimators: paths are a counting-process concept")
     if cause is not None and not competing:
         raise ValueError("cause is only for competing-risks estimators")
-    Xc, _, idsc = estimator._check_predict(X, None, ids)
+    _, _, idsc = estimator._check_predict(X, None, ids)
     if idsc is None:
         raise ValueError("ids is required (paths are grouped into subjects by id)")
     if not isinstance(from_time, numbers.Real) or isinstance(from_time, (bool, np.bool_)) or not np.isfinite(from_time):
@@ -744,7 +767,14 @@ def path_effect(
         raise ValueError("horizons must be a non-empty 1-D array")
     if (horizons < from_time).any():
         raise ValueError(f"horizons must all be >= from_time ({from_time}); got {horizons.tolist()}")
-    Xo, start, stop, offsets, origin_r = estimator._path_args(Xc, intervals, idsc, origin, extrapolate)
+    fit_ids = getattr(estimator, "ids_column_", None)
+    drop_ids = ids if isinstance(ids, str) else (
+        fit_ids if fit_ids is not None and hasattr(X, "columns") and fit_ids in list(X.columns) else None
+    )
+    Xraw, _, _ = split_frame(X, drop_ids, numeric=False)
+    Xo, start, stop, offsets, origin_r = estimator._path_args(
+        np.asarray(Xraw), intervals, idsc, origin, extrapolate
+    )
     start0, stop0 = check_intervals(intervals)
     cp = check_counting_process(start0, stop0, None, idsc)
     id_labels = np.asarray(idsc)[cp.order][cp.offsets[:-1]]
@@ -776,7 +806,12 @@ def path_effect(
                 "the last stop; supply the future path as extra rows instead"
             )
     Xs, start_s, stop_s, offsets_s = _effects.split_at(Xo, start, stop, offsets, from_time)
-    feature_idx = _units._column(feature, getattr(estimator, "feature_names_in_", None), Xs.shape[1], None)
+    encoder = estimator._category_encoder_
+    feature_idx = _units._column(
+        feature, getattr(estimator, "feature_names_in_", None), encoder.n_features_in_, None
+    )
+    if encoder.categories_[feature_idx] is not None and not callable(delta):
+        raise TypeError("delta must be a callable mapping labels for a categorical feature")
     Xshift = _effects.shift_from(Xs, start_s, feature_idx, from_time, delta)
     path_ids = np.repeat(np.arange(offsets_s.size - 1), np.diff(offsets_s))
     iv = make_survival_y(stop_s, np.zeros(stop_s.shape[0], dtype=bool), start=start_s)
@@ -979,7 +1014,13 @@ def drop_column_importance(
     if not (isinstance(windows, numbers.Integral) and not isinstance(windows, (bool, np.bool_))):
         windows = _check_windows(windows)
     ids_name = ids if isinstance(ids, str) else None
-    Xnum, names, ids_values = split_frame(X, ids)
+    Xnum, names, ids_values = split_frame(X, ids, numeric=False)
+    flags = categorical_flags(X, names)
+    if flags and any(flags):
+        Xnum = np.asarray(Xnum, dtype=object).copy()
+        for j, flag in enumerate(flags):
+            if flag:
+                Xnum[:, j] = [np.nan if _missing(v) else str(v) for v in Xnum[:, j]]
     ye, _ = _target(y, competing)
     if ye.shape[0] != Xnum.shape[0]:
         raise ValueError(f"X has {Xnum.shape[0]} rows but y has {ye.shape[0]}")

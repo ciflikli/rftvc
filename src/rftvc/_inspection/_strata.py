@@ -51,7 +51,18 @@ def bin_codes(v, n):
     """Bin index per value: the values themselves when there are at most ``n``
     distinct ones, else ``n`` quantile bins, right-closed (a value on an edge
     goes to the lower bin)."""
-    v = np.asarray(v, dtype=float)
+    try:
+        v = np.asarray(v, dtype=float)
+    except (TypeError, ValueError):
+        v = np.asarray(v)
+        missing = _isna(v)
+        try:
+            _, codes = np.unique(v[~missing], return_inverse=True)
+        except TypeError as exc:
+            raise ValueError("conditioning feature labels must be sortable") from exc
+        out = np.full(v.shape, codes.max(initial=-1) + 1, dtype=np.intp)
+        out[~missing] = codes
+        return out
     uniq = np.unique(v)
     if uniq.size <= n:
         return np.searchsorted(uniq, v)
