@@ -15,6 +15,10 @@ retroactively itemized here — see `git log` for the full slice-by-slice histor
   structure (`children_left`, `children_right`, `feature`, `threshold`, `leaf`), in
   scikit-learn's `Tree` attribute convention, for building custom tree diagrams. A leaf's
   Nelson-Aalen cumulative hazard curve is `forest_.leaf_profile(tree, leaf)`.
+- `rftvc.viz`, an optional plotting module (`pip install rftvc[viz]`):
+  `plot_survival_curve`, `plot_cumulative_incidence`, `plot_importance`,
+  `plot_hazard_effect` and `plot_calibration` (Altair charts over existing rftvc return
+  values), and `plot_tree` (a dependency-free SVG tree diagram built on `export_tree`).
 
 ## [0.1.0] - 2026-09-28
 

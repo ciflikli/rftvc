@@ -89,3 +89,23 @@ Metrics
    PEScore
    KaplanMeierCensoring
    UndefinedMetricError
+
+Visualization
+-------------
+
+Optional (``pip install rftvc[viz]``); every function renders an existing rftvc
+return value. The five Altair charts need the extra; :func:`~rftvc.viz.plot_tree`
+does not (it returns a plain SVG string).
+
+.. currentmodule:: rftvc.viz
+
+.. autosummary::
+   :toctree: generated/api
+   :nosignatures:
+
+   plot_survival_curve
+   plot_cumulative_incidence
+   plot_importance
+   plot_hazard_effect
+   plot_calibration
+   plot_tree
