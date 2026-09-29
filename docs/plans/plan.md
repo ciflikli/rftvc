@@ -447,6 +447,15 @@ addition. `docs/plans/simulation-validation-findings.md` updated: new row 9, plu
 cross-references in row 8's blind-spot note and the closing-summary's CR bullet fixed (the standing
 lesson from `[[rftvc-dev-workflow]]` — re-grep every cross-reference, not just the diff).
 
+**Codex diff review (PR #66):** one real finding, high confidence/medium priority — the R fixture
+script indexed `pr$cif[,,1]`/`[,,2]` by position with no check that rfsrc's cause ordering actually
+matched; confirmed empirically that `fit$event.info$event.type` can differ in order from
+`dimnames(pr$cif)[[3]]` (observed `[2, 1]` vs. `["CIF.1", "CIF.2"]` on one run of this exact DGP) —
+a future regeneration could silently swap causes and make the gate pass for the wrong reason. Fixed:
+R script now asserts `dimnames(pr$cif)[[3]] == c("CIF.1", "CIF.2")` before writing output; fixture
+stores explicit `cause_labels: [1, 2]`; Python loader asserts it matches. Fixture regenerated
+(assertion passed, values unchanged), full test file reran clean.
+
 ---
 
 ## Notes for implementation-stage context recovery
