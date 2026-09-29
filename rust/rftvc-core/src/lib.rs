@@ -24,7 +24,7 @@ pub use forest::{
 pub use grid::{Coarsened, Grid, coarsen};
 pub use rng::Rng;
 pub use splitter::{
-    NodeProfile, SplitCandidate, SplitParams, best_split, cause_profile_on, count_units,
+    NodeProfile, SplitCandidate, SplitParams, SplitRule, best_split, cause_profile_on, count_units,
     exposure_of, node_profile, profile_on,
 };
 pub use tree::{Node, Tree, TreeParams, build_tree};

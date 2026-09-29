@@ -264,7 +264,7 @@ def test_pre_s9_state_is_rejected():
 @pytest.mark.parametrize(
     "edit",
     [
-        lambda s: s.update(format_version=4),
+        lambda s: s.update(format_version=5),
         lambda s: s.update(n_features=0),
         lambda s: s.update(grid=s["grid"][::-1].copy()),
         lambda s: s.update(cumhaz=-s["cumhaz"]),

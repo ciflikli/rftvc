@@ -115,7 +115,7 @@ fn single_cause_best_split_equals_single_event_forest() {
                 &params,
                 &LtrcLogRank,
             );
-            let key = |s: &rftvc_core::SplitCandidate| (s.feature, s.bin, s.score.to_bits());
+            let key = |s: &rftvc_core::SplitCandidate| (s.feature, s.rule, s.score.to_bits());
             assert_eq!(got.as_ref().map(key), want.as_ref().map(key));
             found += got.is_some() as usize;
         }
@@ -336,10 +336,11 @@ fn cr_flat() -> FlatForest {
 }
 
 #[test]
-fn flat_v3_roundtrip_preserves_cif() {
+fn flat_v4_roundtrip_preserves_cif() {
     let (x, forest, surv) = cr_forest(5, None, 17);
     let flat = FlatForest::from_forest(&forest);
-    assert_eq!((flat.format_version, flat.n_causes), (3, 2));
+    assert_eq!((flat.format_version, flat.n_causes), (4, 2));
+    assert_eq!(flat.node_missing_right.len(), flat.node_feature.len());
     let back = flat.to_forest().unwrap();
     let t = surv.grid.times.to_vec();
     assert_eq!(
@@ -347,6 +348,25 @@ fn flat_v3_roundtrip_preserves_cif() {
         back.predict_cif(&x, 1, &t, CifAggregate::Hazard)
     );
     assert_eq!(FlatForest::from_forest(&back), flat);
+}
+
+/// A v3 state (no `node_missing_right`, predating missing-value support) still
+/// loads and predicts identically: every one of its nodes was fit without
+/// missing values, so the loader's `missing_goes_right = true` default for
+/// them is never actually exercised by any real (non-NaN) input.
+#[test]
+fn flat_v3_state_still_loads_and_predicts_identically() {
+    let (x, forest, _surv) = cr_forest(5, None, 17);
+    let flat = FlatForest::from_forest(&forest);
+    let mut v3 = flat.clone();
+    v3.format_version = 3;
+    v3.node_missing_right = Vec::new();
+    let back = v3.to_forest().unwrap();
+    let t = forest.trees[0].grid_times.to_vec();
+    assert_eq!(
+        forest.predict_cif(&x, 1, &t, CifAggregate::Hazard),
+        back.predict_cif(&x, 1, &t, CifAggregate::Hazard)
+    );
 }
 
 #[test]
@@ -391,7 +411,7 @@ fn flat_v2_loads_as_one_cause_and_bad_v3_states_error() {
     bad.cumhaz.pop();
     assert!(bad.to_forest().is_err(), "short cumhaz");
     let mut bad = flat.clone();
-    bad.format_version = 4;
+    bad.format_version = 5;
     assert!(bad.to_forest().is_err(), "future version");
     // Cause 2 decreasing inside a leaf while cause 1 stays valid.
     let leaf = (0..flat.event_offsets.len() - 1)

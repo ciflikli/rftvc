@@ -11,8 +11,8 @@ use pyo3::types::PyDict;
 use rftvc_core::{
     Aggregate, AjOutput, Binned, CifAggregate, CompositeCauseLogRank, Extrapolate, FlatForest,
     Forest, ForestParams, Grid, Groups, LtrcLogRank, Node, Profile, SingleCause, SplitCriterion,
-    SplitParams, SurvData, TreeParams, best_split as core_best_split, cause_profile_on, coarsen,
-    exposure_of, fit_forest, node_profile, profile_on,
+    SplitParams, SplitRule, SurvData, TreeParams, best_split as core_best_split, cause_profile_on,
+    coarsen, exposure_of, fit_forest, node_profile, profile_on,
 };
 
 /// Contiguous 1-d input as a Vec. Strided views (e.g. a field of a structured
@@ -97,7 +97,7 @@ fn aggregate(name: &str) -> PyResult<Aggregate> {
 /// `(event_times, cumhaz (n_entries, n_causes))` of one leaf.
 type LeafProfile<'py> = (Vec<f64>, Bound<'py, PyArray2<f64>>);
 
-/// One tree's node arrays: `(children_left, children_right, feature, threshold, leaf)`,
+/// One tree's node arrays: `(children_left, children_right, feature, threshold, leaf, missing_goes_right)`,
 /// matching sklearn's `Tree` sentinels exactly (`children_left`/`children_right` are `-1`
 /// at a leaf, `TREE_LEAF`; `feature`/`threshold` are `-2`/`-2.0`, `TREE_UNDEFINED`).
 /// `leaf[i]` (rftvc-specific) is the leaf index to pass to `leaf_profile` at a leaf node, `-1`
@@ -108,6 +108,7 @@ type TreeArrays<'py> = (
     Bound<'py, PyArray1<i64>>,
     Bound<'py, PyArray1<f64>>,
     Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<bool>>,
 );
 
 /// Cause-coded response: codes in `0..=n_causes`, `n_causes` in `1..=255`.
@@ -350,16 +351,19 @@ impl PyForest {
             vec![-1i64; n],
         );
         let mut threshold = vec![-2.0f64; n];
+        let mut missing_right = vec![false; n];
         for (i, node) in t.nodes.iter().enumerate() {
             match node {
                 Node::Split {
                     feature: f,
                     threshold: th,
+                    missing_goes_right,
                     left: l,
                     right: r,
                 } => {
                     feature[i] = *f as i64;
                     threshold[i] = *th;
+                    missing_right[i] = *missing_goes_right;
                     left[i] = *l as i64;
                     right[i] = *r as i64;
                 }
@@ -372,6 +376,7 @@ impl PyForest {
             feature.into_pyarray(py),
             threshold.into_pyarray(py),
             leaf.into_pyarray(py),
+            missing_right.into_pyarray(py),
         ))
     }
 
@@ -718,6 +723,7 @@ impl PyForest {
         d.set_item("node_offsets", f.node_offsets.into_pyarray(py))?;
         d.set_item("node_feature", f.node_feature.into_pyarray(py))?;
         d.set_item("node_threshold", f.node_threshold.into_pyarray(py))?;
+        d.set_item("node_missing_right", f.node_missing_right.into_pyarray(py))?;
         d.set_item("node_left", f.node_left.into_pyarray(py))?;
         d.set_item("node_right", f.node_right.into_pyarray(py))?;
         d.set_item("leaf_offsets", f.leaf_offsets.into_pyarray(py))?;
@@ -766,6 +772,13 @@ impl PyForest {
             node_offsets: vec_of!("node_offsets", u64),
             node_feature: vec_of!("node_feature", i64),
             node_threshold: vec_of!("node_threshold", f64),
+            // Absent means an older (pre-v4) pickle; `to_forest` treats an empty
+            // vec as "every node's missing_goes_right defaults to true."
+            node_missing_right: if state.contains("node_missing_right")? {
+                vec_of!("node_missing_right", bool)
+            } else {
+                Vec::new()
+            },
             node_left: vec_of!("node_left", u32),
             node_right: vec_of!("node_right", u32),
             leaf_offsets: vec_of!("leaf_offsets", u64),
@@ -1123,7 +1136,22 @@ fn best_split(
     )
     .map(|s| {
         let col = binned.column(s.feature);
-        let mask = (0..n).map(|i| col[i] <= s.bin).collect();
+        let miss = binned.missing_column(s.feature);
+        let mask: Vec<bool> = (0..n)
+            .map(|i| match s.rule {
+                SplitRule::Threshold {
+                    bin,
+                    missing_goes_right,
+                } => {
+                    if miss[i] {
+                        !missing_goes_right
+                    } else {
+                        col[i] <= bin
+                    }
+                }
+                SplitRule::MissingVsObserved => miss[i],
+            })
+            .collect();
         (
             s.feature,
             s.threshold,

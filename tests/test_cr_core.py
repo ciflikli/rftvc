@@ -300,7 +300,7 @@ def test_pickle_round_trip_and_v2_states():
     np.testing.assert_array_equal(m2.predict_cumulative_incidence(X), m.predict_cumulative_incidence(X))
     np.testing.assert_array_equal(m2.causes_, m.causes_)
     state = _state(m)
-    assert (state["format_version"], state["n_causes"]) == (3, 2)
+    assert (state["format_version"], state["n_causes"]) == (4, 2)
     Forest = type(m.forest_)
     # A v2 state (before S11): single event, no `n_causes`.
     X1, y1, ids1 = _cp_data(80, 0)

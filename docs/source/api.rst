@@ -31,6 +31,19 @@ Data
    landmark_features
    LandmarkData
 
+Missing-value preprocessing
+---------------------------
+
+.. currentmodule:: rftvc.impute
+
+.. autosummary::
+   :toctree: generated/api
+   :nosignatures:
+
+   impute_locf
+
+.. currentmodule:: rftvc
+
 .. data:: CR_DTYPE
 
    Structured ``numpy.dtype`` of a competing-risks target: fields ``start`` (f8),
