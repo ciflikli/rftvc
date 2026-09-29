@@ -4,9 +4,9 @@ import doctest
 
 import pytest
 
-from rftvc import _competing, _estimator, inspection, landmark, metrics, model_selection
+from rftvc import _competing, _estimator, impute, inspection, landmark, metrics, model_selection
 
-MODULES = [_estimator, _competing, landmark, inspection, metrics, model_selection]
+MODULES = [_estimator, _competing, landmark, inspection, metrics, model_selection, impute]
 
 
 @pytest.mark.parametrize("module", MODULES, ids=[m.__name__ for m in MODULES])
