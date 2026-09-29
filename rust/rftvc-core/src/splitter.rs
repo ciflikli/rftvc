@@ -1,4 +1,4 @@
-use crate::criterion::{Profile, SplitCriterion};
+use crate::criterion::{NodeScorer, Profile, SplitCriterion};
 
 use crate::data::{Binned, SurvData};
 
@@ -185,12 +185,27 @@ pub struct SplitParams {
     pub cause_floor: Option<(usize, usize)>,
 }
 
+/// How a split routes a row. `Threshold` is the ordinary numeric-value split;
+/// `MissingVsObserved` sends every row missing the feature left and every
+/// other row right, regardless of value (only offered when both groups are
+/// non-empty at the node -- see `best_split_in`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SplitRule {
+    /// Rows with `bin <= bin` go left; a missing row goes left iff
+    /// `!missing_goes_right`.
+    Threshold {
+        bin: u8,
+        missing_goes_right: bool,
+    },
+    MissingVsObserved,
+}
+
 #[derive(Clone, Debug)]
 pub struct SplitCandidate {
     pub feature: usize,
-    /// Rows with `bin <= bin` go left.
-    pub bin: u8,
-    /// Raw-value threshold: `x <= threshold` goes left.
+    pub rule: SplitRule,
+    /// Raw-value threshold for `Threshold`; `f64::NAN` for `MissingVsObserved`
+    /// (there is no value threshold -- routing is purely on missingness).
     pub threshold: f64,
     pub score: f64,
     /// Distinct units with at least one row in each child.
@@ -259,6 +274,19 @@ pub fn best_split_in(
 
     for &f in features {
         let col = binned.column(f);
+        let miss = binned.missing_column(f);
+        let n_missing = if binned.feature_has_missing[f] {
+            rows.iter().filter(|&&r| miss[r as usize]).count()
+        } else {
+            0
+        };
+        if n_missing > 0 {
+            search_feature_with_missing(
+                binned, profile, rows, units, local, f, col, miss, n_missing, params, &*scorer,
+                n_events, k, nc, &mut best,
+            );
+            continue;
+        }
         let mut counts = [0usize; 256];
         let mut ev_counts = [0usize; 256];
         let mut cause_counts = [0usize; 256];
@@ -360,7 +388,10 @@ pub fn best_split_in(
                 let bin = used[c] as u8;
                 best = Some(SplitCandidate {
                     feature: f,
-                    bin,
+                    rule: SplitRule::Threshold {
+                        bin,
+                        missing_goes_right: true,
+                    },
                     threshold: binned.edges[f][bin as usize],
                     score,
                     ids_left,
@@ -370,6 +401,333 @@ pub fn best_split_in(
         }
     }
     best
+}
+
+/// `best_split_in`'s per-feature search when the feature has missing rows in
+/// this node. Deliberately not sharing the no-missing path's O(1)-amortized
+/// incremental bookkeeping: unit membership under a missing-direction choice
+/// needs to account for a resampling unit whose own rows straddle observed
+/// and missing (see the mixed-unit correctness note below), which is simplest
+/// -- and least bug-prone -- to get right by recomputing directly per
+/// candidate rather than extending the existing incremental histograms.
+/// Cost is `O(n_units_in_node)` per candidate threshold, gated entirely behind
+/// "this feature actually has a missing row in this node": zero added cost
+/// otherwise. Revisit only if benchmarking shows this matters in practice.
+///
+/// For a threshold candidate (an existing observed-value bin boundary) there
+/// are two ways missing rows can be assigned, both scored:
+/// - **missing -> right**: `left` is exactly the observed-only rows with
+///   `bin <= threshold`, as in the no-missing path; missing rows fall out on
+///   the right for free (the criterion computes right as parent minus left,
+///   and the parent's profile already includes every row).
+/// - **missing -> left**: `left` is the observed-only left rows *plus* every
+///   missing row (added as a fixed block, since missing rows carry no
+///   ordering information to sweep over).
+///
+/// Plus one rule with no value threshold at all: **`MissingVsObserved`**
+/// (every missing row left, every observed row right) -- needed because a
+/// feature whose *observed* values are all equal has no threshold for the
+/// sweep above to offer, yet missingness itself can still be informative.
+///
+/// **Mixed-unit correctness** (a unit with both an observed and a missing row
+/// for `f`): a unit counts in a child iff *any* of its rows is assigned
+/// there (the existing straddling convention). So at threshold `t`:
+/// - missing -> right: `ids_left(t)` = units with an observed row `<= t`
+///   (unaffected by missingness); `ids_right(t)` = units with an observed row
+///   `> t`, **or** any missing row (a unit with only missing rows for `f`
+///   still has to land somewhere, and it lands right here).
+/// - missing -> left: `ids_right(t)` = units with an observed row `> t`
+///   (unaffected -- a missing row never contributes to the right here);
+///   `ids_left(t)` = units with an observed row `<= t`, **or** any missing row.
+///
+/// A unit satisfying both an "observed `> t`" and a "has missing" condition
+/// under missing -> left counts in *both* children (its missing row is left,
+/// its late observed row is right) -- exactly the pre-existing straddling
+/// convention, not a new case.
+#[allow(clippy::too_many_arguments)]
+fn search_feature_with_missing(
+    binned: &Binned,
+    profile: &NodeProfile,
+    rows: &[u32],
+    units: &[u32],
+    local: &[LocalRow],
+    f: usize,
+    col: &[u8],
+    miss: &[bool],
+    n_missing: usize,
+    params: &SplitParams,
+    scorer: &dyn NodeScorer,
+    n_events: usize,
+    k: usize,
+    nc: usize,
+    best: &mut Option<SplitCandidate>,
+) {
+    struct UnitSummary {
+        obs_lo: Option<u8>,
+        obs_hi: Option<u8>,
+        has_missing: bool,
+    }
+    let mut unit_summaries: Vec<UnitSummary> = Vec::new();
+    let mut i = 0;
+    while i < rows.len() {
+        let unit = units[i];
+        let (mut lo, mut hi, mut has_missing) = (None, None, false);
+        while i < rows.len() && units[i] == unit {
+            let r = rows[i] as usize;
+            if miss[r] {
+                has_missing = true;
+            } else {
+                let b = col[r];
+                lo = Some(lo.map_or(b, |l: u8| l.min(b)));
+                hi = Some(hi.map_or(b, |h: u8| h.max(b)));
+            }
+            i += 1;
+        }
+        unit_summaries.push(UnitSummary {
+            obs_lo: lo,
+            obs_hi: hi,
+            has_missing,
+        });
+    }
+    let floor_cause = params.cause_floor.map_or(u8::MAX, |(c, _)| c as u8 + 1);
+
+    let n_obs = rows.len() - n_missing;
+    if n_obs == 0 {
+        return; // every row missing on f: no observed side to compare against.
+    }
+
+    // Missing block's fixed aggregate contribution (used by the MissingVsObserved
+    // candidate and, elementwise, by every missing->left threshold candidate).
+    let miss_local: Vec<LocalRow> = rows
+        .iter()
+        .zip(local)
+        .filter(|&(&r, _)| miss[r as usize])
+        .map(|(_, row)| row.clone())
+        .collect();
+    let (miss_at, miss_ev, miss_cev) = profile_from_local(&miss_local, k, nc);
+    let miss_exposure: f64 = miss_local.iter().map(|r| r.dur).sum();
+    let miss_e: usize = miss_local.iter().filter(|r| r.cause != 0).count();
+    let miss_c: usize = miss_local.iter().filter(|r| r.cause == floor_cause).count();
+
+    let admissible = |ids_left: usize,
+                      ids_right: usize,
+                      e_left: usize,
+                      e_right: usize,
+                      c_left: usize,
+                      c_right: usize| {
+        ids_left >= params.min_leaf
+            && ids_right >= params.min_leaf
+            && e_left >= params.min_events_leaf
+            && e_right >= params.min_events_leaf
+            && params
+                .cause_floor
+                .is_none_or(|(_, m)| c_left >= m && c_right >= m)
+    };
+
+    let mut try_candidate = |rule: SplitRule,
+                             threshold: f64,
+                             at: &[f64],
+                             ev: &[f64],
+                             cev: &[f64],
+                             exposure: f64,
+                             ids_left: usize,
+                             ids_right: usize| {
+        let left = Profile {
+            at_risk: at,
+            events: ev,
+            cause_events: if nc == 1 { ev } else { cev },
+            n_causes: nc,
+            times: &profile.times,
+            exposure,
+            n_units: ids_left as f64,
+        };
+        let score = scorer.score(&left, ids_right as f64);
+        if score > 0.0 && best.as_ref().is_none_or(|b| score > b.score) {
+            *best = Some(SplitCandidate {
+                feature: f,
+                rule,
+                threshold,
+                score,
+                ids_left,
+                ids_right,
+            });
+        }
+    };
+
+    // --- MissingVsObserved: every missing row left, every observed row right ---
+    {
+        let ids_left = unit_summaries.iter().filter(|u| u.has_missing).count();
+        let ids_right = unit_summaries.iter().filter(|u| u.obs_lo.is_some()).count();
+        let e_left = miss_e;
+        let e_right = n_events - miss_e;
+        let c_left = miss_c;
+        let c_right = profile
+            .n_cause_events
+            .get(params.cause_floor.map_or(0, |(cf, _)| cf))
+            .copied()
+            .unwrap_or(0)
+            - miss_c;
+        if admissible(ids_left, ids_right, e_left, e_right, c_left, c_right) {
+            try_candidate(
+                SplitRule::MissingVsObserved,
+                f64::NAN,
+                &miss_at,
+                &miss_ev,
+                &miss_cev,
+                miss_exposure,
+                ids_left,
+                ids_right,
+            );
+        }
+    }
+
+    // --- Per-threshold candidates: gather observed-only bins, sweep as in the
+    // no-missing path, scoring both missing directions at each step. ---
+    let mut counts = [0usize; 256];
+    let mut obs_bins: Vec<(u32, u8)> = Vec::with_capacity(n_obs); // (row index into `rows`, bin)
+    for (i, &r) in rows.iter().enumerate() {
+        if !miss[r as usize] {
+            let b = col[r as usize];
+            counts[b as usize] += 1;
+            obs_bins.push((i as u32, b));
+        }
+    }
+    let used: Vec<usize> = (0..256).filter(|&b| counts[b] > 0).collect();
+    let nb = used.len();
+    if nb < 2 {
+        return; // observed values are constant: only MissingVsObserved applies (handled above).
+    }
+    let mut offset = [0usize; 257];
+    for b in 0..256 {
+        offset[b + 1] = offset[b] + counts[b];
+    }
+    let mut fill = offset;
+    let mut by_bin = vec![0u32; n_obs];
+    for &(i, b) in &obs_bins {
+        by_bin[fill[b as usize]] = i;
+        fill[b as usize] += 1;
+    }
+
+    let mut diff = vec![0.0; k + 1];
+    let mut left_ev = vec![0.0; k];
+    let mut left_cev = vec![0.0; if nc == 1 { 0 } else { k * nc }];
+    let mut left_at = vec![0.0; k];
+    let mut left_at_miss = vec![0.0; k];
+    let mut left_ev_miss = vec![0.0; k];
+    let mut left_cev_miss = vec![0.0; if nc == 1 { 0 } else { k * nc }];
+    let (mut e_left, mut c_left) = (0usize, 0usize);
+    let mut left_exposure = 0.0;
+    for &c in &used[..nb - 1] {
+        for &i in &by_bin[offset[c]..offset[c + 1]] {
+            let row = &local[i as usize];
+            left_exposure += row.dur;
+            diff[row.la as usize] += 1.0;
+            diff[row.lb as usize] -= 1.0;
+            if row.cause != 0 {
+                left_ev[row.lb as usize - 1] += 1.0;
+                e_left += 1;
+                if row.cause == floor_cause {
+                    c_left += 1;
+                }
+                if nc > 1 {
+                    left_cev[(row.cause as usize - 1) * k + row.lb as usize - 1] += 1.0;
+                }
+            }
+        }
+        let mut run = 0.0;
+        for j in 0..k {
+            run += diff[j];
+            left_at[j] = run;
+            left_at_miss[j] = run + miss_at[j];
+        }
+        for j in 0..k {
+            left_ev_miss[j] = left_ev[j] + miss_ev[j];
+        }
+        for j in 0..left_cev.len() {
+            left_cev_miss[j] = left_cev[j] + miss_cev[j];
+        }
+        let threshold = binned.edges[f][c];
+
+        // missing -> right
+        let ids_left_r = unit_summaries
+            .iter()
+            .filter(|u| u.obs_lo.is_some_and(|lo| lo as usize <= c))
+            .count();
+        let ids_right_r = unit_summaries
+            .iter()
+            .filter(|u| u.has_missing || u.obs_hi.is_some_and(|hi| hi as usize > c))
+            .count();
+        let e_right_r = n_events - e_left;
+        let c_right_r = profile
+            .n_cause_events
+            .get(params.cause_floor.map_or(0, |(cf, _)| cf))
+            .copied()
+            .unwrap_or(0)
+            - c_left;
+        if admissible(
+            ids_left_r,
+            ids_right_r,
+            e_left,
+            e_right_r,
+            c_left,
+            c_right_r,
+        ) {
+            try_candidate(
+                SplitRule::Threshold {
+                    bin: c as u8,
+                    missing_goes_right: true,
+                },
+                threshold,
+                &left_at,
+                &left_ev,
+                &left_cev,
+                left_exposure,
+                ids_left_r,
+                ids_right_r,
+            );
+        }
+
+        // missing -> left
+        let ids_left_l = unit_summaries
+            .iter()
+            .filter(|u| u.has_missing || u.obs_lo.is_some_and(|lo| lo as usize <= c))
+            .count();
+        let ids_right_l = unit_summaries
+            .iter()
+            .filter(|u| u.obs_hi.is_some_and(|hi| hi as usize > c))
+            .count();
+        let e_left_l = e_left + miss_e;
+        let e_right_l = n_events - e_left_l;
+        let c_left_l = c_left + miss_c;
+        let c_right_l = profile
+            .n_cause_events
+            .get(params.cause_floor.map_or(0, |(cf, _)| cf))
+            .copied()
+            .unwrap_or(0)
+            - c_left_l;
+        if admissible(
+            ids_left_l,
+            ids_right_l,
+            e_left_l,
+            e_right_l,
+            c_left_l,
+            c_right_l,
+        ) {
+            try_candidate(
+                SplitRule::Threshold {
+                    bin: c as u8,
+                    missing_goes_right: false,
+                },
+                threshold,
+                &left_at_miss,
+                &left_ev_miss,
+                &left_cev_miss,
+                left_exposure + miss_exposure,
+                ids_left_l,
+                ids_right_l,
+            );
+        }
+    }
 }
 
 /// Person-time of `rows`.

@@ -10,6 +10,9 @@ scikit-learn compatible Python API.
 - Landmark data building and a landmark super-model for dynamic prediction.
 - Time-aware cross-validation and IPCW landmark metrics.
 - An exact log-rank split criterion, and an opt-in coarse time grid for large data.
+- Native missing-value splits: trees learn where to route NaN features, including
+  splits on missingness itself. `rftvc.impute.impute_locf` offers per-subject
+  last-observation-carried-forward preprocessing for time-varying features.
 - Optional plotting (`rftvc.viz`, `pip install rftvc[viz]`): survival/hazard/CIF curves,
   importance and calibration charts (Altair), and a dependency-free SVG tree diagram.
 

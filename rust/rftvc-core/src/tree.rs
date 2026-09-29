@@ -3,13 +3,20 @@ use std::sync::Arc;
 use crate::criterion::SplitCriterion;
 use crate::data::{Binned, SurvData};
 use crate::rng::Rng;
-use crate::splitter::{SplitParams, best_split_in, count_units, node_profile};
+use crate::splitter::{SplitParams, SplitRule, best_split_in, count_units, node_profile};
 
 #[derive(Clone, Debug)]
 pub enum Node {
     Split {
         feature: u32,
+        /// `NaN` marks a `MissingVsObserved` split (see `SplitRule`): no
+        /// observed value satisfies `x <= NaN` (false for any real `x`, by
+        /// IEEE-754), so every observed row routes right for free, and only
+        /// `missing_goes_right` (always `false` here) decides where missing
+        /// rows go. An ordinary `Threshold` split's `threshold` is a real value.
         threshold: f64,
+        /// Where a row with a missing `feature` value routes.
+        missing_goes_right: bool,
         left: u32,
         right: u32,
     },
@@ -99,11 +106,24 @@ pub fn build_tree(
         match split {
             Some(s) => {
                 let col = binned.column(s.feature);
+                let miss = binned.missing_column(s.feature);
+                let (missing_goes_right, bin) = match s.rule {
+                    SplitRule::Threshold {
+                        bin,
+                        missing_goes_right,
+                    } => (missing_goes_right, Some(bin)),
+                    SplitRule::MissingVsObserved => (false, None), // missing left, observed right
+                };
                 // Stable partition of (row, unit) pairs keeps each unit contiguous.
                 let (mut l_rows, mut l_units, mut r_rows, mut r_units) =
                     (Vec::new(), Vec::new(), Vec::new(), Vec::new());
                 for (&row, &unit) in rows.iter().zip(&units) {
-                    if col[row as usize] <= s.bin {
+                    let goes_left = if miss[row as usize] {
+                        !missing_goes_right
+                    } else {
+                        bin.is_some_and(|b| col[row as usize] <= b)
+                    };
+                    if goes_left {
                         l_rows.push(row);
                         l_units.push(unit);
                     } else {
@@ -117,6 +137,7 @@ pub fn build_tree(
                 nodes[node_id] = Node::Split {
                     feature: s.feature as u32,
                     threshold: s.threshold,
+                    missing_goes_right,
                     left: li as u32,
                     right: ri as u32,
                 };
@@ -185,10 +206,14 @@ impl Tree {
                 Node::Split {
                     feature,
                     threshold,
+                    missing_goes_right,
                     left,
                     right,
                 } => {
-                    i = if x[*feature as usize] <= *threshold {
+                    let v = x[*feature as usize];
+                    i = if v.is_nan() {
+                        if *missing_goes_right { *right } else { *left }
+                    } else if v <= *threshold {
                         *left
                     } else {
                         *right

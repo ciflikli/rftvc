@@ -32,7 +32,7 @@ EXPECTED_FAILED = {
     "check_estimators_fit_returns_self": "test_fit_returns_self_and_keeps_params",
     "check_dtype_object": "test_object_and_integer_dtypes",
     "check_estimators_dtypes": "test_object_and_integer_dtypes",
-    "check_estimators_nan_inf": "test_nan_and_inf_are_rejected",
+    "check_estimators_nan_inf": "test_nan_is_accepted_and_inf_rejected",
     "check_estimators_pickle": "test_pickle_and_clone",
     "check_f_contiguous_array_estimator": "test_memory_layouts",
     "check_readonly_memmap_input": "test_memory_layouts",
@@ -146,11 +146,13 @@ def test_object_and_integer_dtypes(data):
         data.est().fit(np.full(X.shape, "a", dtype=object), y, ids)
 
 
-@pytest.mark.parametrize("bad", [np.nan, np.inf])
-def test_nan_and_inf_are_rejected(data, bad):
+def test_nan_is_accepted_and_inf_rejected(data):
     X, y, ids = data
     Xb = X.copy()
-    Xb[0, 0] = bad
+    Xb[0, 0] = np.nan
+    est = data.est().fit(Xb, y, ids)
+    assert np.isfinite(est.predict(Xb)).all()
+    Xb[0, 0] = np.inf
     with pytest.raises(ValueError):
         data.est().fit(Xb, y, ids)
     with pytest.raises(ValueError):
@@ -240,8 +242,7 @@ def test_dataframe_ids_column_and_dataframe_y(data):
         est.score(swapped, y, ids="subject")  # score applies the same name check as predict
     assert est.score(df, y, ids="subject") == pytest.approx(ref.score(X, y, ids))
     nullable = pd.DataFrame({"z": pd.array([1, None, 2], dtype="Int64"), "w": [0.0, 1.0, 2.0]})
-    with pytest.raises(ValueError, match="NaN"):
-        est.predict(nullable)
+    assert np.isfinite(est.predict(nullable)).all()
 
 
 def _ids_spy(base):

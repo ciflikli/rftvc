@@ -10,6 +10,14 @@ retroactively itemized here — see `git log` for the full slice-by-slice histor
 
 ## [Unreleased]
 
+### Added
+- Native NaN handling for survival and competing-risks forests. Split search
+  considers both missing-value directions and missing-versus-observed splits;
+  prediction and pickling preserve each node's learned route. Tree exports
+  include `missing_goes_right` and use a NaN threshold for missingness splits.
+- `rftvc.impute.impute_locf` for per-subject carry-forward imputation of
+  time-varying covariates.
+
 ## [0.2.0] - 2026-09-29
 
 ### Added

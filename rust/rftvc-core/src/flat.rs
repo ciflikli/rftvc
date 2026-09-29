@@ -8,8 +8,12 @@ use crate::tree::{Node, Tree};
 
 /// Version of the flat state. v1 (before S9) stored leaf counts `d`, `y`;
 /// v2 stores the leaf cumulative hazards; v3 (S11) adds `n_causes`, with
-/// `n_causes` hazards per leaf entry. A v2 state loads as `n_causes = 1`.
-pub const FORMAT_VERSION: u64 = 3;
+/// `n_causes` hazards per leaf entry. v4 adds `node_missing_right` (missing-value
+/// routing) and allows a Split node's `node_threshold` to be `NaN` (a
+/// `MissingVsObserved` split). A v2 state loads as `n_causes = 1`; a v3 (or v2)
+/// state loads with every node's `missing_goes_right = true` (irrelevant: a
+/// pre-v4 forest was never fit with missing values, so this is never exercised).
+pub const FORMAT_VERSION: u64 = 4;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FlatForest {
@@ -25,6 +29,9 @@ pub struct FlatForest {
     /// `-1` marks a leaf, whose leaf index is stored in `node_left`.
     pub node_feature: Vec<i64>,
     pub node_threshold: Vec<f64>,
+    /// Where a missing `node_feature` value routes; meaningless (but present)
+    /// for a `Leaf` entry. Absent (empty) when loading a pre-v4 state.
+    pub node_missing_right: Vec<bool>,
     pub node_left: Vec<u32>,
     pub node_right: Vec<u32>,
     /// Per tree, start of its leaves; length `n_trees + 1`.
@@ -66,17 +73,20 @@ impl FlatForest {
                     Node::Split {
                         feature,
                         threshold,
+                        missing_goes_right,
                         left,
                         right,
                     } => {
                         f.node_feature.push(*feature as i64);
                         f.node_threshold.push(*threshold);
+                        f.node_missing_right.push(*missing_goes_right);
                         f.node_left.push(*left);
                         f.node_right.push(*right);
                     }
                     Node::Leaf { leaf } => {
                         f.node_feature.push(-1);
                         f.node_threshold.push(0.0);
+                        f.node_missing_right.push(false);
                         f.node_left.push(*leaf);
                         f.node_right.push(0);
                     }
@@ -110,10 +120,16 @@ impl FlatForest {
         }
         // Scalars must be ones a fit can produce; `cumhaz_at` binary-searches
         // the grid, so it must be finite and strictly increasing.
-        // v2 has no `n_causes` (single event); the loader passes 1.
+        // v2 has no `n_causes` (single event); the loader passes 1. `n_causes`
+        // has been real (not a loader default) since v3, so a v3 *or* v4 state
+        // may legitimately have n_causes > 1 -- only a pre-v3 state is
+        // restricted to the single-cause default. (Caught by
+        // flat_v3_state_still_loads_and_predicts_identically: this used to read
+        // `format_version == FORMAT_VERSION`, which wrongly started rejecting
+        // real multi-cause v3 states the moment v4 became the latest version.)
         let nc = self.n_causes as usize;
         let scalars_ok = (1..=255).contains(&self.n_causes)
-            && (self.format_version == FORMAT_VERSION || self.n_causes == 1)
+            && (self.format_version >= 3 || self.n_causes == 1)
             && self.n_features >= 1
             && self.n_groups >= 1
             && self.n_draw >= 1
@@ -132,6 +148,8 @@ impl FlatForest {
             ]
             .iter()
             .all(|&l| l == n_nodes)
+            && (self.node_missing_right.len() == n_nodes
+                || (self.format_version < 4 && self.node_missing_right.is_empty()))
             && Some(self.cumhaz.len()) == n_events.checked_mul(nc)
             && (self.leaf_cause_events.is_empty()
                 || Some(self.leaf_cause_events.len()) == n_leaves.checked_mul(nc))
@@ -172,13 +190,23 @@ impl FlatForest {
                     },
                     feat if feat >= 0
                         && (feat as u64) < self.n_features
-                        && self.node_threshold[i].is_finite()
+                        // A NaN threshold is a valid `MissingVsObserved` split (v4+
+                        // only; a pre-v4 state's writer never produced one).
+                        && (self.node_threshold[i].is_finite()
+                            || (self.node_threshold[i].is_nan()
+                                && self.format_version >= 4
+                                && !self.node_missing_right[i]))
                         && child_ok(self.node_left[i], i - n0)
                         && child_ok(self.node_right[i], i - n0) =>
                     {
                         Node::Split {
                             feature: feat as u32,
                             threshold: self.node_threshold[i],
+                            missing_goes_right: self
+                                .node_missing_right
+                                .get(i)
+                                .copied()
+                                .unwrap_or(true),
                             left: self.node_left[i],
                             right: self.node_right[i],
                         }
