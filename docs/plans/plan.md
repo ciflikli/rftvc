@@ -12,7 +12,8 @@ Stage 4 of CRISPI. Input: `docs/plans/design.md` (Approach 2 for Part A, Approac
 - [x] Slice 7: timing-window permutation-importance CI gate (closes another part of the row-3 gap — ports the design's real unmodified rule, not a recalibrated threshold) (PR #59)
 - [x] Slice 8: competing-risks permutation-importance CI gate (completes S17's row-3 coverage — trend/timing/CR all closed)
 - [x] Slice 9: S19 landmark-importance CI gates (closes row 4 — history/Markov, copies bootstrap-SE, censoring PE-vs-Brier) (PR #61)
-- [ ] Slice 10: n-sweep beyond Slice 1's two points (closes row 5's blind spot)  <-- CURRENT
+- [x] Slice 10: n-sweep beyond Slice 1's two points (closes row 5's blind spot) (PR #64)
+- [ ] Slice 11: TVC vs. `CoxTimeVaryingFitter` on a known-truth DGP (closes the TVC half of the external-tool-parity gap)  <-- CURRENT
 
 ## Slice 7: timing-window permutation-importance CI gate
 
@@ -303,6 +304,57 @@ slow` (~30s), blind-spot text updated to describe the 3-point/outer-pair-only sh
 - R=20's robustness already verified (research) across >= 2 out-of-band seed batches distinct from
   the gate's own (0-19).
 - Findings doc accurately scopes what's closed vs. what's inherently not closeable further here.
+- One `codex:rescue` diff review before merge.
+
+---
+
+## Slice 11: TVC vs. `CoxTimeVaryingFitter` on a known-truth DGP
+
+**Why:** closes `docs/plans/simulation-validation-findings.md`'s closing-summary bullet — the TVC
+case had no external-tool cross-check against any known-truth DGP at all (only real-data,
+no-ground-truth comparisons via the Rossi rc-validation pass). Full CRISPI pass
+(`docs/plans/tvc-external-tool-{questions,research,design}.md`). Mirrors Slice 2's exact pattern
+(new, genuinely simple DGP that exactly matches the external tool's assumptions) but for TVC: a
+single-covariate, log-linear external-TVC hazard, since `tests/sim.py`'s existing DGP has a
+threshold non-linearity that would leave `CoxTimeVaryingFitter` misspecified too (not a fair "home
+turf" comparator, per the same reasoning Slice 2's own plan-review correction already established).
+
+Two real implementation bugs were caught in the Cox-side reconstruction, neither in `rftvc` itself:
+research caught that naively assuming `CoxTimeVaryingFitter.baseline_cumulative_hazard_` lands on
+exact integer times (as some other unit-interval fixtures in this codebase do) gives silent `NaN`s
+here, because this DGP's event times are continuous, not boundary-aligned — fixed with a proper
+step-function `searchsorted` lookup instead of `reindex`. Codex diff review on the first version
+then caught that the per-row partial hazard used `exp(beta_hat * z)` directly instead of
+`cox.predict_partial_hazard` — lifelines mean-centers covariates internally, and
+`baseline_cumulative_hazard_` is defined relative to that centered scale, so the uncentered version
+silently mis-scaled every partial hazard by a constant factor. Verified impact at this DGP's scale
+was small (~9% shift in one seed's cox ISE, not enough to flip the loose 0.18-epsilon pass/fail),
+but conceptually wrong regardless of scale — fixed by calling `predict_partial_hazard` directly.
+
+**Files:**
+- `bench/tvc_coxtv_truth_check.py` (new) — `true_cumhaz`/`simulate`/`rows` (same event-time-
+  inversion pattern as `tests/sim.py`, `RATE0=0.15, BETA=0.8`, single covariate `z`), `replicate`/
+  `run` (same shape as `bench/lifelines_truth_check.py`), `_baseline_step_at` (the searchsorted
+  fix above), `EPSILON = 0.18` (~2x the observed gap, calibrated from out-of-band seeds
+  10000-10004 and 20010-20014, distinct from the gate's own 0-9).
+- `tests/test_tvc_coxtv_truth.py` (new) — fast closed-form check (`true_cumhaz` vs. numerical
+  integration) and smoke test; the gate itself (`res[:,0].mean() <= res[:,1].mean() + EPSILON`),
+  R=10, **not** `slow`-marked (~4-5s, well within the default tier per Slices 5-10's discipline —
+  Slice 2's original gate predates that lesson and stayed `slow`).
+
+**Explicit scope note:** single-event TVC only, one covariate. Does not cover competing risks
+(separate gap, needs `randomForestSRC`) or landmark estimators (no external tool exists for that
+shape at all — stays open).
+
+**Docs updated:** `docs/plans/simulation-validation-findings.md` — new row 8; closing summary's "no
+landmark-estimator or TVC cross-check against an external tool exists at all" bullet updated to
+reflect TVC is now covered (landmark remains open).
+
+**Acceptance criteria:**
+- New test runs in the plain `pytest` invocation (no `-m` flag) — verified by actually running it.
+- `EPSILON` calibrated from seeds distinct from the gate's own, stated before the gate ran, verified
+  across >= 2 independent out-of-band batches.
+- `true_cumhaz` verified against numerical integration to `atol=1e-6`.
 - One `codex:rescue` diff review before merge.
 
 ---
