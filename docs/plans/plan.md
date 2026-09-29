@@ -14,7 +14,7 @@ Stage 4 of CRISPI. Input: `docs/plans/design.md` (Approach 2 for Part A, Approac
 - [x] Slice 9: S19 landmark-importance CI gates (closes row 4 — history/Markov, copies bootstrap-SE, censoring PE-vs-Brier) (PR #61)
 - [x] Slice 10: n-sweep beyond Slice 1's two points (closes row 5's blind spot) (PR #64)
 - [x] Slice 11: TVC vs. `CoxTimeVaryingFitter` on a known-truth DGP (closes the TVC half of the external-tool-parity gap) (PR #65)
-- [ ] Slice 12: competing risks vs. `randomForestSRC` on a known-truth DGP (closes the CR half of the external-tool-parity gap — the last item on the punchlist)  <-- CURRENT
+- [x] Slice 12: competing risks vs. `randomForestSRC` on a known-truth DGP (closes the CR half of the external-tool-parity gap — the last item on the punchlist)
 
 ## Slice 7: timing-window permutation-importance CI gate
 
@@ -434,6 +434,18 @@ parity stays open — no external tool exists for that shape at all).
 - `true_cif` verified against numerical integration to `atol=1e-6`, both causes.
 - Fixture-generation script and its exact invocation committed alongside the fixture.
 - One `codex:rescue` diff review before merge.
+
+**Slice 12 done (2026-09-29):** implemented as planned. R scratch lib at
+`.../cddd4d79-3b34-469c-be69-332855fbf020/scratchpad/rlib` (from a prior session) still loadable,
+no reinstall needed. `splitrule="random"` used for the rfsrc fit (per research: the documented
+default `"logrankCR"` and `splitrule=NULL` both error on this build at small-to-medium scale).
+Fixture generated once (`tests/fixtures/make_cr_rfsrc_fixture.py`, seed 777, `ntree=500`, distinct
+from the gate's own seeds and calibration seeds). `EPSILON=0.03` per cause, calibrated from the
+gate's own seeds (0-9) plus two out-of-band batches (10000-10009, 20010-20019); max observed gap
+~0.016, EPSILON roughly double that. Full default-tier suite (731 passed) reran clean after the
+addition. `docs/plans/simulation-validation-findings.md` updated: new row 9, plus stale
+cross-references in row 8's blind-spot note and the closing-summary's CR bullet fixed (the standing
+lesson from `[[rftvc-dev-workflow]]` — re-grep every cross-reference, not just the diff).
 
 ---
 
