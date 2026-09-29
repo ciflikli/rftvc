@@ -11,7 +11,8 @@ Stage 4 of CRISPI. Input: `docs/plans/design.md` (Approach 2 for Part A, Approac
 - [x] Slice 6: trend-scenario permutation-importance CI gate (closes part of the row-3 gap — trend only, not timing/CR/landmark) (PR #58)
 - [x] Slice 7: timing-window permutation-importance CI gate (closes another part of the row-3 gap — ports the design's real unmodified rule, not a recalibrated threshold) (PR #59)
 - [x] Slice 8: competing-risks permutation-importance CI gate (completes S17's row-3 coverage — trend/timing/CR all closed)
-- [ ] Slice 9: S19 landmark-importance CI gates (closes row 4 — history/Markov, copies bootstrap-SE, censoring PE-vs-Brier)  <-- CURRENT
+- [x] Slice 9: S19 landmark-importance CI gates (closes row 4 — history/Markov, copies bootstrap-SE, censoring PE-vs-Brier) (PR #61)
+- [ ] Slice 10: n-sweep beyond Slice 1's two points (closes row 5's blind spot)  <-- CURRENT
 
 ## Slice 7: timing-window permutation-importance CI gate
 
@@ -80,7 +81,7 @@ Each slice: own branch/PR, Codex plan review before code (per CLAUDE.md skill tr
   - `run(n_values, n_estimators, n_eval, seed) -> pd.DataFrame` — for each `n` in `n_values`: draw a training set of size `n`, fit `SurvivalForestTV`; draw a **separate, fixed-size (`n_eval`), fixed-seed evaluation set reused identically across all `n`**; score the fitted model and the oracle on that same evaluation set with the **same `windows`/`event_windows` grid, fixed across all `n`** (compute the grid once from the eval set, not per training fit — closes the `zero_rate_share`-confounding risk research §3 flagged). Record `gap = oracle_score - model_score` per `n` per replication.
 - `tests/test_pe_score_convergence_truth.py` (new):
   - `test_oracle_pe_score_matches_numerical_integration()` (fast, merge-gate tier) — `oracle_pe_score`'s per-window rate vs `scipy.integrate` numerical check, tolerance `1e-9`, pattern from `tests/test_cr_sim_truth.py`.
-  - `test_pe_score_mean_gap_shrinks_with_n()` (`@pytest.mark.slow`) — predeclared *before* running: mean `gap` over R=10 replications at the largest `n` < mean `gap` at the smallest `n`, one-sided t-test on the paired-replication differences (matching `tests/sim.py:95-99`'s convention). State the rule in the test docstring before the sim code is written.
+  - `test_pe_score_mean_gap_shrinks_with_n()` (`@pytest.mark.slow`) — predeclared *before* running: mean `gap` over R=10 replications at the largest `n` < mean `gap` at the smallest `n`, one-sided t-test on the paired-replication differences (matching `tests/sim.py:95-99`'s convention). State the rule in the test docstring before the sim code is written. **Superseded by Slice 10** (below): this R=10 rule was found not robust across seed ranges it was never tested against; the test now runs at R=20 in the default tier under a new name, `test_pe_score_gap_shrinks_from_n200_to_n5000`.
 
 **Acceptance criteria:**
 - Fast test passes in default merge-gate suite.
@@ -252,6 +253,56 @@ cross-references (rows 3b/3c/3d, the closing summary) per [[rftvc-dev-workflow]]
 - History gate's docstring explicitly states it asserts a weaker claim than the design's declared
   rule, and why — mirroring Slice 6's "not the original numbers" framing.
 - `simulation-validation-findings.md` and every stale cross-reference to row 4 updated in this PR.
+- One `codex:rescue` diff review before merge.
+
+---
+
+## Slice 10: n-sweep beyond Slice 1's two points
+
+**Why:** closes `docs/plans/simulation-validation-findings.md` row 5's declared blind spot ("only
+two `n` values checked, not a full sweep"), the last real statistical-validity item on the
+manual-gate punchlist after Slice 9. Full CRISPI pass
+(`docs/plans/n-sweep-gate-{questions,research,design}.md`). Research found this item is
+structurally different from Slices 5-9: (a) the existing `slow`-tier 2-point claim (R=10) was
+never checked against any seed range beyond its own — it actually **fails** at an out-of-band batch
+(seeds 20010-20029, lower bound -0.015 at the original 2-point config); R=20 restores robustness
+(re-verified under the exact 3-point config this slice ships: lower bounds 0.050, 0.058, 0.022
+across seeds 0-19, 10000-10019, 20010-20029 — note the middle-point draw shifts the shared RNG
+stream, so these aren't numerically identical to the 2-point pilot numbers above, only confirming
+the same conclusion holds). (b) A genuine 3+ point "decreases at every step" sweep is not honestly achievable at any
+scale tested — the oracle-to-model gap plateaus hard after the first jump (mid-to-large step's
+one-sided lower bound is negative in every batch tried, at every scale). (c) this is the most
+expensive gate closed this session: R=20 at the necessary scale (`n_estimators=200`, `n` up to
+5000) costs ~30s, vs. 0.4-9s for every Slice 5-9 gate — user confirmed this cost is acceptable
+(2026-09-29) rather than shrinking scale further (which research also tried and found reintroduces
+the same robustness problem it's trying to fix).
+
+**Files:**
+- `bench/pe_score_convergence_sim.py` — **unchanged**. `replicate`/`run` already accept an
+  arbitrary `n_values` tuple and already gate on `res[:, 0] - res[:, -1]` (first vs. last), so a
+  3-tuple keeps the existing outer-pair claim with zero code changes.
+- `tests/test_pe_score_convergence_truth.py` — replace `test_pe_score_mean_gap_shrinks_with_n`
+  (the old `slow`-tier, R=10, 2-point test) with `test_pe_score_gap_shrinks_from_n200_to_n5000`:
+  same scale and same gated claim (`lower > 0` on the 200-vs-5000 paired difference), but R=10 →
+  R=20, `n_values=(200, 5000)` → `(200, 1000, 5000)` with the middle point's mean asserted only for
+  finiteness — not gated, and not otherwise surfaced on a passing run (see design doc for why
+  gating it would be dishonest) — and **not** `slow`-marked.
+
+**Explicit scope note:** this does not establish a general convergence-rate claim across many
+points — only that the design's original endpoint pair (200 vs 5000) holds robustly, now in the
+default tier, plus one additional reported data point. The mid-to-large plateau is a documented,
+real property of this specific score/DGP, not something a future slice should try to "fix" by
+finding yet another scale — research already ruled that out.
+
+**Docs updated:** `docs/plans/simulation-validation-findings.md` row 5 — CI tier `slow` → `not
+slow` (~30s), blind-spot text updated to describe the 3-point/outer-pair-only shape; closing
+"No n-sweep / asymptotic study" bullet updated to reflect partial (not full) closure.
+
+**Acceptance criteria:**
+- New test runs in the plain `pytest` invocation (no `-m` flag) — verified by actually running it.
+- R=20's robustness already verified (research) across >= 2 out-of-band seed batches distinct from
+  the gate's own (0-19).
+- Findings doc accurately scopes what's closed vs. what's inherently not closeable further here.
 - One `codex:rescue` diff review before merge.
 
 ---

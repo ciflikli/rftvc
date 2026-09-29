@@ -33,6 +33,15 @@ R=10 replications at ``n_values=(200, 5000)``, the lower bound of the
 one-sided 95% CI on the mean paired difference (gap at n=200 minus gap at
 n=5000) is > 0 — i.e. the oracle-to-model gap is significantly smaller at
 the larger training size.
+
+**Superseded by Slice 10** (``docs/plans/plan.md``, ``docs/plans/n-sweep-gate-*.md``):
+R=10 was found not robust across seed ranges it was never tested against
+(its lower bound goes negative at an out-of-band batch); the test that
+exercises this module now runs at R=20 with a third, reported-only point
+(n=1000) in the default CI tier — see
+``tests/test_pe_score_convergence_truth.py::test_pe_score_gap_shrinks_from_n200_to_n5000``.
+This module's code is unchanged by Slice 10: ``run``/``replicate`` already
+accepted an arbitrary ``n_values`` tuple.
 """
 
 import numpy as np
