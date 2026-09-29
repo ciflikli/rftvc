@@ -46,6 +46,31 @@ and out-of-bag estimates remain per subject.
 Trees split rows. One subject's rows can therefore fall on both sides of a
 split, and it then counts towards ``min_ids_leaf`` in both children.
 
+Categorical covariates
+----------------------
+
+Both counting-process forest estimators accept string-valued columns in ``X``
+and DataFrame categorical dtypes (including numeric category labels). At fit, each
+observed level becomes a 0/1 indicator. The fitted vocabulary is reused by
+``predict``, ``apply``, and covariate-path prediction; an unseen level raises
+``ValueError``. Missing category values become NaN in all of that column's
+indicators, allowing the tree to learn their route. Numeric columns remain
+continuous; mark numeric category codes with a categorical dtype or convert
+them to strings if they represent unordered levels.
+
+The encoding is one-hot, so a column with ``K`` observed levels contributes
+``K`` split features. ``max_features`` samples these indicators separately,
+and ``export_tree`` reports their names as ``column=level``. This supports
+single-level-versus-rest splits; it does not search all multi-level partitions
+as ranger's ``respect.unordered.factors="partition"`` mode does. For columns
+with many rare levels, group levels before fitting to control width.
+
+.. code-block:: python
+
+   X = df[["age", "treatment"]]  # treatment contains labels such as "A" and "B"
+   forest = SurvivalForestTV().fit(X, y)
+   risk = forest.predict_risk(X.iloc[:5], horizon=365)
+
 Stacked landmark data
 ---------------------
 

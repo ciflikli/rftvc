@@ -13,6 +13,8 @@ scikit-learn compatible Python API.
 - Native missing-value splits: trees learn where to route NaN features, including
   splits on missingness itself. `rftvc.impute.impute_locf` offers per-subject
   last-observation-carried-forward preprocessing for time-varying features.
+- String and categorical columns in `X` are encoded at fit and reused at prediction.
+  Unseen labels raise an error.
 - Optional plotting (`rftvc.viz`, `pip install rftvc[viz]`): survival/hazard/CIF curves,
   importance and calibration charts (Altair), and a dependency-free SVG tree diagram.
 

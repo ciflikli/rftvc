@@ -10,9 +10,10 @@ import numpy as np
 from joblib import effective_n_jobs
 from sklearn.base import BaseEstimator
 from sklearn.utils import Bunch
-from sklearn.utils.validation import check_array, check_is_fitted
+from sklearn.utils.validation import check_is_fitted
 
 from . import _blocks, _core
+from ._categories import CategoryEncoder, categorical_flags
 from ._validation import (
     check_counting_process,
     check_intervals,
@@ -132,7 +133,8 @@ class _BaseForestTV(BaseEstimator):
                 if hasattr(self, name):
                     delattr(self, name)
         X, start, stop, event, groups = d.X, d.start, d.stop, d.event, d.groups
-        self.n_features_in_ = X.shape[1]
+        self.n_features_in_ = self._category_encoder_.n_features_in_
+        self.n_encoded_features_ = X.shape[1]
         self.n_ids_ = d.n_ids
         self.n_units_ = d.n_units
         self.min_ids_leaf_ = self._resolve_min_ids_leaf(d.n_units)
@@ -183,9 +185,11 @@ class _BaseForestTV(BaseEstimator):
         ``feature_names_in_`` as soon as the input is parsed (before later
         validation, as ``fit`` always has), and label attributes via ``_check_y``.
         """
-        X, names, ids_values = split_frame(X, ids)
+        raw_X = X
+        X, names, ids_values = split_frame(X, ids, numeric=False)
         self.ids_column_ = ids if isinstance(ids, str) else None
-        X = check_array(X, dtype=np.float64, order="C", ensure_all_finite="allow-nan")
+        self._category_encoder_ = CategoryEncoder()
+        X = self._category_encoder_.fit_transform(X, names, categorical_flags(raw_X, names))
         if names is not None:
             self.feature_names_in_ = names
         elif hasattr(self, "feature_names_in_"):
@@ -214,6 +218,7 @@ class _BaseForestTV(BaseEstimator):
         options = {
             "layout": layout,
             "gap_policy": gap_policy,
+            "category_levels": tuple(self._category_encoder_.categories_),
             "has_measured_at": measured_at is not None,
             "has_block_time": block_time is not None,
             "ntime": self.ntime,
@@ -365,7 +370,7 @@ class _BaseForestTV(BaseEstimator):
         Bunch with ``children_left``, ``children_right``, ``feature``,
         ``threshold``, ``leaf``, ``missing_goes_right`` (arrays of length ``node_count``, node 0 is
         the root), ``node_count``, ``n_leaves``, and ``feature_names``
-        (``feature_names_in_`` if the forest was fit on named columns, else ``None``).
+        (encoded feature names if fit on named columns, else ``None``).
         """
         check_is_fitted(self, "forest_")
         if not (isinstance(tree, numbers.Integral) and not isinstance(tree, (bool, np.bool_))):
@@ -383,7 +388,8 @@ class _BaseForestTV(BaseEstimator):
             missing_goes_right=missing_goes_right,
             node_count=children_left.shape[0],
             n_leaves=self.forest_.n_leaves(tree),
-            feature_names=getattr(self, "feature_names_in_", None),
+            feature_names=(np.asarray(self._category_encoder_.feature_names_out_, dtype=object)
+                           if self._category_encoder_.feature_names_out_ is not None else None),
         )
 
     def _check_predict(self, X, times, ids=None):
@@ -395,19 +401,17 @@ class _BaseForestTV(BaseEstimator):
         check_is_fitted(self, "forest_")
         fit_ids = getattr(self, "ids_column_", None)
         if isinstance(ids, str):
-            X, names, ids = split_frame(X, ids)  # ids named by column; that column is not a feature
+            X, names, ids = split_frame(X, ids, numeric=False)  # ids named by column; that column is not a feature
         elif fit_ids is not None and hasattr(X, "columns") and fit_ids in list(X.columns):
-            X, names, _ = split_frame(X, fit_ids)  # the fit-time id column is never a feature
+            X, names, _ = split_frame(X, fit_ids, numeric=False)  # the fit-time id column is never a feature
         else:
-            X, names, _ = split_frame(X)
+            X, names, _ = split_frame(X, numeric=False)
         fitted = getattr(self, "feature_names_in_", None)
         if names is not None and fitted is not None and list(names) != list(fitted):
             raise ValueError(
                 f"X has feature names {list(names)}, but the forest was fitted with {list(fitted)}"
             )
-        X = check_array(X, dtype=np.float64, order="C", ensure_all_finite="allow-nan")
-        if X.shape[1] != self.n_features_in_:
-            raise ValueError(f"X has {X.shape[1]} features, expected {self.n_features_in_}")
+        X = self._category_encoder_.transform(X, names)
         times = self.event_times_ if times is None else np.asarray(times, dtype=float).ravel()
         if np.isnan(times).any():
             raise ValueError("times must not contain NaN")
@@ -503,7 +507,9 @@ class SurvivalForestTV(_BaseForestTV):
     ----------
     n_estimators : int, default=500
     max_features : {"sqrt", "log2"}, int, float or None, default="sqrt"
-        Features tried per node. ``None`` uses all features.
+        Features tried per node. ``None`` uses all features. Categorical columns
+        expand into one indicator per observed level; selection counts those
+        indicators separately.
     max_depth : int or None, default=None
         ``0`` gives single-leaf trees (Nelson–Aalen on each tree's sample).
     min_ids_leaf : int or "auto", default=15
@@ -574,6 +580,8 @@ class SurvivalForestTV(_BaseForestTV):
         Ids (subjects) in the training data.
     n_units_ : int
         Resampling units: ``n_ids_``, or the number of id-blocks.
+    n_encoded_features_ : int
+        Numeric columns plus one indicator per observed categorical level.
     coarse_grid_ : ndarray
         Event grid of coarse mode (``ntime`` set); equals ``event_times_``.
     n_coarsen_dropped_rows_ : int
@@ -647,7 +655,10 @@ class SurvivalForestTV(_BaseForestTV):
         ----------
         X : array-like or DataFrame of shape (n_rows, n_features)
             Covariates in force on each row's ``(start, stop]``. A DataFrame
-            (pandas, polars, pyarrow, ...) sets ``feature_names_in_``.
+            (pandas, polars, pyarrow, ...) sets ``feature_names_in_``. String
+            columns are one-hot encoded from training levels. Missing category
+            values use the tree's learned NaN route; an unseen level at
+            prediction raises ``ValueError``. Numeric columns stay numeric.
         y : structured array or DataFrame with ``start``, ``stop``, ``event``
             (``start`` defaults to 0 when the DataFrame has no such column).
         ids : array-like of shape (n_rows,) or str, default=None
