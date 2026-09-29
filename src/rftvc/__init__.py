@@ -11,7 +11,7 @@ from .landmark import (
     landmark_features,
     make_landmark_data,
 )
-from . import inspection, metrics, model_selection
+from . import impute, inspection, metrics, model_selection
 from ._validation import (
     CR_DTYPE,
     SURV_DTYPE,
@@ -37,6 +37,7 @@ __all__ = [
     "make_competing_risks_y",
     "make_landmark_data",
     "make_survival_y",
+    "impute",
     "inspection",
     "metrics",
     "model_selection",
