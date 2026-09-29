@@ -131,6 +131,10 @@ def rfsrc_ise_from_fixture(path=FIXTURE):
     x = np.array(d["x_test"], dtype=float)
     grid = np.array(d["grid"], dtype=float)
     assert grid.shape == GRID.shape and np.allclose(grid, GRID), "fixture grid must match GRID"
+    assert d.get("cause_labels") == [1, 2], (
+        "fixture cause_labels must be [1, 2] to match this module's cause order; "
+        f"got {d.get('cause_labels')!r}"
+    )
     f_hat = np.array(d["cif"], dtype=float)  # (n_test, 2, len(GRID))
     assert f_hat.shape == (x.shape[0], 2, GRID.shape[0]), f"unexpected fixture cif shape {f_hat.shape}"
     assert np.all(np.isfinite(f_hat)), "fixture contains non-finite CIF values"

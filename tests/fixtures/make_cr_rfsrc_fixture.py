@@ -38,6 +38,13 @@ train <- read.csv("{train_csv}")
 test <- read.csv("{test_csv}")
 fit <- rfsrc(Surv(time, status) ~ x, data = train, ntree = {ntree}, splitrule = "random", seed = -1)
 pr <- predict(fit, newdata = test)
+# rfsrc's fit$event.info$event.type can be in a different order than the cause labels (observed:
+# c(2, 1) on one run of this exact DGP, first-occurrence order in the data, not sorted) -- but
+# dimnames(pr$cif)[[3]] is the authoritative cause-label ordering for pr$cif's 3rd dimension.
+# Assert it's ("CIF.1", "CIF.2") explicitly so position-based indexing below (pr$cif[, , 1/2]) is
+# never silently wrong if a future regeneration draws a dataset where these orderings diverge
+# (Codex diff review finding, applied).
+stopifnot(identical(dimnames(pr$cif)[[3]], c("CIF.1", "CIF.2")))
 times <- pr$time.interest
 grid <- c({grid})
 idx <- findInterval(grid, times)
@@ -79,7 +86,14 @@ def main():
 
     cif = np.stack([cif1, cif2], axis=1)  # (n_test, 2, len(GRID))
     assert cif.shape == (N_TEST, 2, GRID.size)
-    out = {"x_test": x_te.tolist(), "grid": GRID.tolist(), "cif": cif.tolist(), "seed": SEED, "ntree": N_ESTIMATORS}
+    out = {
+        "x_test": x_te.tolist(),
+        "grid": GRID.tolist(),
+        "cif": cif.tolist(),
+        "cause_labels": [1, 2],  # cif's axis-1 order; the R script asserts dimnames(pr$cif)[[3]] matches
+        "seed": SEED,
+        "ntree": N_ESTIMATORS,
+    }
     OUT.write_text(json.dumps(out))
     print(f"wrote {OUT} ({cif.shape})")
 
