@@ -319,11 +319,17 @@ single-covariate, log-linear external-TVC hazard, since `tests/sim.py`'s existin
 threshold non-linearity that would leave `CoxTimeVaryingFitter` misspecified too (not a fair "home
 turf" comparator, per the same reasoning Slice 2's own plan-review correction already established).
 
-Research caught and fixed a real implementation bug before it shipped: naively assuming
-`CoxTimeVaryingFitter.baseline_cumulative_hazard_` lands on exact integer times (as some other
-unit-interval fixtures in this codebase do) gives silent `NaN`s here, because this DGP's event
-times are continuous, not boundary-aligned — fixed with a proper step-function `searchsorted`
-lookup instead of `reindex`.
+Two real implementation bugs were caught in the Cox-side reconstruction, neither in `rftvc` itself:
+research caught that naively assuming `CoxTimeVaryingFitter.baseline_cumulative_hazard_` lands on
+exact integer times (as some other unit-interval fixtures in this codebase do) gives silent `NaN`s
+here, because this DGP's event times are continuous, not boundary-aligned — fixed with a proper
+step-function `searchsorted` lookup instead of `reindex`. Codex diff review on the first version
+then caught that the per-row partial hazard used `exp(beta_hat * z)` directly instead of
+`cox.predict_partial_hazard` — lifelines mean-centers covariates internally, and
+`baseline_cumulative_hazard_` is defined relative to that centered scale, so the uncentered version
+silently mis-scaled every partial hazard by a constant factor. Verified impact at this DGP's scale
+was small (~9% shift in one seed's cox ISE, not enough to flip the loose 0.18-epsilon pass/fail),
+but conceptually wrong regardless of scale — fixed by calling `predict_partial_hazard` directly.
 
 **Files:**
 - `bench/tvc_coxtv_truth_check.py` (new) — `true_cumhaz`/`simulate`/`rows` (same event-time-

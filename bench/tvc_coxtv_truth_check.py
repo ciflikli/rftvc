@@ -18,14 +18,26 @@ behind Slice 2's own plan-review correction against subsetting an existing TVC D
 
 Comparator: ``lifelines.CoxTimeVaryingFitter`` has no built-in ``predict_survival_function`` for
 time-varying covariates (unlike ``CoxPHFitter``). Reconstructing ``S(t | known covariate path)``
-combines ``predict_partial_hazard`` (per-row ``exp(beta @ x)``) with
-``baseline_cumulative_hazard_``'s non-parametric (Breslow-type) step function — the same
-piecewise-constant-hazard convention used throughout this codebase (e.g.
-``bench/pe_score_convergence_sim.py::true_cumhaz``). **Caught during research:** naively assuming
-the baseline lands on exact integer times (``reindex``) silently gives ``NaN`` here, because this
-DGP's event times are continuous, not boundary-aligned except for non-terminal rows — fixed with a
-proper step-function lookup (``_baseline_step_at``, ``np.searchsorted`` on the baseline's own
-index).
+combines ``predict_partial_hazard`` with ``baseline_cumulative_hazard_``'s non-parametric
+(Breslow-type) step function — the same piecewise-constant-hazard convention used throughout this
+codebase (e.g. ``bench/pe_score_convergence_sim.py::true_cumhaz``). Two real bugs were caught
+during review, both in this reconstruction, neither in ``rftvc`` itself:
+
+1. **Caught during research:** naively assuming the baseline lands on exact integer times
+   (``reindex``) silently gives ``NaN`` here, because this DGP's event times are continuous, not
+   boundary-aligned except for non-terminal rows — fixed with a proper step-function lookup
+   (``_baseline_step_at``, ``np.searchsorted`` on the baseline's own index).
+2. **Caught by Codex diff review on this slice's first version:** using ``exp(beta_hat * z)``
+   directly for the per-row partial hazard, instead of ``cox.predict_partial_hazard`` — lifelines
+   mean-centers covariates internally (``exp((x - x_bar)' beta)``), and
+   ``baseline_cumulative_hazard_`` is defined relative to that centered scale, so the uncentered
+   version silently mis-scaled every partial hazard by a constant factor of
+   ``exp(-beta_hat * mean(z_train))``. Fixed by calling ``cox.predict_partial_hazard`` directly.
+   Verified impact: at this DGP's scale (``z ~ N(0,1)``, ``n_train=400``, so ``mean(z_train)`` is
+   already close to 0), the numeric effect on the reported gap was small (Codex found a ~9% shift
+   in one seed's cox ISE, 0.00537 vs 0.00589 — not enough to change this gate's pass/fail at its
+   loose 0.18 epsilon), but the uncentered version was conceptually wrong regardless of scale and
+   would matter more with a larger true effect size or non-centered covariates.
 
 Metric: integrated squared error (ISE) of predicted ``S(t | path)`` vs. the true ``S(t | path)``
 over ``t ∈ [0, 6]`` (trapezoid rule, 61 points), averaged over test subjects — same convention as
@@ -134,16 +146,24 @@ def _cox_survival(X, y, ids, z_test):
     )
     cox = CoxTimeVaryingFitter().fit(df, id_col="id", start_col="start", stop_col="stop", event_col="event")
     base_at = np.concatenate([[0.0], _baseline_step_at(cox, np.arange(1.0, K + 1.0))])
-    beta_hat = cox.summary["coef"].iloc[0]
     n_test = z_test.shape[0]
+    # cox.predict_partial_hazard applies lifelines' own mean-centering (exp((x - x_bar)' beta)) --
+    # NOT the same as exp(beta_hat * z) directly, since baseline_cumulative_hazard_ is itself
+    # computed relative to the training mean covariate. Using the raw (uncentered) exponential
+    # here would silently mis-scale every partial hazard by a constant factor of
+    # exp(-beta_hat * mean(z_train)) -- a real bug caught by Codex review on this slice's first
+    # version (verified: changes seed-0 cox ISE from 0.005372 (partial-hazard, correct) to
+    # 0.005894 (uncentered, wrong) -- close enough at this scale to have passed the pass rule
+    # silently, but wrong in every other regard: it doesn't correspond to what
+    # `baseline_cumulative_hazard_` is defined relative to).
+    partial_z = cox.predict_partial_hazard(pd.DataFrame({"z": z_test.ravel()})).to_numpy().reshape(z_test.shape)
     H = np.zeros((n_test, GRID.size))
     for j, t in enumerate(GRID):
         k = min(int(np.floor(t)), K - 1)
-        partials = np.exp(beta_hat * z_test[:, :k])
         incs = np.diff(base_at[: k + 1])
-        cum = (partials * incs[None, :]).sum(axis=1) if k > 0 else np.zeros(n_test)
+        cum = (partial_z[:, :k] * incs[None, :]).sum(axis=1) if k > 0 else np.zeros(n_test)
         frac_inc = _baseline_step_at(cox, np.array([t]))[0] - base_at[k]
-        H[:, j] = cum + np.exp(beta_hat * z_test[:, k]) * frac_inc
+        H[:, j] = cum + partial_z[:, k] * frac_inc
     return np.exp(-H)
 
 
