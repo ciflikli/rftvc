@@ -343,12 +343,21 @@ impl PyForest {
     fn tree_arrays<'py>(&self, py: Python<'py>, tree: usize) -> PyResult<TreeArrays<'py>> {
         let t = self.tree(tree)?;
         let n = t.nodes.len();
-        let (mut left, mut right, mut feature, mut leaf) =
-            (vec![-1i64; n], vec![-1i64; n], vec![-2i64; n], vec![-1i64; n]);
+        let (mut left, mut right, mut feature, mut leaf) = (
+            vec![-1i64; n],
+            vec![-1i64; n],
+            vec![-2i64; n],
+            vec![-1i64; n],
+        );
         let mut threshold = vec![-2.0f64; n];
         for (i, node) in t.nodes.iter().enumerate() {
             match node {
-                Node::Split { feature: f, threshold: th, left: l, right: r } => {
+                Node::Split {
+                    feature: f,
+                    threshold: th,
+                    left: l,
+                    right: r,
+                } => {
                     feature[i] = *f as i64;
                     threshold[i] = *th;
                     left[i] = *l as i64;
