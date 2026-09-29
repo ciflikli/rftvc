@@ -5,7 +5,10 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from rftvc import LandmarkSurvivalForest, SurvivalForestTV, make_survival_y
+from rftvc import (
+    CompetingRisksForestTV, LandmarkSurvivalForest, SurvivalForestTV,
+    make_competing_risks_y, make_survival_y,
+)
 from rftvc.inspection import drop_column_importance, hazard_effect, path_effect, permutation_importance
 
 
@@ -72,3 +75,23 @@ def test_landmark_last_string_feature_is_encoded():
     loco = drop_column_importance(model, df, cv=3, features=["status"],
                                   windows=1, n_seeds=1, n_jobs=1)
     assert np.isfinite(loco.importances_mean).all()
+
+
+def test_competing_risks_categorical_inspection():
+    n = 72
+    X = pd.DataFrame({"group": pd.Categorical(["A", "B", "C"] * (n // 3)),
+                      "marker": np.arange(n) / n})
+    y = make_competing_risks_y(1 + np.arange(n) % 8,
+                               np.where(np.arange(n) % 4 == 0, 0, 1 + np.arange(n) % 2))
+    model = CompetingRisksForestTV(n_estimators=8, min_ids_leaf=2,
+                                   min_events_leaf=1, random_state=2).fit(X, y)
+    imp = permutation_importance(model, X, y, features=["group"], cause=1,
+                                 windows=2, n_repeats=2, n_bootstrap=0, random_state=3)
+    np.testing.assert_array_equal(imp.units[0], [0, 1, 2])
+    effect = hazard_effect(model, X, y, feature="group", cause=1, windows=2)
+    assert effect.hazard.shape == (3, 2)
+    intervals = make_survival_y(np.full(n, 8.0), np.zeros(n, dtype=bool))
+    path = path_effect(model, X, intervals, np.arange(n), feature="group", cause=1,
+                       delta=lambda values, start: np.full(values.shape, "B"),
+                       from_time=2.0, horizons=[4.0, 8.0])
+    assert path.per_subject.shape == (n, 2)
