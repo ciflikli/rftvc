@@ -19,8 +19,11 @@ the literal same underlying claim at the literal same scale, just with a differe
   by `test_pe_score_gap_shrinks_from_n200_to_n5000` — same scale (`n_estimators=200`), same gated
   claim (one-sided 95% lower bound on the paired 200-minus-5000 gap difference > 0), but:
   - R=10 → **R=20** (research: R=10's lower bound is negative — i.e., the claim fails outright — at
-    an out-of-band seed batch (20010-20029); R=20 restores a positive bound, margin 0.014-0.070
-    across the 3 batches tested).
+    an out-of-band seed batch (20010-20029) at the original 2-point config; R=20 restores a
+    positive bound — re-verified under the exact 3-point config shipped: lower bounds 0.050,
+    0.058, 0.022 across the 3 batches tested (not numerically identical to the 2-point pilot
+    above, since inserting the n=1000 draw shifts the shared RNG stream — same conclusion
+    either way).
   - `n_values=(200, 1000, 5000)` instead of `(200, 5000)` — the middle point's mean is reported in
     the assertion message (and could be written to a CSV under `docs/bench/`, matching other
     slices' convention) but is **not** part of any pass/fail condition: research found the
@@ -58,7 +61,7 @@ def test_pe_score_gap_shrinks_from_n200_to_n5000():
     res, diff, lower = run(n_values=N_VALUES, n_estimators=N_ESTIMATORS, n_reps=N_REPS)
     means = res.mean(axis=0)
     assert lower > 0, f"200-vs-5000 gap did not shrink with a significant margin: lower={lower}"
-    assert np.all(np.isfinite(means))  # n=1000's mean is reported here, not asserted on
+    assert np.all(np.isfinite(means))  # n=1000's mean is checked for finiteness only, not gated or otherwise surfaced
 ```
 
 Note: `run()`'s existing `diff`/`lower` are already computed from `res[:, 0] - res[:, -1]` (first

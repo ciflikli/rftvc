@@ -3,17 +3,23 @@ truth, and the convergence gate itself.
 
 Slice 10 (docs/plans/plan.md, docs/plans/n-sweep-gate-{questions,research,design}.md):
 replaces the original ``slow``-tier, R=10, 2-point gate with a default-tier
-version at R=20 plus a third, reported-only point. Research found the
-original R=10 rule is **not** robust across seed ranges it was never tested
-against — its one-sided lower bound goes negative (fails) at an out-of-band
-batch (seeds 20010-20029); R=20 restores a real, if sometimes thin, positive
-margin (0.014-0.070 across 3 independent batches). Research also found that
-a genuine 3+ point "decreases at every step" sweep is not honestly
-achievable at any scale tested: the mid-to-large step's one-sided lower
-bound is negative in every batch tried — the oracle-to-model gap plateaus
-hard after the first jump, a real property of this score/DGP, not a
-rep-count problem. So the middle point (n=1000) is included in the sweep
-and reported, but only the original 200-vs-5000 outer pair is gated.
+version at R=20 plus a third, ungated point. Research found the original
+R=10 rule (at the original 2-point ``n_values``) is **not** robust across
+seed ranges it was never tested against — its 97.5% one-sided lower bound
+goes negative (fails) at an out-of-band batch (seeds 20010-20029); R=20
+restores a real positive margin there. Re-verified under the exact 3-point
+config this test actually runs (R=20, ``n_values=(200, 1000, 5000)`` — note
+inserting the n=1000 draw shifts the shared RNG stream, so this is not
+numerically identical to the 2-point pilot): lower bounds of 0.050, 0.058
+and 0.022 across three independent seed batches (0-19, 10000-10019,
+20010-20029). Research also found that a genuine 3+ point "decreases at
+every step" sweep is not honestly achievable at any scale tested: the
+mid-to-large step's one-sided lower bound is negative in every batch tried
+— the oracle-to-model gap plateaus hard after the first jump, a real
+property of this score/DGP, not a rep-count problem. So the middle point
+(n=1000) is included in the sweep and checked for finiteness, but only the
+original 200-vs-5000 outer pair is gated — its mean is not otherwise
+surfaced anywhere on a passing run.
 
 Accepted cost (user-confirmed 2026-09-29): ~30s for this one test, the
 heaviest of any default-tier gate in this codebase — R=20 at
@@ -56,10 +62,12 @@ N_REPS = 20
 
 
 def test_pe_score_gap_shrinks_from_n200_to_n5000():
-    """The design's real, unmodified 200-vs-5000 endpoint claim (one-sided 95% lower bound on
-    the paired gap difference > 0), at R=20 instead of the original R=10 (see module docstring
-    for why). The n=1000 middle point is reported via its mean in the assertion message but is
-    not itself gated -- only checked for finiteness."""
+    """The design's real, unmodified 200-vs-5000 endpoint claim (97.5% one-sided lower bound
+    on the paired gap difference > 0 -- ``stats.t.ppf(0.975)``, the same labeling note as
+    findings.md rows 1/5), at R=20 instead of the original R=10 (see module docstring for
+    why). The n=1000 middle point is included in the sweep and checked for finiteness only --
+    it is not gated, and its value is not otherwise surfaced on a passing run (only in the
+    failure message below, alongside the gated pair's own means)."""
     res, diff, lower = run(n_values=N_VALUES, n_estimators=N_ESTIMATORS, n_reps=N_REPS)
     means = res.mean(axis=0)
     assert np.all(np.isfinite(means))
