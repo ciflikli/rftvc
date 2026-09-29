@@ -51,6 +51,7 @@ docs = [
 manifest-path = "rust/rftvc-py/Cargo.toml"
 python-source = "src"
 module-name = "rftvc._core"
+include = ["LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
