@@ -10,11 +10,20 @@
 Random survival forests for **time-varying covariates**, with a Rust engine and a
 scikit-learn compatible Python API.
 
+<p align="center">
+  <img src="assets/readme/tvc-survival.png" width="46%" alt="Predicted survival for two subjects with the same baseline covariates but opposite time-varying trajectories">
+  <img src="assets/readme/importance.png" width="46%" alt="Permutation importance ranking real effects above noise features">
+</p>
+
 - Counting-process data `(id, start, stop, event, X)` with delayed entry
   (left truncation) and covariates that change over follow-up.
+- `SurvivalForestTV`, `CompetingRisksForestTV` (cause-specific hazards, Aalen–Johansen
+  CIF), and `Landmark{Survival,CompetingRisks}Forest` for dynamic prediction from a
+  rolling landmark time.
+- Inspection suite: permutation and drop-column importance (with bootstrap SE),
+  leave-one-covariate-out, `hazard_effect` and `path_effect` partial-effect curves.
 - Whole-subject resampling, id-level out-of-bag estimates, and leaf sizes
   counted in subjects, not rows.
-- Landmark data building and a landmark super-model for dynamic prediction.
 - Time-aware cross-validation and IPCW landmark metrics.
 - An exact log-rank split criterion, and an opt-in coarse time grid for large data.
 - Native missing-value splits: trees learn where to route NaN features, including
