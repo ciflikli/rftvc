@@ -4,6 +4,14 @@ rftvc
 Random survival forests for **time-varying covariates**, with a Rust engine and a
 scikit-learn compatible Python API.
 
+.. image:: ../../assets/readme/tvc-survival.png
+   :alt: Predicted survival for two changing covariate paths with the same baseline
+   :width: 48%
+
+.. image:: ../../assets/readme/importance.png
+   :alt: Cause 1 hazard permutation importance with standard-error bars
+   :width: 48%
+
 - Counting-process data ``(id, start, stop, event, X)`` with delayed entry
   (left truncation) and covariates that change over follow-up.
 - Whole-subject resampling, id-level out-of-bag estimates, and leaf sizes
