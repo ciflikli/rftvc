@@ -1,5 +1,12 @@
 # rftvc
 
+[![CI](https://github.com/ciflikli/rftvc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ciflikli/rftvc/actions/workflows/ci.yml)
+[![Coverage gate](https://img.shields.io/badge/coverage%20gate-%E2%89%A595%25-brightgreen)](https://github.com/ciflikli/rftvc/blob/main/.github/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/rftvc)](https://pypi.org/project/rftvc/)
+[![Python versions](https://img.shields.io/pypi/pyversions/rftvc)](https://pypi.org/project/rftvc/)
+[![Documentation](https://readthedocs.org/projects/rftvc/badge/?version=latest)](https://rftvc.readthedocs.io/en/latest/)
+[![License](https://img.shields.io/github/license/ciflikli/rftvc)](LICENSE)
+
 Random survival forests for **time-varying covariates**, with a Rust engine and a
 scikit-learn compatible Python API.
 

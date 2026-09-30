@@ -50,7 +50,12 @@ jobs:
         run: uv run --no-sync pytest -q tests/test_categories.py tests/test_categorical_integration.py
       - name: Python tests
         shell: bash
-        run: uv run --no-sync pytest
+        run: |
+          if [[ "${{ matrix.os }}" == "ubuntu-latest" && "${{ matrix.python }}" == "3.13" ]]; then
+            uv run --no-sync pytest --cov=rftvc --cov-report=term-missing:skip-covered --cov-fail-under=95
+          else
+            uv run --no-sync pytest
+          fi
 
   docs:
     runs-on: ubuntu-latest
