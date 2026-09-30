@@ -404,15 +404,10 @@ pub fn best_split_in(
 }
 
 /// `best_split_in`'s per-feature search when the feature has missing rows in
-/// this node. Deliberately not sharing the no-missing path's O(1)-amortized
-/// incremental bookkeeping: unit membership under a missing-direction choice
-/// needs to account for a resampling unit whose own rows straddle observed
-/// and missing (see the mixed-unit correctness note below), which is simplest
-/// -- and least bug-prone -- to get right by recomputing directly per
-/// candidate rather than extending the existing incremental histograms.
-/// Cost is `O(n_units_in_node)` per candidate threshold, gated entirely behind
-/// "this feature actually has a missing row in this node": zero added cost
-/// otherwise. Revisit only if benchmarking shows this matters in practice.
+/// this node. Unit membership under either missing direction accounts for a
+/// resampling unit whose rows straddle observed and missing values (see below).
+/// Four bin-prefix histograms summarize membership, so the threshold sweep
+/// does not scan all units per candidate.
 ///
 /// For a threshold candidate (an existing observed-value bin boundary) there
 /// are two ways missing rows can be assigned, both scored:
@@ -462,12 +457,11 @@ fn search_feature_with_missing(
     nc: usize,
     best: &mut Option<SplitCandidate>,
 ) {
-    struct UnitSummary {
-        obs_lo: Option<u8>,
-        obs_hi: Option<u8>,
-        has_missing: bool,
-    }
-    let mut unit_summaries: Vec<UnitSummary> = Vec::new();
+    let mut lo_all = [0usize; 256];
+    let mut hi_all = [0usize; 256];
+    let mut lo_no_missing = [0usize; 256];
+    let mut hi_no_missing = [0usize; 256];
+    let (mut n_missing_units, mut n_observed_units, mut n_no_missing_units) = (0, 0, 0);
     let mut i = 0;
     while i < rows.len() {
         let unit = units[i];
@@ -483,11 +477,23 @@ fn search_feature_with_missing(
             }
             i += 1;
         }
-        unit_summaries.push(UnitSummary {
-            obs_lo: lo,
-            obs_hi: hi,
-            has_missing,
-        });
+        n_missing_units += usize::from(has_missing);
+        if let (Some(lo), Some(hi)) = (lo, hi) {
+            n_observed_units += 1;
+            lo_all[lo as usize] += 1;
+            hi_all[hi as usize] += 1;
+            if !has_missing {
+                n_no_missing_units += 1;
+                lo_no_missing[lo as usize] += 1;
+                hi_no_missing[hi as usize] += 1;
+            }
+        }
+    }
+    for b in 1..256 {
+        lo_all[b] += lo_all[b - 1];
+        hi_all[b] += hi_all[b - 1];
+        lo_no_missing[b] += lo_no_missing[b - 1];
+        hi_no_missing[b] += hi_no_missing[b - 1];
     }
     let floor_cause = params.cause_floor.map_or(u8::MAX, |(c, _)| c as u8 + 1);
 
@@ -556,8 +562,8 @@ fn search_feature_with_missing(
 
     // --- MissingVsObserved: every missing row left, every observed row right ---
     {
-        let ids_left = unit_summaries.iter().filter(|u| u.has_missing).count();
-        let ids_right = unit_summaries.iter().filter(|u| u.obs_lo.is_some()).count();
+        let ids_left = n_missing_units;
+        let ids_right = n_observed_units;
         let e_left = miss_e;
         let e_right = n_events - miss_e;
         let c_left = miss_c;
@@ -649,14 +655,8 @@ fn search_feature_with_missing(
         let threshold = binned.edges[f][c];
 
         // missing -> right
-        let ids_left_r = unit_summaries
-            .iter()
-            .filter(|u| u.obs_lo.is_some_and(|lo| lo as usize <= c))
-            .count();
-        let ids_right_r = unit_summaries
-            .iter()
-            .filter(|u| u.has_missing || u.obs_hi.is_some_and(|hi| hi as usize > c))
-            .count();
+        let ids_left_r = lo_all[c];
+        let ids_right_r = n_missing_units + n_no_missing_units - hi_no_missing[c];
         let e_right_r = n_events - e_left;
         let c_right_r = profile
             .n_cause_events
@@ -688,14 +688,8 @@ fn search_feature_with_missing(
         }
 
         // missing -> left
-        let ids_left_l = unit_summaries
-            .iter()
-            .filter(|u| u.has_missing || u.obs_lo.is_some_and(|lo| lo as usize <= c))
-            .count();
-        let ids_right_l = unit_summaries
-            .iter()
-            .filter(|u| u.obs_hi.is_some_and(|hi| hi as usize > c))
-            .count();
+        let ids_left_l = n_missing_units + lo_no_missing[c];
+        let ids_right_l = n_observed_units - hi_all[c];
         let e_left_l = e_left + miss_e;
         let e_right_l = n_events - e_left_l;
         let c_left_l = c_left + miss_c;

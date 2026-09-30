@@ -50,6 +50,11 @@ retroactively itemized here — see `git log` for the full slice-by-slice histor
   via Trusted Publishing (no stored token).
 
 ### Changed
+- Missing-value split search now counts subject membership with bin-prefix
+  histograms instead of scanning every subject at each threshold. A 25-tree,
+  8,000-subject synthetic fit with 1% missing entries fell from 0.53 to 0.20
+  seconds on the benchmark machine; split oracles and held-out concordance
+  remain unchanged.
 - `SurvivalForestTV`/`CompetingRisksForestTV` hyperparameter validation now raises
   `TypeError` for a wrong-type argument and `ValueError` only for an out-of-range value
   of the correct type (previously both raised `ValueError`).
