@@ -26,7 +26,7 @@ viz = ["altair>=5"]
 
 [project.urls]
 Homepage = "https://github.com/ciflikli/rftvc"
-Documentation = "https://rftvc.readthedocs.io"
+Documentation = "https://github.com/ciflikli/rftvc/tree/main/docs/source"
 Repository = "https://github.com/ciflikli/rftvc"
 Changelog = "https://github.com/ciflikli/rftvc/blob/main/CHANGELOG.md"
 
