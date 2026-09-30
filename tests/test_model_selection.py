@@ -225,6 +225,31 @@ def test_nested_cv_selects_the_best_inner_candidate(panel, refit, best):
     assert set(res["params"]) == {repr(candidates[int(best(means))])}
 
 
+def test_nested_cv_skips_candidate_with_undefined_inner_scores(panel):
+    def variable_risk(y, risk, w, **kwargs):
+        return np.nan if np.ptp(risk) < 1e-12 else 1.0
+
+    res = landmark_cross_validate(
+        _model(), panel, RollingOriginSplit(1, test_size=6, gap=6),
+        scoring={"variable_risk": variable_risk},
+        param_grid={"forest__max_depth": [0, 3]},
+        inner_cv=RollingOriginSplit(2, test_size=6, gap=6),
+        refit="variable_risk",
+    )
+    assert set(res["params"]) == {repr({"forest__max_depth": 3})}
+
+
+def test_nested_cv_raises_when_all_inner_scores_are_undefined(panel):
+    with pytest.raises(ValueError, match="all candidates have undefined inner CV scores"):
+        landmark_cross_validate(
+            _model(), panel, RollingOriginSplit(1, test_size=6, gap=6),
+            scoring={"undefined": lambda y, risk, w, **kwargs: np.nan},
+            param_grid={"forest__max_depth": [0, 3]},
+            inner_cv=RollingOriginSplit(2, test_size=6, gap=6),
+            refit="undefined",
+        )
+
+
 # --- out-of-fold predictions (S8) -------------------------------------------------
 
 

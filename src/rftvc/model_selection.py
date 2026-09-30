@@ -308,7 +308,9 @@ def landmark_cross_validate(
     With ``param_grid`` (dict or list of dicts of ``model`` parameters) and
     ``inner_cv``, each outer fold first runs this procedure on its own training
     frame for every candidate and refits the one with the best mean ``refit``
-    score (nested CV).
+    score (nested CV). Undefined inner scores are excluded from each mean;
+    candidates with no finite scores are skipped. If none can be ranked, a
+    ``ValueError`` is raised.
 
     **Competing risks** (a ``LandmarkCompetingRisksForest``): one cause
     vocabulary (``model.causes``, else the labels in the whole data) and one
@@ -473,7 +475,13 @@ def _select(model, df_train, train_s, candidates, inner_cv, scoring, refit, w, n
             inner, df_train, inner_cv, scoring,
             horizon=w, n_times=n_times, censoring_estimator=censoring_estimator, g_min=g_min,
         )
-        score = sign * float(np.nanmean(res[refit].to_numpy()))
+        fold_scores = res[refit].to_numpy()
+        finite_scores = fold_scores[np.isfinite(fold_scores)]
+        if finite_scores.size == 0:
+            continue
+        score = sign * float(finite_scores.mean())
         if best_score is None or score > best_score:
             best, best_score = params, score
+    if best is None:
+        raise ValueError(f"all candidates have undefined inner CV scores for refit={refit!r}")
     return best
