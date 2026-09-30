@@ -4,6 +4,7 @@
 [![Coverage gate](https://img.shields.io/badge/coverage%20gate-%E2%89%A595%25-brightgreen)](https://github.com/ciflikli/rftvc/blob/main/.github/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/rftvc)](https://pypi.org/project/rftvc/)
 [![Python versions](https://img.shields.io/pypi/pyversions/rftvc)](https://pypi.org/project/rftvc/)
+[![Documentation](https://app.readthedocs.org/projects/rftvc/badge/?version=latest)](https://rftvc.readthedocs.io/en/latest/)
 [![License](https://img.shields.io/github/license/ciflikli/rftvc)](LICENSE)
 
 Random survival forests for **time-varying covariates**, with a Rust engine and a
@@ -63,9 +64,9 @@ risk = forest.predict_risk(X[:5], horizon=1.0)
 
 ## Documentation
 
-- [Documentation](docs/source/) — user guide, API reference, case studies.
-- [Case studies](docs/source/case_studies/) — worked examples on real datasets.
-- [Compatibility](docs/source/compatibility.rst) — supported
+- [Documentation](https://rftvc.readthedocs.io/en/latest/) — user guide, API reference, case studies.
+- [Case studies](https://rftvc.readthedocs.io/en/latest/case_studies/index.html) — worked examples on real datasets.
+- [Compatibility](https://rftvc.readthedocs.io/en/latest/compatibility.html) — supported
   Python, scikit-learn and platform versions.
 - [Changelog](CHANGELOG.md)
 

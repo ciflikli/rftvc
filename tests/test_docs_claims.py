@@ -16,7 +16,7 @@ def test_readme_exists_and_has_stable_substrings():
     for phrase in [
         "time-varying covariates",
         "pip install -e . --group dev",
-        "[Documentation](docs/source/)",
+        "[Documentation](https://rftvc.readthedocs.io/en/latest/)",
         "SurvivalForestTV",
     ]:
         assert phrase in text, f"missing README substring: {phrase!r}"
