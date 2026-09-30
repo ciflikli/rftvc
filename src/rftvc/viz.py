@@ -22,6 +22,52 @@ __all__ = [
     "plot_tree",
 ]
 
+_INK = "#17233B"
+_MUTED = "#63738A"
+_GRID = "#E5EAF0"
+_PALETTE = ["#5D95C5", "#906388", "#46353A"]
+_FONT = "Inter, Arial, sans-serif"
+
+
+def _style(chart):
+    """Apply a self-contained theme without changing Altair's global settings."""
+    return (
+        chart.configure(font=_FONT)
+        .configure_view(stroke=None)
+        .configure_axis(
+            labelFont=_FONT,
+            titleFont=_FONT,
+            labelColor=_MUTED,
+            titleColor=_INK,
+            labelFontSize=13,
+            titleFontSize=13,
+            titleFontWeight=500,
+            gridColor=_GRID,
+            gridOpacity=0.8,
+            domain=False,
+            tickColor=_GRID,
+            titlePadding=12,
+        )
+        .configure_legend(
+            labelFont=_FONT,
+            titleFont=_FONT,
+            labelColor=_MUTED,
+            titleColor=_INK,
+            labelFontSize=13,
+            titleFontSize=13,
+            orient="bottom",
+            symbolStrokeWidth=3,
+        )
+        .configure_header(
+            labelFont=_FONT,
+            titleFont=_FONT,
+            labelColor=_INK,
+            titleColor=_INK,
+            labelFontSize=13,
+            titleFontSize=13,
+        )
+    )
+
 
 def _require_altair():
     try:
@@ -67,13 +113,13 @@ def plot_survival_curve(times, curve, *, labels=None, kind="survival"):
         }
     )
     y_title = "S(t)" if kind == "survival" else "cumulative hazard"
-    return (
+    return _style(
         alt.Chart(df)
-        .mark_line(interpolate="step-after")
+        .mark_line(interpolate="step-after", strokeWidth=2.8)
         .encode(
             x=alt.X("time:Q", title="time"),
             y=alt.Y("value:Q", title=y_title),
-            color=alt.Color("subject:N", title="subject"),
+            color=alt.Color("subject:N", title="subject", scale=alt.Scale(range=_PALETTE)),
         )
         .properties(width=500, height=300)
     )
@@ -131,15 +177,15 @@ def plot_cumulative_incidence(times, cif, *, cause_labels=None, subject_labels=N
     )
     chart = (
         alt.Chart(df)
-        .mark_line(interpolate="step-after")
+        .mark_line(interpolate="step-after", strokeWidth=2.8)
         .encode(
             x=alt.X("time:Q", title="time"),
             y=alt.Y("value:Q", title="cumulative incidence"),
-            color=alt.Color("cause:N", title="cause"),
+            color=alt.Color("cause:N", title="cause", scale=alt.Scale(range=_PALETTE)),
         )
         .properties(width=350 if n_subjects > 1 else 500, height=300)
     )
-    return chart.facet(column=alt.Column("subject:N", title="subject")) if n_subjects > 1 else chart
+    return _style(chart.facet(column=alt.Column("subject:N", title="subject")) if n_subjects > 1 else chart)
 
 
 def plot_importance(result, *, top_n=None):
@@ -174,9 +220,11 @@ def plot_importance(result, *, top_n=None):
         {"feature": names[order], "importance": mean[order], "lo": (mean - se)[order], "hi": (mean + se)[order]}
     )
     y = alt.Y("feature:N", sort=None, title=None)
-    bars = alt.Chart(df).mark_bar().encode(x=alt.X("importance:Q"), y=y)
-    err = alt.Chart(df).mark_errorbar().encode(x=alt.X("lo:Q", title="importance"), x2="hi:Q", y=y)
-    return (bars + err).properties(width=500, height=max(200, 22 * len(df)))
+    bars = alt.Chart(df).mark_bar(color=_PALETTE[0], cornerRadiusEnd=3).encode(x=alt.X("importance:Q"), y=y)
+    err = alt.Chart(df).mark_errorbar(color=_INK, ticks=True).encode(
+        x=alt.X("lo:Q", title="importance"), x2="hi:Q", y=y
+    )
+    return _style((bars + err).properties(width=500, height=max(200, 26 * len(df))))
 
 
 def plot_hazard_effect(result, *, cause=None):
@@ -221,13 +269,13 @@ def plot_hazard_effect(result, *, cause=None):
             "value": np.repeat(np.asarray(values, dtype=str), mid.shape[0]),
         }
     )
-    return (
+    return _style(
         alt.Chart(df)
-        .mark_line(point=True)
+        .mark_line(point=alt.OverlayMarkDef(filled=True, size=65), strokeWidth=2.5)
         .encode(
             x=alt.X("window_mid:Q", title="window midpoint"),
             y=alt.Y("hazard:Q", title="window hazard"),
-            color=alt.Color("value:N", title=str(result.feature_name)),
+            color=alt.Color("value:N", title=str(result.feature_name), scale=alt.Scale(range=_PALETTE)),
         )
         .properties(width=500, height=300)
     )
@@ -258,7 +306,7 @@ def plot_calibration(table):
     tooltip = [c for c in ("bin", "n", "n_events", "mean_risk", "observed_risk") if c in df.columns]
     points = (
         alt.Chart(df)
-        .mark_circle()
+        .mark_circle(color=_PALETTE[0], opacity=0.85, stroke="white", strokeWidth=1.5)
         .encode(
             x=alt.X("mean_risk:Q", title="mean predicted risk", scale=alt.Scale(domain=lims)),
             y=alt.Y("observed_risk:Q", title="observed risk (1 - KM)", scale=alt.Scale(domain=lims)),
@@ -266,8 +314,8 @@ def plot_calibration(table):
             tooltip=tooltip,
         )
     )
-    line = alt.Chart(ref).mark_line(strokeDash=[4, 4], color="gray").encode(x="x:Q", y="y:Q")
-    return (points + line).properties(width=400, height=400)
+    line = alt.Chart(ref).mark_line(strokeDash=[5, 5], color=_MUTED, strokeWidth=1.5).encode(x="x:Q", y="y:Q")
+    return _style((points + line).properties(width=400, height=400))
 
 
 def _tree_layout(children_left, children_right, leaf, max_depth):
@@ -351,18 +399,21 @@ def plot_tree(forest_or_tree, tree=0, *, max_depth=None, feature_names=None):
     missing_right = np.asarray(getattr(et, "missing_goes_right", np.ones_like(leaf, dtype=bool)))
     depth, x, cut, visited = _tree_layout(cl, cr, leaf, max_depth)
 
-    unit_x, unit_y, margin, box_w, box_h = 155, 80, 30, 140, 40
+    unit_x, unit_y, margin, box_w, box_h = 205, 80, 30, 190, 40
     width = margin * 2 + (x[visited].max() + 1) * unit_x
     height = margin * 2 + (depth[visited].max() + 1) * unit_y
     cx = margin + x * unit_x + box_w / 2
     cy = margin + depth * unit_y + box_h / 2
 
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0f}" height="{height:.0f}" font-family="sans-serif" font-size="12">']
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0f}" height="{height:.0f}" '
+        f'font-family="{_FONT}" font-size="13" fill="#17233B">'
+    ]
     for node in range(cl.shape[0]):
         if not visited[node] or leaf[node] >= 0 or cut[node]:
             continue
         for child in (int(cl[node]), int(cr[node])):
-            parts.append(f'<line x1="{cx[node]:.1f}" y1="{cy[node]:.1f}" x2="{cx[child]:.1f}" y2="{cy[child]:.1f}" stroke="#999"/>')
+            parts.append(f'<line x1="{cx[node]:.1f}" y1="{cy[node]:.1f}" x2="{cx[child]:.1f}" y2="{cy[child]:.1f}" stroke="#A99CA2" stroke-width="1.5"/>')
     for node in range(cl.shape[0]):
         if not visited[node]:
             continue
@@ -370,9 +421,9 @@ def plot_tree(forest_or_tree, tree=0, *, max_depth=None, feature_names=None):
         top = cy[node] - box_h / 2
         is_leaf = leaf[node] >= 0
         if is_leaf:
-            fill, text = "#dbe9f6", f"leaf {int(leaf[node])}"
+            fill, text = "#F1E8EF", f"leaf {int(leaf[node])}"
         elif cut[node]:
-            fill, text = "#eeeeee", "..."
+            fill, text = "#EEE9EB", "..."
         else:
             fname = f"x[{feat[node]}]" if names is None else _svg_escape(names[feat[node]])
             if np.isnan(thr[node]):
@@ -380,8 +431,8 @@ def plot_tree(forest_or_tree, tree=0, *, max_depth=None, feature_names=None):
             else:
                 direction = "R" if missing_right[node] else "L"
                 text = f"{fname} ≤ {thr[node]:.3g}; NaN → {direction}"
-            fill = "#f6e9db"
-        parts.append(f'<rect x="{left:.1f}" y="{top:.1f}" width="{box_w}" height="{box_h}" rx="6" fill="{fill}" stroke="#333"/>')
+            fill = "#E7F0F8"
+        parts.append(f'<rect x="{left:.1f}" y="{top:.1f}" width="{box_w}" height="{box_h}" rx="10" fill="{fill}" stroke="#B9ACB6"/>')
         parts.append(
             f'<text x="{cx[node]:.1f}" y="{cy[node]:.1f}" text-anchor="middle" dominant-baseline="middle">{text}</text>'
         )
