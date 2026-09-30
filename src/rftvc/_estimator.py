@@ -759,8 +759,7 @@ class SurvivalForestTV(_BaseForestTV):
         return self._mortality(X)
 
     def _mortality(self, X):
-        H = self.forest_.predict_cumhaz(X, self.event_times_, self.aggregate, effective_n_jobs(self.n_jobs))
-        return H.sum(axis=1)
+        return self.forest_.predict_mortality(X, self.event_times_, self.aggregate, effective_n_jobs(self.n_jobs))
 
     def score(self, X, y, ids=None):
         """Concordance of ``predict(X)`` with ``y`` (``metrics.concordance_index_cp``).

@@ -424,6 +424,29 @@ impl PyForest {
             .into_pyarray(py))
     }
 
+    /// Mortality `(n_rows,)` on the requested time grid.
+    fn predict_mortality<'py>(
+        &self,
+        py: Python<'py>,
+        x: PyReadonlyArray2<'py, f64>,
+        times: PyReadonlyArray1<'py, f64>,
+        aggregate_by: &str,
+        n_jobs: usize,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        if self.inner.n_causes != 1 {
+            return Err(PyValueError::new_err(
+                "mortality requires a single-cause forest",
+            ));
+        }
+        let (v, _, p) = self.check_x(&x)?;
+        let agg = aggregate(aggregate_by)?;
+        let times: Vec<f64> = vec1(&times, "times")?;
+        let forest = &self.inner;
+        let pool = pool(n_jobs)?;
+        let out = py.detach(|| pool.install(|| forest.predict_mortality(&v, p, &times, agg)));
+        Ok(out.into_pyarray(py))
+    }
+
     /// Ensemble per-cause cumulative hazards `(n_rows, n_causes, n_times)` for
     /// rows starting at time 0 (mean over trees).
     fn predict_cause_cumhaz<'py>(
