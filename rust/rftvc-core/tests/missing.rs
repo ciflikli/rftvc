@@ -31,7 +31,7 @@ fn brute_force_best(
     units: &[u32],
     feature: usize,
     params: &SplitParams,
-) -> Option<(f64, SplitRule)> {
+) -> Option<(f64, SplitRule, usize, usize)> {
     let col = binned.column(feature);
     let miss = binned.missing_column(feature);
     let n_units_of =
@@ -77,10 +77,10 @@ fn brute_force_best(
         )
     };
 
-    let mut best: Option<(f64, SplitRule)> = None;
-    let mut consider = |score: f64, rule: SplitRule| {
-        if score > 0.0 && best.is_none_or(|(b, _)| score > b) {
-            best = Some((score, rule));
+    let mut best: Option<(f64, SplitRule, usize, usize)> = None;
+    let mut consider = |score: f64, rule: SplitRule, n_l: usize, n_r: usize| {
+        if score > 0.0 && best.is_none_or(|(b, ..)| score > b) {
+            best = Some((score, rule, n_l, n_r));
         }
     };
 
@@ -92,7 +92,12 @@ fn brute_force_best(
         .filter(|&i| !miss[rows[i] as usize])
         .collect();
     if !miss_idx.is_empty() && !obs_idx.is_empty() && admissible(&miss_idx, &obs_idx) {
-        consider(score_of(&miss_idx), SplitRule::MissingVsObserved);
+        consider(
+            score_of(&miss_idx),
+            SplitRule::MissingVsObserved,
+            n_units_of(&miss_idx),
+            n_units_of(&obs_idx),
+        );
     }
 
     // Every real threshold, both missing directions.
@@ -120,6 +125,8 @@ fn brute_force_best(
                     bin: b,
                     missing_goes_right: true,
                 },
+                n_units_of(&obs_left),
+                n_units_of(&right_r),
             );
         }
         // missing -> left
@@ -131,6 +138,8 @@ fn brute_force_best(
                     bin: b,
                     missing_goes_right: false,
                 },
+                n_units_of(&left_l),
+                n_units_of(&obs_right),
             );
         }
     }
@@ -190,13 +199,15 @@ fn two_direction_search_matches_brute_force() {
             best_split(&binned, &surv, &rows, &units, &[0], &params, &LtrcLogRank);
         match (want, &got) {
             (None, None) => {}
-            (Some((ws, wr)), Some(g)) => {
+            (Some((ws, wr, w_left, w_right)), Some(g)) => {
                 assert!(
                     (ws - g.score).abs() < 1e-9,
                     "score mismatch: want {ws} got {}",
                     g.score
                 );
                 assert_eq!(wr, g.rule, "rule mismatch");
+                assert_eq!(w_left, g.ids_left, "ids_left mismatch");
+                assert_eq!(w_right, g.ids_right, "ids_right mismatch");
                 if let SplitRule::Threshold {
                     missing_goes_right, ..
                 } = wr
@@ -260,6 +271,68 @@ fn two_direction_search_matches_brute_force() {
     assert!(
         found_missing_vs_observed > 0,
         "never exercised MissingVsObserved"
+    );
+}
+
+#[test]
+fn two_direction_search_matches_brute_force_at_full_bin_range() {
+    // setup()'s value range (0..4) never fills more than a handful of bins,
+    // so the histogram prefix-sum lookups at the top of the 256-bin range
+    // (edges[254], the last candidate threshold; bin 255, the last observed
+    // bin) are never exercised there. Use many distinct continuous values
+    // instead, so quantile binning saturates at the full max_bins=256, and
+    // require min_leaf > 1 so admissibility genuinely depends on unit counts.
+    let mut rng = Rng::new(11);
+    let params = SplitParams {
+        min_leaf: 3,
+        min_events_leaf: 1,
+        cause_floor: None,
+    };
+    let mut saw_full_bin_range = false;
+    for _ in 0..6 {
+        // n must clear max_bins/(1 - missing_rate) so the *observed* count
+        // (missing rows are dropped before edges are built) still exceeds 256.
+        let n = 340 + rng.below(30);
+        let (start, stop, event) = random_rows(&mut rng, n);
+        let surv = SurvData::new(&start, &stop, &event);
+        let mut x: Vec<f64> = (0..n).map(|_| rng.below(100_000) as f64).collect();
+        for v in x.iter_mut() {
+            if (rng.below(1000) as f64 / 1000.0) < 0.2 {
+                *v = f64::NAN;
+            }
+        }
+        let binned = Binned::fit(&x, n, 1, 256);
+        saw_full_bin_range |= binned.edges[0].len() == 255;
+        let mut units: Vec<u32> = (0..n).map(|_| rng.below(n / 2 + 1) as u32).collect();
+        units.sort_unstable();
+        let rows: Vec<u32> = (0..n as u32).collect();
+
+        let profile = node_profile(&surv, &rows);
+        if profile.event_idx.is_empty() {
+            continue;
+        }
+        let want = brute_force_best(&surv, &binned, &profile, &rows, &units, 0, &params);
+        let got: Option<SplitCandidate> =
+            best_split(&binned, &surv, &rows, &units, &[0], &params, &LtrcLogRank);
+        match (want, &got) {
+            (None, None) => {}
+            (Some((ws, wr, w_left, w_right)), Some(g)) => {
+                assert!(
+                    (ws - g.score).abs() < 1e-9,
+                    "score mismatch: want {ws} got {}",
+                    g.score
+                );
+                assert_eq!(wr, g.rule, "rule mismatch");
+                assert_eq!(w_left, g.ids_left, "ids_left mismatch");
+                assert_eq!(w_right, g.ids_right, "ids_right mismatch");
+            }
+            (w, g) => panic!("presence mismatch: want {w:?} got {g:?}"),
+        }
+    }
+    assert!(
+        saw_full_bin_range,
+        "never reached the full 256-bin range (edges.len() == 255); \
+         the upper-boundary histogram lookups (bin 255 / candidate 254) went untested"
     );
 }
 
