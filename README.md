@@ -7,7 +7,7 @@
 [![Documentation](https://app.readthedocs.org/projects/rftvc/badge/?version=latest)](https://rftvc.readthedocs.io/en/latest/)
 [![License](https://img.shields.io/github/license/ciflikli/rftvc)](LICENSE)
 
-**Random survival forests for covariates that change over time.** A Rust engine
+**Random survival forests for time-varying covariates.** A Rust engine
 with a scikit-learn compatible Python API.
 
 <p align="center">
@@ -84,8 +84,8 @@ importance = inspection.permutation_importance(cr, X_test, y_test, ids=test_ids,
 plot_importance(importance)
 ```
 
-See the [user guide](https://rftvc.readthedocs.io/en/latest/user_guide/index.html)
-for path prediction and landmark models, and the [case studies](https://rftvc.readthedocs.io/en/latest/case_studies/index.html)
+See the [Documentation](https://rftvc.readthedocs.io/en/latest/) for path prediction
+and landmark models, and the [case studies](https://rftvc.readthedocs.io/en/latest/case_studies/index.html)
 for worked examples on real data. The figures above can be rebuilt with
 [`examples/readme_plots.py`](examples/readme_plots.py).
 
