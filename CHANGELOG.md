@@ -10,6 +10,8 @@ retroactively itemized here — see `git log` for the full slice-by-slice histor
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-30
+
 ### Added
 - Native NaN handling for survival and competing-risks forests. Split search
   considers both missing-value directions and missing-versus-observed splits;
