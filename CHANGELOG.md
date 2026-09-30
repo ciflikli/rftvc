@@ -17,6 +17,19 @@ retroactively itemized here — see `git log` for the full slice-by-slice histor
   include `missing_goes_right` and use a NaN threshold for missingness splits.
 - `rftvc.impute.impute_locf` for per-subject carry-forward imputation of
   time-varying covariates.
+- String and categorical columns in `X`: a fitted one-hot encoding shared by fit
+  and prediction, missing-value routing preserved through it, unseen levels
+  rejected, and category vocabularies included in fit-design fingerprints.
+  `inspection.permutation_importance`, `drop_column_importance`, `hazard_effect`
+  and landmark stacking treat each categorical column as one unit
+  (`docs/bench/categorical-width.md`).
+
+### Changed
+- Missing-value split search now uses bin-prefix histograms instead of
+  rescanning every resampling unit per candidate threshold, matching the
+  no-missing path's technique since 0.1.0. A 25-tree, 8,000-subject fit with
+  1% missing entries fell from 0.53s to 0.20s; split oracles and held-out
+  concordance are unchanged (`docs/bench/fit-matrix.md`).
 
 ## [0.2.0] - 2026-09-29
 
