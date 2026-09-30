@@ -11,7 +11,8 @@ from ._estimator import _BaseForestTV, _event_counts
 from ._validation import check_competing_risks_y, competing_risks_labels, make_competing_risks_y
 
 
-# The S14 bake-off challengers ("quadratic", "ishwaran", "logrank_all") lost and were removed.
+# Alternative split criteria ("quadratic", "ishwaran", "logrank_all") were benchmarked
+# against "composite" and removed after losing (see docs/bench/s14-cr.md).
 _CRITERIA = ("composite",)
 
 
@@ -47,7 +48,7 @@ max_samples, bootstrap, n_jobs, random_state
         ``"cif"``: Aalen–Johansen per tree, then average ``F`` and ``S``.
         ``"hazard"``: average the cause-specific hazard increments over trees,
         then apply Aalen–Johansen. Cumulative hazards are the tree average under
-        both. The default comes from the S14 bake-off: ``"cif"`` was better with
+        both. The default was chosen by benchmark: ``"cif"`` was better with
         opposing cause effects and not worse elsewhere (``docs/bench/s14-cr.md``).
     oob_score : bool, default=False
         Compute ``oob_prediction_`` and ``oob_score_`` (see ``SurvivalForestTV``
@@ -62,7 +63,7 @@ max_samples, bootstrap, n_jobs, random_state
         chi-square statistics, which detects a covariate that raises one cause
         and lowers another (the all-cause log-rank, and the equal-weight
         composite of Ishwaran et al. 2014, do not). With one cause it is the
-        survival forest's log-rank. Chosen in the S14 bake-off.
+        survival forest's log-rank. Chosen by benchmark (``docs/bench/s14-cr.md``).
     split_cause : int or None, default=None
         A cause label: split on that cause's log-rank alone, other causes
         counting as censoring (cause-specific forest). Overrides ``criterion``.
@@ -360,7 +361,9 @@ max_samples, bootstrap, n_jobs, random_state
 
         check_is_fitted(self, "forest_")
         if not self.forest_.has_leaf_cause_events:
-            raise ValueError("this fitted forest stores no per-leaf cause counts (fitted before S12); refit it")
+            raise ValueError(
+                "this fitted forest stores no per-leaf cause counts (fitted with an older rftvc version); refit it"
+            )
         counts = np.concatenate([self.forest_.leaf_cause_events(b) for b in range(self.forest_.n_trees)])
         q = np.quantile(counts, [0.0, 0.1, 0.5, 1.0], axis=0)
         return pl.DataFrame(

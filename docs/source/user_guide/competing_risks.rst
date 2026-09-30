@@ -83,7 +83,7 @@ Split rule and ensemble
 - ``aggregate="cif"`` (default) runs the Aalen–Johansen estimator in each tree
   and averages the cumulative incidences. ``"hazard"`` averages the hazards first.
 
-These defaults come from the S14 bake-off (``docs/bench/s14-cr.md``):
+These defaults come from a split-criterion benchmark (``docs/bench/s14-cr.md``):
 
 - ``composite`` beat the all-cause and Ishwaran rules by 12–26% in integrated
   squared error to the true cumulative incidence;

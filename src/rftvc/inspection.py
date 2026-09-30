@@ -688,7 +688,7 @@ def path_effect(
     **understate** the true risk change: like any random forest, this one
     shrinks its predictions toward the bulk of the training distribution, and
     that shrinkage is stronger where the shifted path's hazard is elevated
-    (confirmed on the S3 simulation, `docs/plans/s20-plan.md` T9). This was
+    (confirmed by simulation, see `docs/plans/s20-plan.md`). This was
     checked on the *mean* over many subjects; an individual subject's own
     estimate can still have the wrong sign, as any per-subject estimate can.
 
@@ -914,13 +914,13 @@ def drop_column_importance(
         their own last observed event, so windows entirely beyond the cutoff score a real
         event as ``-inf``, whatever ``alpha``. This is a structural property of the estimator
         family, not fixable here; it does not affect ``cv=int`` (test ids' events share
-        training ids' time range) or S19's landmark LOCO (scored on the reset clock).
+        training ids' time range) or landmark LOCO (scored on the reset clock).
     features : list of names or indices, default=None
         One unit per feature (dropped alone); default all features.
     groups : dict name -> list of columns, default=None
         Units dropped jointly (e.g. a covariate with its lags); exclusive with ``features``.
     scoring : "pe", default="pe"
-        The piecewise-exponential log score (``"brier"`` / ``"ibs"``: landmark models, S19).
+        The piecewise-exponential log score (``"brier"`` / ``"ibs"``: landmark models).
     windows : int or array-like, default=8
         Number of scoring windows or their edges, resolved **per fold** from that fold's own
         full-model fit (folds can have different training data, hence different
