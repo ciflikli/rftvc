@@ -159,6 +159,68 @@ impl Forest {
         out
     }
 
+    /// Ensemble mortality without materializing a row-by-time hazard matrix.
+    /// For hazard aggregation, each leaf jump contributes once for every
+    /// requested time at or after that jump. Survival aggregation remains a
+    /// nonlinear average and uses the usual per-row curve calculation.
+    pub fn predict_mortality(
+        &self,
+        x: &[f64],
+        n_features: usize,
+        times: &[f64],
+        agg: Aggregate,
+    ) -> Vec<f64> {
+        assert_eq!(self.n_causes, 1, "mortality requires a single-cause forest");
+        let mut out = vec![0.0; x.len() / n_features];
+        if times.is_empty() || self.trees.is_empty() {
+            return out;
+        }
+        match agg {
+            Aggregate::Hazard => {
+                let sorted = times.windows(2).all(|w| w[0] <= w[1]);
+                let weights: Vec<usize> = self.trees[0]
+                    .grid_times
+                    .iter()
+                    .map(|&t| {
+                        if sorted {
+                            times.len() - times.partition_point(|&v| v < t)
+                        } else {
+                            times.iter().filter(|&&v| v >= t).count()
+                        }
+                    })
+                    .collect();
+                let n = self.trees.len() as f64;
+                out.par_iter_mut()
+                    .zip(x.par_chunks(n_features))
+                    .for_each(|(o, xr)| {
+                        for tree in &self.trees {
+                            let leaf = tree.apply(xr);
+                            let mut prev = 0.0;
+                            for (&k, &cum) in
+                                tree.leaf_event_idx(leaf).iter().zip(tree.leaf_cumhaz(leaf))
+                            {
+                                *o += (cum - prev) * weights[k as usize] as f64;
+                                prev = cum;
+                            }
+                        }
+                        *o /= n;
+                    });
+            }
+            Aggregate::Survival => {
+                out.par_iter_mut()
+                    .zip(x.par_chunks(n_features))
+                    .for_each_init(
+                        || vec![0.0; times.len()],
+                        |buf, (o, xr)| {
+                            ensemble_cumhaz(self.trees.iter(), xr, times, agg, buf);
+                            *o = buf.iter().sum();
+                        },
+                    );
+            }
+        }
+        out
+    }
+
     /// Ensemble per-cause cumulative hazards (mean over trees), row-major
     /// `(n_rows, n_causes, times.len())`. Accumulated in the order of
     /// `predict_cumhaz`, so for one cause the two are bit-identical under `Hazard`.

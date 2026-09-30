@@ -10,6 +10,14 @@ retroactively itemized here — see `git log` for the full slice-by-slice histor
 
 ## [Unreleased]
 
+### Changed
+- Survival-forest mortality prediction now sums sparse leaf hazard jumps
+  directly, avoiding a subjects-by-times cumulative-hazard matrix while
+  retaining the full curve APIs. On the repeated 1,000-tree static benchmark,
+  median prediction time for 400 subjects fell from 0.0493s to 0.0029s at
+  250 trees and from 0.1975s to 0.0114s at 1,000 trees
+  (`docs/bench/mortality-fastpath.md`).
+
 ## [0.3.0] - 2026-09-30
 
 ### Added

@@ -81,6 +81,21 @@ def test_hazard_aggregation_is_mean_of_tree_hazards():
     np.testing.assert_allclose(forest.predict_cumulative_hazard(X), np.mean(per_tree, axis=0), atol=1e-12)
 
 
+@pytest.mark.parametrize("aggregate,ntime", [("hazard", None), ("hazard", 30), ("survival", None)])
+def test_direct_mortality_matches_full_curve(aggregate, ntime):
+    X, y = _data()
+    forest = SurvivalForestTV(
+        n_estimators=35, aggregate=aggregate, ntime=ntime, random_state=3, n_jobs=2
+    ).fit(X, y)
+    for times in (forest.event_times_, forest.event_times_[::7], forest.event_times_[::-7]):
+        times = np.ascontiguousarray(times)
+        direct = forest.forest_.predict_mortality(X[:25], times, aggregate, 2)
+        full = forest.forest_.predict_cumhaz(X[:25], times, aggregate, 2).sum(axis=1)
+        np.testing.assert_allclose(direct, full, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(forest.predict(X[:25]), forest.predict_cumulative_hazard(X[:25]).sum(axis=1),
+                               rtol=1e-12, atol=1e-12)
+
+
 def test_export_tree_structure_matches_apply():
     """Walking children_left/children_right/feature/threshold by hand reaches the same
     leaf as ``apply`` for every row, and every leaf index shows up in the tree."""

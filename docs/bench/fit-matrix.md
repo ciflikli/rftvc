@@ -1,5 +1,9 @@
 # Fit-time matrix, 2026-09-29
 
+This is the historical single-run 0.2.0 benchmark. The repeated 0.3.0 runs
+with additional Python competing-risk coverage are in
+[`fit-matrix-repeated.md`](fit-matrix-repeated.md).
+
 Runner: `bench/fit_matrix.py` and `bench/fit_matrix.R`. Raw results:
 [`fit-matrix-2026-09-29.jsonl`](fit-matrix-2026-09-29.jsonl) for Python
 and [`fit-matrix-r-2026-09-29.jsonl`](fit-matrix-r-2026-09-29.jsonl) for R.
