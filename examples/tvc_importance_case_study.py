@@ -1,7 +1,7 @@
-"""S20 importance/effects case study: cause-specific hazard vs cumulative-incidence importance.
+"""Importance/effects case study: cause-specific hazard vs cumulative-incidence importance.
 
 Run from the repo root: .venv/bin/python -m examples.tvc_importance_case_study
-Data: the S14 competing-risks generator, scenario A (``bench/s14_cr_sim.py``):
+Data: the competing-risks generator, scenario A (``bench/s14_cr_sim.py``):
 ``z`` (redrawn each unit interval) drives cause 1's hazard; ``x0`` and ``x1``
 drive cause 2's; three columns are pure noise. Writes the tables included by
 docs/source/case_studies/importance.rst.

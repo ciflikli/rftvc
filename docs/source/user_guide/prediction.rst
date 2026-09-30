@@ -36,7 +36,7 @@ Aggregation
 ``aggregate="hazard"`` (default) averages the trees' cumulative hazards, so that
 ``S = exp(-mean Λ_b)``. ``aggregate="survival"`` averages the trees'
 survival curves instead. The hazard rule keeps conditional predictions
-consistent across origins. In the S8 bake-off (``docs/bench/s8-bakeoff.md`` in the
-repository), survival averaging calibrated slightly better on PBC2, but the
+consistent across origins. In the aggregation benchmark (``docs/bench/s8-bakeoff.md``
+in the repository), survival averaging calibrated slightly better on PBC2, but the
 difference was within the bootstrap interval. It was no better on a simulated
 panel and worse on a known-truth simulation, so ``"hazard"`` stays the default.

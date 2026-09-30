@@ -238,7 +238,7 @@ def run(estimator, Xnum, ye, ids_values, units, cv, windows, alpha, cause, compe
     )
 
 
-# --- landmark LOCO (design §3, S19 decision 8): folds are polars-frame-shaped -----------
+# --- landmark LOCO: folds are polars-frame-shaped ---------------------------------------
 
 
 def _dropped_history_features(history_features, unit_name_sets):
