@@ -5,6 +5,8 @@ __pycache__/
 *.pyd
 .hypothesis/
 .pytest_cache/
+.coverage
+htmlcov/
 docs/scratch/
 docs/_build/
 docs/source/generated/

@@ -34,6 +34,7 @@ Changelog = "https://github.com/ciflikli/rftvc/blob/main/CHANGELOG.md"
 dev = [
     "maturin>=1.9,<2",
     "pytest>=8",
+    "pytest-cov>=7",
     "hypothesis>=6",
     "lifelines>=0.29",
     "scikit-survival>=0.23",

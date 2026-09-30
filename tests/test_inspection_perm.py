@@ -236,6 +236,20 @@ def test_binning_rule():
     assert np.bincount(_strata.bin_codes(v, 4)).tolist() == [250, 250, 250, 250]
 
 
+def test_binning_nonnumeric_labels_keeps_missing_separate():
+    labels = np.array(["b", "a", None, "b"], dtype=object)
+    np.testing.assert_array_equal(_strata.bin_codes(labels, 2), [1, 0, 2, 1])
+    with pytest.raises(ValueError, match="sortable"):
+        _strata.bin_codes(np.array(["a", 1], dtype=object), 2)
+
+
+def test_combine_strata_codes_requires_at_least_one_array():
+    with pytest.raises(ValueError, match="no codes"):
+        _strata.combine(None)
+    codes = np.array([2, 1, 2])
+    np.testing.assert_array_equal(_strata.combine(codes), codes)
+
+
 def test_user_strata_labels():
     np.testing.assert_array_equal(_strata.user_labels(np.array(["b", "a", "b"]), 3), [1, 0, 1])
     with pytest.raises(ValueError, match="NaN"):
