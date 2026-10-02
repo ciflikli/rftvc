@@ -1,7 +1,6 @@
 """EBMT4 (R mstate) competing-risks registry extract -> counting-process rows.
 
-``mstate`` is GPL >= 2 with no separate data-specific licence (see
-``docs/plans/rc-validation-findings.md``'s licence discussion), so rather
+``mstate`` is GPL >= 2 with no separate data-specific licence, so rather
 than committing the data under rftvc's MIT licence, ``_read`` downloads it
 on demand from the package author's own upstream GitHub repository -- pinned
 to a specific commit and SHA-256-verified, cached locally, never

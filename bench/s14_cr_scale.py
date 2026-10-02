@@ -1,4 +1,4 @@
-"""S14 scale: fit time, peak RSS and leaf bytes for J in {1, 2, 4} (s14-plan.md; not a merge gate).
+"""S14 scale: fit time, peak RSS and leaf bytes for J in {1, 2, 4} (not a merge gate).
 
     python -m bench.s14_cr_scale            # all arms, each in its own process
     python -m bench.s14_cr_scale one N J NTIME

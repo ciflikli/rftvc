@@ -1,6 +1,6 @@
-"""Slice 5 (docs/plans/plan.md): CompetingRisksForestTV fitted-model-vs-truth check.
+"""Slice 5: CompetingRisksForestTV fitted-model-vs-truth check.
 
-Closes the gap flagged in `docs/plans/simulation-validation-findings.md` row 2:
+Closes the gap flagged in the validation audit row 2:
 `bench/s14_cr_sim.py`'s `run()` (the bake-off across many hyperparameter
 "arms") writes an ISE record but computes no pass/fail decision anywhere —
 no CI-gated check exists that `CompetingRisksForestTV`'s own predictions get

@@ -224,7 +224,7 @@ def test_censoring_kwargs_reject_counting_process_estimators():
 
 
 def test_brier_baseline_equals_landmark_cross_validate_pooled_by_n():
-    """tvc-design's explicit requirement: the same per-landmark censoring fit, pooled the
+    """Use the same per-landmark censoring fit, pooled the
     same way, for a fold refit exactly as ``landmark_cross_validate`` does its own."""
     from sklearn.base import clone
     from sklearn.model_selection import GroupKFold
@@ -317,7 +317,7 @@ def test_permutation_stays_within_each_landmark_and_groups_move_jointly():
 
 
 def test_m3_equivalence_permutation_equals_recomputing_from_the_donor_raw_history():
-    """tvc-design §3's constructed test: a 2-subject risk set where permuting the ``z``
+    """A 2-subject risk set where permuting the ``z``
     group with a forced donor gives the same row as recomputing ``z``/``z_mean`` by hand
     from the donor's raw history up to ``s``."""
     df = pl.DataFrame(

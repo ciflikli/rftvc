@@ -1,4 +1,4 @@
-"""S19 T8: landmark-importance simulations with a known truth (s19-plan.md §7.2/§7.5b; not a merge gate).
+"""S19 T8: landmark-importance simulations with a known truth (not a merge gate).
 
     python -m bench.tvc_landmark_sim pilot          # 10-rep MC-SE pilot for §7.2
     python -m bench.tvc_landmark_sim run [n_reps]   # R=50 (default), writes docs/bench/s19-landmark/*.csv

@@ -1,4 +1,4 @@
-"""Slice 11 (docs/plans/plan.md): bench/tvc_coxtv_truth_check.py's closed-form truth, and the
+"""Slice 11: bench/tvc_coxtv_truth_check.py's closed-form truth, and the
 TVC-vs-CoxTimeVaryingFitter parity gate itself.
 
 Pass rule for ``test_rftvc_ise_within_epsilon_of_cox``, declared before this gate was run, using

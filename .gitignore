@@ -8,6 +8,7 @@ __pycache__/
 .coverage
 htmlcov/
 docs/scratch/
+docs/plans/
 docs/_build/
 docs/source/generated/
 docs/bench/s8-bakeoff/raw/

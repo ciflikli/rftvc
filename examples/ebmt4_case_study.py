@@ -2,14 +2,13 @@
 
 Run from the repo root: .venv/bin/python -m examples.ebmt4_case_study
 Downloads mstate::ebmt4 on first use, checksum-verified and cached under
-RFTVC_DATA -- never redistributed with rftvc (tests/fixtures/ebmt4.py; the
-licence discussion is in docs/plans/rc-validation-findings.md). Writes the
+RFTVC_DATA -- never redistributed with rftvc (tests/fixtures/ebmt4.py). Writes the
 tables docs/source/case_studies/ebmt4.rst includes into
 docs/source/case_studies/generated/.
 
 ``ae`` is a generic adverse event, not acute GvHD (mstate's own
 documentation: the data are simplified for illustration, not clinical
-conclusions -- docs/plans/rc-validation-plan.md Decision 3). No expected
+conclusions. No expected
 sign is claimed for it; the check here is whether the forest and a
 cause-specific Cox fit agree in direction on the same data, and whether the
 two causes' hazard_effect curves for ae are distinguishable at all.
@@ -29,8 +28,7 @@ OUT = Path(__file__).resolve().parents[1] / "docs" / "source" / "case_studies" /
 COVARIATES = ["ae", "year", "agecl", "proph", "match"]
 # Explicit, deterministic level order (the R factor levels themselves, which
 # are already ordinal for year/agecl) -- plain `.cast(pl.Categorical)` codes
-# by first appearance, which is not stable across process runs (see
-# docs/plans/rc-validation-findings.md's finding on examples/rc_validation.py).
+# by first appearance, which is not stable across process runs.
 LEVELS = {
     "year": ["1985-1989", "1990-1994", "1995-1998"],
     "agecl": ["<=20", "20-40", ">40"],

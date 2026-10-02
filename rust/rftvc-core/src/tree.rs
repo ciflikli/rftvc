@@ -35,7 +35,7 @@ pub struct TreeParams {
     /// Features tried per node (without replacement).
     pub max_features: usize,
     /// `(cause, m)` (0-based cause): each child needs `m` events of that cause,
-    /// and a node needs `2 m` before any feature is drawn (cr-design.md C5).
+    /// and a node needs `2 m` before any feature is drawn.
     pub cause_floor: Option<(usize, usize)>,
     /// Store per-leaf per-cause in-bag event counts (`Tree::leaf_cause_events`).
     pub leaf_events: bool,

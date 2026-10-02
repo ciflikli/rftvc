@@ -14,8 +14,7 @@ rows, splitting a patient's row at ``ae`` when it was observed.
 
 The data are downloaded on demand from the package author's own upstream
 repository and checksum-verified on first use, not committed with rftvc --
-``mstate`` is GPL >= 2 with no separate data-specific licence (see
-``docs/plans/rc-validation-findings.md`` for the fuller discussion).
+``mstate`` is GPL >= 2 with no separate data-specific licence.
 
 .. csv-table:: Patients, rows and events
    :file: generated/ebmt4_summary.csv

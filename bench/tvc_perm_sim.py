@@ -1,4 +1,4 @@
-"""S17 T6: permutation-importance simulations with a known truth (s17-plan.md §7.1/7.3/7.4; not a merge gate).
+"""S17 T6: permutation-importance simulations with a known truth (not a merge gate).
 
     python -m bench.tvc_perm_sim pilot          # 10-rep MC-SE pilot for all three sims
     python -m bench.tvc_perm_sim run [n_reps]   # R=50 (default), writes docs/bench/s17-perm/*.csv

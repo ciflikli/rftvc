@@ -1,13 +1,13 @@
-"""Slice 12 (docs/plans/plan.md): competing risks vs. ``randomForestSRC`` on a known-truth DGP.
+"""Slice 12: competing risks vs. ``randomForestSRC`` on a known-truth DGP.
 
-Closes the last item on `docs/plans/simulation-validation-findings.md`'s external-tool-parity
+Closes the last item on the validation audit's external-tool-parity
 punchlist: no competing-risks comparison against any external tool with a known ground truth
 existed (`bench/s14_cr_parity.{R,py}`'s pbc comparison is real data, no ground truth).
 
 Data-generating process (new for this slice, deliberately *not* a reuse of `bench/s14_cr_sim.py`'s
 TVC DGP): a single static covariate ``x ~ N(0, 1)``, two competing causes with constant
 cause-specific hazards conditional on ``x`` (``lam_k(x) = RATE_k * exp(BETA_k * x)``), independent
-exponential censoring. Chosen because research (`docs/plans/cr-rfsrc-research.md`, Q1) found
+exponential censoring. This setup was chosen because
 ``randomForestSRC``'s competing-risks `predict()` returns one CIF per input *row*, not per
 subject-path -- `subj.unique.count` is literally aliased to `nrow(xvar)` in its source, with no
 found mechanism to chain a subject's time-varying-covariate rows into one curve the way Slice 11

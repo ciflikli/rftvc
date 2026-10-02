@@ -1,21 +1,20 @@
-"""Slice 9 (docs/plans/plan.md): S19 landmark-importance permutation CI gates.
+"""S19 landmark-importance permutation CI gates.
 
-Closes the last row (4) of docs/plans/simulation-validation-findings.md's manual-gate
+Closes the last row (4) of the validation audit's manual-gate
 punchlist: `bench.tvc_landmark_sim`'s three §7.2/§7.5b scenarios only ever ran manually
-(`run()`, R=50, results in `docs/plans/s19-plan.md`). Reuses that module's DGPs/oracle
+(`run()`, R=50, results in `docs/bench/s19-landmark/*.csv`). Reuses that module's DGPs/oracle
 (`level_history_data`/`replicate`/`oracle`/`copies_replicate`/`censoring_data`/
 `censoring_replicate`) and `bench.tvc_perm_sim.one_sided_t` unchanged — no new DGP, no new
 statistical machinery.
 
 Unlike the trend/timing/CR gates (Slices 6-8), the history half of scenario 1 cannot be
 ported or recalibrated: the design's real `hist.mean() >= 0.25 * oracle(history)` rule
-already fails at the full R=50 scale (`s19-plan.md` lines 121, 127-130 — a documented,
-user-approved deviation, confirmed not sampling noise at R=100) and was independently
-re-verified (this slice's own research, `docs/plans/s19-landmark-gate-research.md`) to be
-worse than a coin flip against its own bar at reduced scale too (seeds 0-14: 43% of the
+already fails at the full R=50 scale (confirmed not to be sampling noise at R=100) and was
+independently re-verified to be worse than a coin flip against its own bar at reduced scale
+too (seeds 0-14: 43% of the
 bound; seeds 10000-10014: barely over, well within 1 MC-SE). Recalibrating a new threshold
-to force a pass would silently override that accepted deviation — the same "tuning the
-fixture to the result" the S19 plan explicitly declined to do. Instead this gate asserts
+to force a pass would silently override that accepted deviation by tuning the
+fixture to the result. Instead this gate asserts
 only what research verified is actually robust for that scenario:
 
 - **Markov control:** the design's real, unmodified bound
@@ -41,8 +40,7 @@ The other two scenarios port the design's real rule unmodified, same discipline 
   `n_train=n_eval=150, n_estimators=25` (n=100 breaks the generator: heavy censoring
   sometimes leaves an eval fold with no scorable PE events).
 
-Full derivation and out-of-band pilot numbers: `docs/plans/s19-landmark-gate-research.md`,
-`docs/plans/plan.md` Slice 9.
+Thresholds are defined below; the out-of-band pilot results are summarized above.
 """
 
 import numpy as np

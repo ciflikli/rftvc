@@ -1,7 +1,6 @@
 """Rossi (R carData) weekly-employment panel -> counting-process rows.
 
-``carData`` is GPL >= 2 with no separate data-specific licence (see
-``docs/plans/rc-validation-findings.md``'s licence discussion), so rather
+``carData`` is GPL >= 2 with no separate data-specific licence, so rather
 than committing the data under rftvc's MIT licence, ``_read`` downloads it
 on demand from carData's own upstream CRAN mirror -- pinned to a specific
 commit and SHA-256-verified, cached locally, never redistributed with rftvc

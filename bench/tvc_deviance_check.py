@@ -1,4 +1,4 @@
-"""Numerical checks behind docs/plans/tvc-deviance.md (research stage, not a test).
+"""Numerical checks behind the piecewise-exponential score analysis (research stage, not a test).
 
 1. Propriety (Monte Carlo, one window, Weibull truth): the row-own-exposure score
    ``N log E_hat - E_hat`` is improper; the piecewise-constant score is maximised

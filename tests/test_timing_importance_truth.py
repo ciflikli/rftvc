@@ -1,6 +1,6 @@
-"""Slice 7 (docs/plans/plan.md): timing-window permutation-importance CI gate.
+"""Slice 7: timing-window permutation-importance CI gate.
 
-Closes another part of the gap in docs/plans/simulation-validation-findings.md
+Closes another part of the gap in the validation audit
 row 3: the timing scenario's real design rule (Holm-rejects inside, all
 outside-window upper bounds under delta) never ran against a fitted forest
 in CI — only the oracle's own exact-zero fact was checked (a different,

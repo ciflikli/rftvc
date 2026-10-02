@@ -1,7 +1,7 @@
-"""Slice 8 (docs/plans/plan.md): competing-risks permutation-importance CI gate.
+"""Slice 8: competing-risks permutation-importance CI gate.
 
 Closes the last part of the gap flagged in
-`docs/plans/simulation-validation-findings.md` row 3: S17's declared R=50
+the validation audit row 3: S17's declared R=50
 statistical gate for the competing-risks oracle scenario only ever ran
 manually (`bench.tvc_perm_sim run()`); the only CI-gated version
 (`tests/test_tvc_sim_truth.py`'s `slow`-marked pilot) applies a loosened

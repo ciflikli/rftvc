@@ -3,7 +3,7 @@
 Mirrors ``examples/data/cunningham_lemke.py``'s pattern: a third-party file is
 downloaded once into a local cache and verified against a pinned SHA-256, and
 is never committed to this repo. Used by ``rossi.py`` and ``ebmt4.py`` (see
-their module docstrings and ``docs/plans/rc-validation-findings.md`` for why:
+their module docstrings for why:
 both source datasets ride along in a GPL >= 2 R package with no separate
 data-specific licence, so rftvc -- MIT-licensed -- fetches rather than
 redistributes them).

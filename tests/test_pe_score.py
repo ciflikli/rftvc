@@ -1,4 +1,4 @@
-"""Piecewise-exponential score (S16; docs/plans/tvc-deviance.md)."""
+"""Piecewise-exponential score checks."""
 
 import types
 
@@ -122,7 +122,7 @@ def test_proper_on_constants_and_improper_v0():
     c_star = event.sum() / stop.sum()
     assert abs(grid[int(np.argmax(scores))] - c_star) <= grid[1] - grid[0]
     # v0 (log of the row-own-exposure expectation) prefers a constant hazard to the truth:
-    # the reason the score uses window rates (tvc-deviance.md §2.3).
+    # the reason the score uses window rates.
     v0 = {b: np.mean(event * np.log(stop**b) - stop**b) for b in (1.0, a)}
     assert v0[1.0] > v0[a]
 

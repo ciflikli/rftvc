@@ -1,4 +1,4 @@
-"""S20 T9: path_effect simulation with a known truth (s20-plan.md §7.5; not a merge gate).
+"""S20 T9: path_effect simulation with a known truth (not a merge gate).
 
     python -m bench.tvc_path_effect_sim pilot          # 10-rep MC-SE pilot
     python -m bench.tvc_path_effect_sim run [n_reps]   # R=50 (default), writes docs/bench/s20-effects/path_effect.csv
@@ -11,7 +11,7 @@ subject's path at its own event/censoring time and so cannot supply a
 covariate value at every horizon -- the same construction ``tests/sim.py``'s
 own ``replicate()`` already uses for its prediction check).
 
-Fully predeclared (s20-plan.md, Review log finding 8): ``feature="z"``
+The simulation uses ``feature="z"``
 (column 1), ``delta=1.0``, ``from_time=3.0`` (a unit-interval boundary, so the
 base case needs no mid-interval row split -- that is covered separately by a
 hand-built unit test), ``horizons=[4.0, 5.0, 6.0]`` (all ``>= from_time``,
@@ -21,7 +21,7 @@ Oracle: for a large i.i.d. sample, the true ``Delta risk`` at each horizon,
 computed directly from the known piecewise-constant hazard (``hazard``) with
 ``z`` shifted by ``delta`` on every interval at or after ``from_time``.
 
-Pass rule (design tvc-design.md §7.5): over R=50 replications, ``|mean bias|
+Pass rule: over R=50 replications, ``|mean bias|
 <= 0.1 * |true_delta|`` at each horizon.
 """
 

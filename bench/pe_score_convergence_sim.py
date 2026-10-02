@@ -1,4 +1,4 @@
-"""Slice 1 (docs/plans/plan.md): PE-score oracle-gap convergence.
+"""PE-score oracle-gap convergence.
 
 Reuses ``tests.sim``'s DGP unchanged: subjects have a baseline covariate
 ``x0 ~ N(0, 1)`` and an external covariate ``z_k`` redrawn on each unit
@@ -12,10 +12,8 @@ the exact same alpha-mixing, window grid and null convention as the model's
 own score — it differs only in using the DGP's true cumulative hazard in
 place of the model's prediction (``oracle_pe_score``, a thin wrapper around
 ``piecewise_exponential_score`` itself, not a reimplementation of its
-log-likelihood — see docs/plans/plan.md Slice 1's correction of the original
-"unmixed true-hazard ceiling" framing, which was wrong: an unmixed
-log-likelihood is not the ceiling of the mixed, windowed quantity actually
-being scored).
+log-likelihood). An unmixed true-hazard log-likelihood is not the ceiling of
+the mixed, windowed quantity actually being scored.
 
 Both the model and the oracle are scored on the same fixed evaluation set
 (``_EVAL``, drawn once at import time from a fixed seed, reused across every
@@ -34,7 +32,7 @@ one-sided 95% CI on the mean paired difference (gap at n=200 minus gap at
 n=5000) is > 0 — i.e. the oracle-to-model gap is significantly smaller at
 the larger training size.
 
-**Superseded by Slice 10** (``docs/plans/plan.md``, ``docs/plans/n-sweep-gate-*.md``):
+**Superseded by the updated convergence protocol**:
 R=10 was found not robust across seed ranges it was never tested against
 (its lower bound goes negative at an out-of-band batch); the test that
 exercises this module now runs at R=20 with a third, reported-only point
@@ -79,8 +77,8 @@ def _reference_windows(n_windows=N_WINDOWS, horizon=HORIZON, ref_n=REF_N, ref_se
     Computed once from a large deterministic reference draw (fixed seed,
     independent of any replication or training size), so the grid never
     moves across the n-sweep or across replications — the fixed-window
-    requirement from docs/plans/plan.md Slice 1's review correction. Same
-    quantile-bucketing algorithm as ``rftvc.metrics.event_windows``, applied
+    requirement used by the current test. It uses the same quantile-bucketing
+    algorithm as ``rftvc.metrics.event_windows``, applied
     directly to a raw array of observed event times instead of a fitted
     estimator's ``_event_counts_``.
     """

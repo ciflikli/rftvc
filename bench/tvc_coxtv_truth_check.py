@@ -1,8 +1,8 @@
-"""Slice 11 (docs/plans/plan.md): TVC vs. `lifelines.CoxTimeVaryingFitter` on a known-truth DGP.
+"""Slice 11: TVC vs. `lifelines.CoxTimeVaryingFitter` on a known-truth DGP.
 
-Closes the TVC half of `docs/plans/simulation-validation-findings.md`'s closing-summary gap: "no
+Closes the TVC half of the validation audit's closing-summary gap: "no
 landmark-estimator or TVC cross-check against an external tool exists at all" — the only existing
-`CoxTimeVaryingFitter`-vs-`rftvc` comparison (`docs/plans/rc-validation-{plan,findings}.md`, the
+`CoxTimeVaryingFitter`-vs-`rftvc` comparison (the Rossi case study, the
 Rossi dataset) is real data with no known ground truth.
 
 Data-generating process (new for this slice — deliberately *not* a reuse of ``tests.sim``'s

@@ -1,4 +1,4 @@
-"""Slice 2 (docs/plans/plan.md): bench/lifelines_truth_check.py's closed-form
+"""Slice 2: bench/lifelines_truth_check.py's closed-form
 truth, static-covariate structure, and the lifelines cross-check gate.
 
 Pass rule for ``test_rftvc_ise_within_tolerance_of_coxph``, declared before

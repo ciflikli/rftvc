@@ -1,4 +1,4 @@
-"""Fixture-correctness tests for the EBMT4 reshape (docs/plans/rc-validation-plan.md T3).
+"""Fixture-correctness tests for the EBMT4 reshape.
 
 Downloads mstate::ebmt4 on first run (tests/fixtures/ebmt4.py); marked
 ``network`` and excluded from the default test run.
