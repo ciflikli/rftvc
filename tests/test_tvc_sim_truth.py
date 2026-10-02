@@ -1,7 +1,7 @@
 """S17 T6: the permutation-importance simulations' closed-form truth (bench/tvc_perm_sim.py).
 
 Fast (default): the oracle stubs' closed-form cumulative hazards match numerical
-integration of the literal design hazard (docs/plans/s17-plan.md §7), and one
+integration of the literal design hazard (the simulation protocol §7), and one
 smoke replication (R=1) of each sim runs end to end. Slow (``-m slow``): a
 10-replication pilot loosely checks the declared pass rules point the right way
 (the predeclared R=50 statistical gate itself runs via ``bench.tvc_perm_sim``,
@@ -182,7 +182,7 @@ def test_pilot_pass_rules_point_the_right_way():
     assert upper_bound(d_s2, 0.05) <= 0.3 * O1  # loose at R=10 (design rule: <= 0.1*oracle at R=50)
 
     # path_effect: FAILS the design's tight |mean bias| <= 0.1*|true_delta| rule even at the
-    # full R=50 run (docs/bench/s20-effects/path_effect.csv; s20-plan.md T9) -- a real,
+    # full R=50 run (docs/bench/s20-effects/path_effect.csv; the simulation protocol T9) -- a real,
     # well-powered (MC-SE << margin/7) finite-sample forest bias, not a code defect (checked
     # against an exact-hazard stub separately). As S19 did for its own accepted §7.2 deviation
     # (this same file's sibling test_landmark_sim_truth.py: "assert hist.mean() > 0", not the

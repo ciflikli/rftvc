@@ -11,8 +11,7 @@ of unchanged employment status, with ``arrest`` as the event on the last row.
 
 The data are downloaded on demand from ``carData``'s own upstream and
 checksum-verified on first use, not committed with rftvc -- ``carData`` is
-GPL >= 2 with no separate data-specific licence (see
-``docs/plans/rc-validation-findings.md`` for the fuller discussion).
+GPL >= 2 with no separate data-specific licence.
 
 .. csv-table:: Subjects, rows and events
    :file: generated/rossi_summary.csv
@@ -36,9 +35,8 @@ magnitude, not a signed effect; see :doc:`../user_guide/importance`):
    :header-rows: 1
 
 Employment status and age dominate; prior convictions' negative score under
-both permutation and LOCO importance (not shown here, see
-``docs/plans/rc-validation-findings.md``) is a real, correctly-reported
-possibility for a noisy-relative-to-its-effect covariate, not an error.
+both permutation and LOCO importance is possible for a covariate with a weak
+signal relative to its noise. A negative score is not an error.
 
 **Direction** (``hazard_effect`` two-point contrasts vs. the Cox
 coefficient's sign; only meaningful for a binary or continuous covariate,

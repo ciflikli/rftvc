@@ -1,6 +1,5 @@
 """Regenerate tests/fixtures/cr_rfsrc_truth.json with randomForestSRC 3.9.0 (needs Rscript + a
-scratch ``randomForestSRC`` install -- not a dependency; see docs/plans/cr-rfsrc-research.md for
-how to find/rebuild a scratch lib).
+scratch ``randomForestSRC`` install -- not a dependency).
 
 Generates a fixed train/test split of ``bench.cr_rfsrc_truth_check``'s static competing-risks DGP
 in Python, writes it to CSV, fits ``randomForestSRC::rfsrc(Surv(time, status) ~ x, ...)`` in R

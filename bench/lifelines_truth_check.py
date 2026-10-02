@@ -1,4 +1,4 @@
-"""Slice 2 (docs/plans/plan.md): lifelines cross-check against known truth
+"""Slice 2: lifelines cross-check against known truth
 (genuinely static DGP).
 
 Data-generating process (new for this slice — deliberately *not* a reuse of

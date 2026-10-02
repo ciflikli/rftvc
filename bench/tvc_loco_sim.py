@@ -1,4 +1,4 @@
-"""S18 T6: LOCO simulations with a known truth (s18-plan.md §7.1/§7.7b; not a merge gate).
+"""S18 T6: LOCO simulations with a known truth (not a merge gate).
 
     python -m bench.tvc_loco_sim pilot          # 10-rep MC-SE pilot for both sims
     python -m bench.tvc_loco_sim run [n_reps]   # R=50 (default), writes docs/bench/s18-loco/*.csv

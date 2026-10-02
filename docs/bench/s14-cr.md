@@ -1,6 +1,9 @@
 # S14: competing-risks bench, bake-off and recommendation
 
-Plan and pre-registered rule: `docs/plans/s14-plan.md` (Codex plan review applied before any run). Raw results: `docs/bench/s14-cr/*.csv`. Scripts: `bench/s14_cr_{sim,summary,parity,landmark_sim,scale}.py`, `bench/s14_cr_parity.R`. The challenger arms run at commit `66ccad8`; the challengers were removed afterwards (P5).
+Raw results: `docs/bench/s14-cr/*.csv`. Scripts:
+`bench/s14_cr_{sim,summary,parity,landmark_sim,scale}.py` and
+`bench/s14_cr_parity.R`. The challenger arms run at commit `66ccad8`;
+the challengers were removed afterwards.
 
 ## Recommendation
 | Decision | Result | Default |

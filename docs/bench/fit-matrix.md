@@ -87,6 +87,5 @@ case until an identical missingness protocol is chosen.
    use repeated folds or known-truth simulations before changing defaults.
 
 The earlier [S6 performance benchmark](s6-perf.md) covers 100 trees up to one
-million rows; the [S6 profile](../scratch/perf.md) identifies score and
-bin-by-bin split-search costs on complete data. This matrix expands workload
+million rows. This matrix expands workload
 coverage and led to the missing-value split optimization above.

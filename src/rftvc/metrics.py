@@ -591,7 +591,7 @@ def calibration_table(y_test, risk, w, n_bins=10):
     return pl.DataFrame(rows)
 
 
-# --- piecewise-exponential score (docs/plans/tvc-deviance.md) -----------------
+# --- piecewise-exponential score ---------------------------------------------
 
 
 class PEScore(NamedTuple):
@@ -727,7 +727,7 @@ def piecewise_exponential_score(
     with ``e_rm`` the row's exposure in ``W_m`` and ``N_rm`` its event there.
     It is the log-likelihood of the piecewise-constant hazard ``rate``: proper
     for piecewise-constant predictions, IPCW-free, and additive over windows,
-    causes and ids (``docs/plans/tvc-deviance.md``). Higher is better; the
+    causes and ids. Higher is better; the
     Poisson deviance is ``-2 S`` plus a data-only term.
 
     Parameters

@@ -1,4 +1,4 @@
-"""Fixture-correctness tests for the Rossi reshape (docs/plans/rc-validation-plan.md T2).
+"""Fixture-correctness tests for the Rossi reshape.
 
 Downloads carData::Rossi on first run (tests/fixtures/rossi.py); marked
 ``network`` and excluded from the default test run.

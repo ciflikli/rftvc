@@ -1,4 +1,4 @@
-"""S14 right-censored parity on survival::pbc (transplant = 1, death = 2), s14-plan.md.
+"""S14 right-censored parity on survival::pbc (transplant = 1, death = 2).
 
     RL=<R lib with randomForestSRC> python -m bench.s14_cr_parity
 

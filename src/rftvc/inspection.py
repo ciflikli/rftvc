@@ -688,7 +688,7 @@ def path_effect(
     **understate** the true risk change: like any random forest, this one
     shrinks its predictions toward the bulk of the training distribution, and
     that shrinkage is stronger where the shifted path's hazard is elevated
-    (confirmed by simulation, see `docs/plans/s20-plan.md`). This was
+    (checked in ``docs/bench/s20-effects/path_effect.csv``). This was
     checked on the *mean* over many subjects; an individual subject's own
     estimate can still have the wrong sign, as any per-subject estimate can.
 

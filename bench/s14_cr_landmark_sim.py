@@ -1,4 +1,4 @@
-"""S14 landmark competing-risks simulation (reported, not voting; s14-plan.md, plan review 6).
+"""S14 landmark competing-risks simulation (reported, not used for model selection).
 
     python -m bench.s14_cr_landmark_sim [n_reps]    # writes docs/bench/s14-cr/landmark_sim.csv
 

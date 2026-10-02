@@ -1,6 +1,6 @@
-"""Slice 8 (docs/plans/plan.md): competing-risks permutation-importance CI gate.
+"""Slice 8: competing-risks permutation-importance CI gate.
 
-Closes the last part of the row-3 gap in docs/plans/simulation-validation-findings.md
+Closes the last part of the row-3 gap in the validation audit
 (S17's third oracle scenario): the real design rule never ran against a
 fitted forest in CI — only a loosened 0.3x-of-oracle pilot bound did (design:
 0.1x). Pass rule, unmodified from the design, declared before this gate was

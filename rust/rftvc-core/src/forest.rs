@@ -719,7 +719,7 @@ impl Forest {
     }
 }
 
-/// Ensemble rule for competing-risks predictions (cr-design.md C4).
+/// Ensemble rule for competing-risks predictions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CifAggregate {
     /// Average the cause-specific hazard increments over trees, then Aalen–Johansen.

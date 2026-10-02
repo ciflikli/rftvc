@@ -119,7 +119,7 @@ impl NodeScorer for LogRankNode<'_> {
 
 /// Composite cause-specific LTRC log-rank: `sum_j U_j^2 / V_j` over causes with
 /// `V_j > 0`, where `U_j`, `V_j` are the log-rank numerator and hypergeometric
-/// variance with "event" = cause `j` (cr-design.md C3). Unlike the all-cause
+/// variance with "event" = cause `j`. Unlike the all-cause
 /// statistic, opposing effects on two causes do not cancel.
 pub struct CompositeCauseLogRank;
 

@@ -1,4 +1,4 @@
-"""``hazard_effect`` / ``path_effect`` core (design tvc-design.md §4)."""
+"""``hazard_effect`` / ``path_effect`` core."""
 
 import numpy as np
 

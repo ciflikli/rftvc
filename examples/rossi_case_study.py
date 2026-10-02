@@ -2,8 +2,7 @@
 
 Run from the repo root: .venv/bin/python -m examples.rossi_case_study
 Downloads Rossi (carData::Rossi) on first use, checksum-verified and cached
-under RFTVC_DATA -- never redistributed with rftvc (tests/fixtures/rossi.py;
-the licence discussion is in docs/plans/rc-validation-findings.md). Writes
+under RFTVC_DATA -- never redistributed with rftvc (tests/fixtures/rossi.py). Writes
 the tables docs/source/case_studies/rossi.rst includes into
 docs/source/case_studies/generated/.
 """

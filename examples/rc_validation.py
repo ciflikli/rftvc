@@ -1,11 +1,10 @@
 """Real-data validation: Rossi (TVC) + EBMT4 (competing risks + TVC).
 
 Run from the repo root: .venv/bin/python -m examples.rc_validation
-Pre-release validation (docs/plans/rc-validation-plan.md), not a docs case
-study. Writes a plain report to stdout and CSVs under docs/plans/rc-validation/
-for docs/plans/rc-validation-findings.md to cite.
+Pre-release validation, separate from the documentation case studies. Writes
+a report to stdout and CSVs under the ignored docs/scratch/rc-validation/.
 
-Methodology (plan Decision 4): permutation_importance / drop_column_importance
+Methodology: permutation_importance / drop_column_importance
 report *relevance magnitude* only (a score drop, no sign) -- never read as a
 directional effect. Direction comes only from hazard_effect contrasts (two
 covariate values) and the matching CoxTimeVaryingFitter coefficient's sign.
@@ -18,9 +17,8 @@ Categorical encoding happens here, not in the fixture modules:
   (yes=1, no=0) -- all originally yes/no or two-level factors.
 - EBMT4: year/agecl/proph/match are ordinal-coded (arbitrary integer per
   distinct level) for *both* fits -- adequate for a tree ensemble, but not a
-  meaningful unit for Cox's coefficients on these baseline covariates
-  (noted as an API-friction / methodology limitation in the findings doc;
-  ae, the covariate of interest, is a real binary flag, unaffected by this).
+  meaningful unit for Cox's coefficients on these baseline covariates;
+  ae, the covariate of interest, is a real binary flag, unaffected by this.
 """
 
 import time
@@ -35,7 +33,7 @@ from rftvc import CompetingRisksForestTV, SurvivalForestTV, inspection, make_com
 from tests.fixtures.ebmt4 import ebmt4_competing_risks
 from tests.fixtures.rossi import rossi_counting_process
 
-OUT = Path(__file__).resolve().parents[1] / "docs" / "plans" / "rc-validation"
+OUT = Path(__file__).resolve().parents[1] / "docs" / "scratch" / "rc-validation"
 
 
 def _yesno(col):
@@ -85,7 +83,7 @@ def ebmt4_frame():
     An explicit, fixed level order (the R factor levels themselves, already
     ordinal for year/agecl) via ``pl.Enum`` -- bare ``.cast(pl.Categorical)``
     codes by first appearance, which is not stable across separate process
-    runs on identical data (docs/plans/rc-validation-findings.md).
+    runs on identical data.
     """
     d = ebmt4_competing_risks().with_columns(
         pl.col(c).cast(pl.Enum(levels)).to_physical().alias(c) for c, levels in EBMT4_LEVELS.items()

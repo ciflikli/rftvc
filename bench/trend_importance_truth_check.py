@@ -1,6 +1,6 @@
-"""Slice 6 (docs/plans/plan.md): trend-scenario permutation-importance CI gate.
+"""Slice 6: trend-scenario permutation-importance CI gate.
 
-Closes part of the gap flagged in `docs/plans/simulation-validation-findings.md`
+Closes part of the gap flagged in the validation audit
 row 3: S17's declared R=50 statistical gate for `permutation_importance` only
 ever ran manually (`bench.tvc_perm_sim run()`); the only CI-gated version
 (`tests/test_tvc_sim_truth.py`'s `slow`-marked pilot) uses **loosened**

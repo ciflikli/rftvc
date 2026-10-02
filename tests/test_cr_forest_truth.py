@@ -1,6 +1,6 @@
-"""Slice 5 (docs/plans/plan.md): CompetingRisksForestTV fitted-model-vs-truth gate.
+"""Slice 5: CompetingRisksForestTV fitted-model-vs-truth gate.
 
-Closes the gap flagged in docs/plans/simulation-validation-findings.md row 2:
+Closes the gap flagged in the validation audit row 2:
 bench/s14_cr_sim.py's run() computes no pass/fail decision, so no CI-gated
 check exists that CompetingRisksForestTV's own predictions are close to a
 known competing-risks truth. This test adds exactly that, on top of the

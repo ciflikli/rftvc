@@ -2,9 +2,9 @@
 
 Fast (default): ``_true_hist`` matches a hand-built rolling-2-unit mean, the oracle stub's
 closed-form rate matches its literal formula, and generator rows are well-formed. Also
-default-tier (Slice 9, docs/plans/plan.md): the real §7.2/§7.5b CI gates from
+default-tier: the §7.2/§7.5b CI gates from
 ``bench.landmark_importance_truth_check`` — closes
-docs/plans/simulation-validation-findings.md row 4, the last item on the manual-gate
+the validation audit row 4, the last item on the manual-gate
 punchlist. Slow (``-m slow``): a small-scale smoke run of the three §7.2/§7.5b replicate
 functions, at yet another (looser) scale — not fully redundant with the Slice 9 gates below,
 since it also smoke-tests ``copies_replicate``/``censoring_replicate`` at their own scale.
@@ -94,11 +94,11 @@ def test_oracle_smoke():
     assert np.isfinite(oracle("markov", n=2000, n_repeats=1))
 
 
-# --- Slice 9 (docs/plans/plan.md): the real §7.2/§7.5b gates, default tier ---------------
+# --- §7.2/§7.5b gates, default tier -------------------------------------------
 #
 # Reduced scales/rep counts and margins verified across >= 2 independent out-of-band seed
 # batches (10000-.../20010-...) distinct from these gates' own seeds (0-14, or 0-29 for
-# history's R=30); full derivation in docs/plans/s19-landmark-gate-research.md.
+# history's R=30).
 
 
 def test_markov_control_and_history_significance():
@@ -107,8 +107,7 @@ def test_markov_control_and_history_significance():
     tested (out-of-band batches, same R=15: seeds 10000-10014, 20010-20024).
 
     History: **not** the design's declared 0.25x-of-oracle magnitude rule — that rule already
-    fails at the full R=50 scale (s19-plan.md lines 121, 127-130, a documented, user-approved
-    deviation) and was independently re-verified here to be worse than a coin flip against its
+    fails at the full R=50 scale and was independently re-verified here to be worse than a coin flip against its
     own bar at reduced scale too (43%-101% of the bound across seed batches). Recalibrating a
     new threshold to force a pass would silently override that accepted deviation. Instead: a
     one-sided t-test that ``hist.mean() > 0`` is statistically significant, at R=30 (R=15 is

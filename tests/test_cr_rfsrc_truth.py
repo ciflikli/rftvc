@@ -1,4 +1,4 @@
-"""Slice 12 (docs/plans/plan.md): bench/cr_rfsrc_truth_check.py's closed-form truth, and the
+"""Slice 12: bench/cr_rfsrc_truth_check.py's closed-form truth, and the
 competing-risks-vs-randomForestSRC parity gate itself.
 
 Pass rule for ``test_rftvc_ise_within_epsilon_of_rfsrc_fixture``, declared before this gate was

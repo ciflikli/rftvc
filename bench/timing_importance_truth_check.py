@@ -1,7 +1,7 @@
-"""Slice 7 (docs/plans/plan.md): timing-window permutation-importance CI gate.
+"""Slice 7: timing-window permutation-importance CI gate.
 
 Closes another part of the gap flagged in
-`docs/plans/simulation-validation-findings.md` row 3: S17's declared R=50
+the validation audit row 3: S17's declared R=50
 statistical gate for the timing scenario only ever ran manually
 (`bench.tvc_perm_sim run()`); the only CI-gated version
 (`tests/test_tvc_sim_truth.py`'s `slow`-marked pilot) applies a Holm

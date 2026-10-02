@@ -1,6 +1,6 @@
-"""Slice 6 (docs/plans/plan.md): trend-scenario permutation-importance CI gate.
+"""Slice 6: trend-scenario permutation-importance CI gate.
 
-Closes part of the gap flagged in docs/plans/simulation-validation-findings.md
+Closes part of the gap flagged in the validation audit
 row 3 (S17's real R=50 gate never runs in CI). Pass rule for
 test_trend_importance_within_real_margin_of_oracle, declared before this
 gate was run, thresholds calibrated from an out-of-band pilot (seeds

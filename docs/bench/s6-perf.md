@@ -31,6 +31,6 @@ with `max_samples=0.632`, 10 threads; rftvc `min_events_leaf=1`. Peak RSS of the
 - At 10k rows rftvc fits ~100× faster than sksurv RSF (0.5 s exact / 0.15 s coarse vs 47 s) with the same test C (0.679 vs 0.682; bootstrap draws differ).
   - Default sksurv stores a survival curve over every distinct time in every leaf: 7.3 GB at 10k, ~73 GB projected at 100k.
   - With `low_memory=True` it did not finish 100k rows in 30 min.
-- rftvc scales to 1M rows on this machine: 113 s exact, 18 s at `ntime=100`, 2.3–2.4 GB, dominated by stored leaves (see `docs/scratch/perf.md`).
+- rftvc scales to 1M rows on this machine: 113 s exact, 18 s at `ntime=100`, 2.3–2.4 GB, dominated by stored leaves.
 - Coarse mode (`ntime=100`) matches exact-mode C at every size (within 0.002), 4–6× faster at 100k–1M rows.
 - TVC data (5 rows per subject) cost no more per row than one-row data. At equal rows there are 5× fewer subjects, hence 5× fewer event times, so exact mode is faster (61 s vs 113 s at 1M rows).

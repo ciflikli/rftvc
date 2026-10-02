@@ -1,4 +1,4 @@
-"""S14 competing-risks simulations with a known truth (s14-plan.md; not a merge gate).
+"""S14 competing-risks simulations with a known truth (not a merge gate).
 
     python -m bench.s14_cr_sim check          # pre-run scenario checks (plan review 3, 7)
 

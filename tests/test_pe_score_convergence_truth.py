@@ -1,7 +1,7 @@
-"""Slice 1 (docs/plans/plan.md): bench/pe_score_convergence_sim.py's closed-form
+"""Slice 1: bench/pe_score_convergence_sim.py's closed-form
 truth, and the convergence gate itself.
 
-Slice 10 (docs/plans/plan.md, docs/plans/n-sweep-gate-{questions,research,design}.md):
+The updated convergence protocol
 replaces the original ``slow``-tier, R=10, 2-point gate with a default-tier
 version at R=20 plus a third, ungated point. Research found the original
 R=10 rule (at the original 2-point ``n_values``) is **not** robust across
